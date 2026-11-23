@@ -99,3 +99,22 @@ The user's original icon is **200×200**, SHA-256 `e6ef56829966646b0718d3ac785b7
 **Native event bridge remains blocked**: The JSON-UI `button.optlevi_open_menu` is a Bedrock `MinecraftScreenController` action. The Android Preloader's `pl::modmenu` module registration is a separate subsystem and does *not* automatically dispatch JSON-UI actions. Playback implements `MainMenuScreenController::$onOpen` and `StartMenuScreenController::_registerEventHandlers` hooks on LeviLamina (Windows). A corresponding, version-validated Android native hook has **not** been implemented or tested. Do not claim the Mods button is functional or ship a speculative pattern/offset.
 
 The screenshot also places the button to the **left of Realms**, rather than below Dressing Room, so the JSON UI placement must be corrected against the observed screen rather than assumed from anchor constants.
+
+
+## OptLevi native touch bridge: prototype for owner's original button placement
+
+The user explicitly requested the **original** Mods button position (shown at approximately x=382–493, y=505–551 on the 1536×709 Minecraft screenshot). The experimental `skin_panel/centering_panel` Dressing Room relocation has therefore been reverted. The resource-pack control is restored under `start_screen_content` after `skin_panel`, with the original vanilla-style button template.
+
+**New integration:** `src/android/GameUiTouchBridge.cpp` is compiled into the OptLevi library by `scripts/prepare-optlevi-touch.py`. It uses the pinned official Preloader `pl::input::registerTouchCallback`, which receives raw Android touch events via `MinecraftActivity.dispatchTouchEvent`. On a complete touch within the original Mods button position, it calls OptLevi's already implemented `openMenu()`. No Android floating button is registered. The callback is disabled on mod unload and never consumes ordinary game-world HUD or pause-menu touches.
+
+**Limits:** This is a *position-calibrated Android input fallback*, not a true `button.optlevi_open_menu` screen-controller hook. Coordinates are normalized to the window and calibrated to the owner's screenshot; they may require tuning for different aspect ratios, GUI scale or notch/inset configurations. Detection of other non-HUD menus is not yet perfect. The native `MinecraftScreenController` event hook is still needed as the long-term solution; no game offsets or mangled symbols have been guessed. Users should first verify on the same Android device that the original button is now tappable.
+
+### Diagnostics for the next device test
+- Confirm the **Mods** button has returned to the earlier location.
+- Tap the center of the Mods button once with no world loaded. The game should open the native mod browser.
+- If it does not, inspect the launcher log for `OptLevi Android JSON UI position-based touch bridge enabled`, `OptLevi Mods JSON UI button tapped`, or `OptLevi touch bridge: game state unavailable`.
+- If the menu opens and immediately closes, check whether the EGL/GLES renderer displayed a frame (the existing native UI warns on Vulkan).
+- Confirm ordinary game touches and pause-menu controls work and do not accidentally open OptLevi.
+- Inspect Fabric-style UI: compact mod list, search, selected row accent, version labels, mod details and configuration actions.
+
+**A green Android CI confirms the native bridge was compiled, not that the correct tap coordinates or game-state gating work at runtime.**
