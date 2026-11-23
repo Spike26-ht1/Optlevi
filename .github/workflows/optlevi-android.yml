@@ -9,11 +9,15 @@ on:
       - feature/pause-ui-fabric-menu
       - feature/fabric-layout-compact-pause
       - feature/fabric-modmenu-21-fidelity
+      - feature/fabric-true-screen-v04
     paths:
       - "scripts/prepare-optlevi.py"
       - "scripts/prepare-levi-api.py"
       - "scripts/prepare-fabric-layout.py"
       - "scripts/prepare-fabric21-fidelity.py"
+      - "scripts/prepare-fabric-real-screen.py"
+      - "src/ui/**"
+      - "scripts/test-fabric-real-screen.py"
       - "scripts/build-resource-pack.py"
       - "resources/levi_api/**"
       - "assets/**"
@@ -31,6 +35,9 @@ on:
       - "scripts/prepare-levi-api.py"
       - "scripts/prepare-fabric-layout.py"
       - "scripts/prepare-fabric21-fidelity.py"
+      - "scripts/prepare-fabric-real-screen.py"
+      - "src/ui/**"
+      - "scripts/test-fabric-real-screen.py"
       - "scripts/build-resource-pack.py"
       - "resources/levi_api/**"
       - "assets/**"
@@ -72,6 +79,7 @@ jobs:
           python3 scripts/prepare-levi-api.py
           python3 scripts/prepare-fabric-layout.py
           python3 scripts/prepare-fabric21-fidelity.py
+          python3 scripts/prepare-fabric-real-screen.py
           python3 scripts/build-resource-pack.py
 
       - name: Check Fabric-inspired native layout rewrite
@@ -100,11 +108,14 @@ jobs:
           print("Fabric layout, translucent panels, flat buttons and compact pause icon: OK")
           PY
 
+      - name: Validate independent Fabric screen and expected Android geometry
+        run: python3 scripts/test-fabric-real-screen.py
+
       - name: Verify resource UI event contract
         run: |
           python3 - <<'PY'
           import json, zipfile, pathlib
-          p = pathlib.Path("build/OptLevi-LeviAPI-0.3.0.mcpack")
+          p = pathlib.Path("build/OptLevi-LeviAPI-0.4.0.mcpack")
           assert p.is_file()
           with zipfile.ZipFile(p) as z:
               assert "ui/start_screen.json" in z.namelist()
@@ -186,7 +197,7 @@ jobs:
           from hashlib import sha256
           import json, struct
 
-          package = Path("build/OptLevi-0.3.0-arm64-v8a.levipack")
+          package = Path("build/OptLevi-0.4.0-arm64-v8a.levipack")
           assert package.is_file(), package
           prefix = "OptLevi/resources/minecraft_resource_packs/LeviAPI/"
           original = Path("assets/optlevi-original-200.png").read_bytes()
@@ -213,16 +224,16 @@ jobs:
       - name: Upload complete OptLevi resource-integrated LeviPack
         uses: actions/upload-artifact@v4
         with:
-          name: OptLevi-0.3.0-arm64-v8a-complete
-          path: build/OptLevi-0.3.0-arm64-v8a.levipack
+          name: OptLevi-0.4.0-arm64-v8a-complete
+          path: build/OptLevi-0.4.0-arm64-v8a.levipack
           if-no-files-found: error
           retention-days: 14
 
       - name: Upload Levi API resource pack
         uses: actions/upload-artifact@v4
         with:
-          name: OptLevi-LeviAPI-0.3.0
-          path: build/OptLevi-LeviAPI-0.3.0.mcpack
+          name: OptLevi-LeviAPI-0.4.0
+          path: build/OptLevi-LeviAPI-0.4.0.mcpack
           if-no-files-found: error
           retention-days: 14
 
