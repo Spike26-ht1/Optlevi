@@ -5,6 +5,7 @@
 #include <GLES3/gl3.h>
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <mutex>
 #include <string>
 #include <utility>
@@ -79,10 +80,12 @@ bool compileProgram(std::string const& fragment,std::string& error) {
     static char const* vertex=R"(#version 300 es
 precision highp float;
 out vec2 texcoord;
+out vec2 texCoord;
 out vec2 vTexCoord;
 void main() {
     vec2 uv=vec2(float((gl_VertexID<<1)&2),float(gl_VertexID&2));
     texcoord=uv;
+    texCoord=uv;
     vTexCoord=uv;
     gl_Position=vec4(uv*2.0-1.0,0.0,1.0);
 }
@@ -107,8 +110,8 @@ void main() {
     // Reject complex Iris programs requiring extra samplers, shadow maps
     // or scene uniforms not provided by this single-pass adapter.
     static char const* allowed[]={
-        "colortex0","gcolor","texture","tex",
-        "viewWidth","viewHeight","frameTimeCounter"
+        "colortex0","colortex1","gcolor","texture","tex",
+        "viewWidth","viewHeight","aspectRatio","frameTimeCounter"
     };
     GLint count=0;
     glGetProgramiv(linked,GL_ACTIVE_UNIFORMS,&count);
@@ -236,7 +239,7 @@ void applyOneFrame(int width,int height) {
     glBindVertexArray(triangleVao);
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D,sourceTex);
-    for(char const* name:{"colortex0","gcolor","texture","tex"}) {
+    for(char const* name:{"colortex0","colortex1","gcolor","texture","tex"}) {
         GLint loc=glGetUniformLocation(program,name);
         if(loc>=0)glUniform1i(loc,0);
     }
@@ -244,6 +247,15 @@ void applyOneFrame(int width,int height) {
     GLint hh=glGetUniformLocation(program,"viewHeight");
     if(ww>=0)glUniform1f(ww,float(width));
     if(hh>=0)glUniform1f(hh,float(height));
+    GLint aspect=glGetUniformLocation(program,"aspectRatio");
+    if(aspect>=0)glUniform1f(aspect,float(width)/float(height));
+    static const auto started=std::chrono::steady_clock::now();
+    GLint counter=glGetUniformLocation(program,"frameTimeCounter");
+    if(counter>=0){
+        auto elapsed=std::chrono::duration<float>(
+            std::chrono::steady_clock::now()-started).count();
+        glUniform1f(counter,elapsed);
+    }
     glDrawArrays(GL_TRIANGLES,0,3);
     GLenum renderError=glGetError();
     saved.restore();
