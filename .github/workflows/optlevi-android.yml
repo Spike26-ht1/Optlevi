@@ -8,10 +8,12 @@ on:
       - feature/optlevi-menu-touch-bridge
       - feature/pause-ui-fabric-menu
       - feature/fabric-layout-compact-pause
+      - feature/fabric-modmenu-21-fidelity
     paths:
       - "scripts/prepare-optlevi.py"
       - "scripts/prepare-levi-api.py"
       - "scripts/prepare-fabric-layout.py"
+      - "scripts/prepare-fabric21-fidelity.py"
       - "scripts/build-resource-pack.py"
       - "resources/levi_api/**"
       - "assets/**"
@@ -28,6 +30,7 @@ on:
       - "scripts/prepare-optlevi.py"
       - "scripts/prepare-levi-api.py"
       - "scripts/prepare-fabric-layout.py"
+      - "scripts/prepare-fabric21-fidelity.py"
       - "scripts/build-resource-pack.py"
       - "resources/levi_api/**"
       - "assets/**"
@@ -68,6 +71,7 @@ jobs:
         run: |
           python3 scripts/prepare-levi-api.py
           python3 scripts/prepare-fabric-layout.py
+          python3 scripts/prepare-fabric21-fidelity.py
           python3 scripts/build-resource-pack.py
 
       - name: Check Fabric-inspired native layout rewrite
@@ -79,11 +83,18 @@ jobs:
           widgets = Path("ModMenuBE/src/ui/OreTheme.cpp").read_text()
           pause = Path("resources/levi_api/ui/pause_screen.json").read_text()
           assert 'titleText = "Mods";' in screen
-          assert 'col::rgb(0x15171C, 188)' in screen
+          assert 'col::rgb(0x262A31, 245)' in screen
           assert 'Showing %d mods' in screen
-          assert 'col::rgb(0x343A45, 225)' in screen
-          assert 'width * 0.5f - s(65)' in screen
+          assert 'col::rgb(0x465062, 250)' in screen
+          assert 'width * 0.5f - s(98)' in screen
           assert 'color::rgb(0xD3D8E2, 230)' in widgets
+          assert '"##fabric_search"' in screen
+          assert 'void drawModCard(ModInfo const& mod' in screen
+          assert 'ImGui::CollapsingHeader("Technical details")' in screen
+          assert 'openConfigFor(mod)' in screen
+          assert 'toggleEnabled(mod)' in screen
+          assert 'ModRegistry::instance().rescan()' in screen
+          assert 'openExternal(homepage)' in screen
           button = json.loads(pause)["optlevi_pause_mods_button@common_buttons.light_text_button"]
           assert button["size"] == [22, 24]
           print("Fabric layout, translucent panels, flat buttons and compact pause icon: OK")
