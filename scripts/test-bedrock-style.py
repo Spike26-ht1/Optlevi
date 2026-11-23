@@ -7,7 +7,7 @@ root=Path(__file__).resolve().parents[1]
 screen=(root/"ModMenuBE/src/ui/OptLeviFabricScreen.inc").read_text()
 native=(root/"ModMenuBE/src/ui/ModMenuScreen.cpp").read_text()
 resource=json.loads((root/"resources/levi_api/manifest.json").read_text())
-assert resource["header"]["version"] == [0,8,0]
+assert resource["header"]["version"] == [0,9,0]
 assert native.count("drawOptLeviFabricScreen(display);") == 1
 for required in (
   "kBedrockButtonFace = 0xC6C6C6",

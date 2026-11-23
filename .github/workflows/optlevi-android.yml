@@ -14,6 +14,7 @@ on:
       - feature/textured-bedrock-atlas-v06
       - feature/shaders-manager-android-v07
       - feature/shaders-import-materials-v08
+      - feature/iris-import-gles-test-v09
     paths:
       - "scripts/prepare-optlevi.py"
       - "scripts/prepare-levi-api.py"
@@ -26,6 +27,9 @@ on:
       - "scripts/test-fabric-real-screen.py"
       - "scripts/test-bedrock-style.py"
       - "scripts/test-shaders-screen.py"
+      - "scripts/prepare-iris-import.py"
+      - "src/android/ShaderImportBridge.*"
+      - "src/ui/OptLeviShaderGlesTest.inc"
       - "scripts/prepare-optlevi-font.py"
       - "scripts/prepare-shaders-route.py"
       - "src/ui/OptLeviShaderCatalog.inc"
@@ -128,7 +132,7 @@ jobs:
         run: |
           python3 - <<'PY'
           import json, zipfile, pathlib
-          p = pathlib.Path("build/OptLevi-LeviAPI-0.8.0.mcpack")
+          p = pathlib.Path("build/OptLevi-LeviAPI-0.9.0.mcpack")
           assert p.is_file()
           with zipfile.ZipFile(p) as z:
               assert "ui/start_screen.json" in z.namelist()
@@ -161,6 +165,23 @@ jobs:
           assert "openMenu();" in bridge
           assert "ButtonBuilder" not in entry
           print("Native touch bridge statically connected; runtime behavior needs device test")
+          PY
+
+      - name: Enable Android document picker and native Java shader GLES test
+        run: |
+          python3 scripts/prepare-iris-import.py
+          python3 - <<'PY'
+          from pathlib import Path
+          entry=Path("ModMenuBE/android/src/Entry.cpp").read_text()
+          cmake=Path("ModMenuBE/android/CMakeLists.txt").read_text()
+          screen=Path("ModMenuBE/src/ui/OptLeviShaderScreen.inc").read_text()
+          assert "shaderimport::install();" in entry
+          assert "shaderimport::uninstall();" in entry
+          assert "src/ShaderImportBridge.cpp" in cmake
+          assert "GLESv3 z" in cmake
+          assert "nativeOnDocumentResult" in Path("ModMenuBE/android/src/ShaderImportBridge.cpp").read_text()
+          assert "optTestSelectedShader" in screen
+          print("Android SAF picker + JNI result hook and GLES3 shader test wired")
           PY
 
       - name: Check original Mods button geometry and native touch path
@@ -231,7 +252,7 @@ jobs:
           from hashlib import sha256
           import json, struct
 
-          package = Path("build/OptLevi-0.8.0-arm64-v8a.levipack")
+          package = Path("build/OptLevi-0.9.0-arm64-v8a.levipack")
           assert package.is_file(), package
           prefix = "OptLevi/resources/minecraft_resource_packs/LeviAPI/"
           original = Path("assets/optlevi-original-200.png").read_bytes()
@@ -260,16 +281,16 @@ jobs:
       - name: Upload complete OptLevi resource-integrated LeviPack
         uses: actions/upload-artifact@v4
         with:
-          name: OptLevi-0.8.0-arm64-v8a-complete
-          path: build/OptLevi-0.8.0-arm64-v8a.levipack
+          name: OptLevi-0.9.0-arm64-v8a-complete
+          path: build/OptLevi-0.9.0-arm64-v8a.levipack
           if-no-files-found: error
           retention-days: 14
 
       - name: Upload Levi API resource pack
         uses: actions/upload-artifact@v4
         with:
-          name: OptLevi-LeviAPI-0.8.0
-          path: build/OptLevi-LeviAPI-0.8.0.mcpack
+          name: OptLevi-LeviAPI-0.9.0
+          path: build/OptLevi-LeviAPI-0.9.0.mcpack
           if-no-files-found: error
           retention-days: 14
 

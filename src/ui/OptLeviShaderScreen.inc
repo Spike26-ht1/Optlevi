@@ -1,18 +1,20 @@
-// OptLevi 0.7.0: Android shader-pack discovery screen.
-// This is an Iris-inspired pack browser, NOT a Java shader compiler.
-// Only UI state is changed; no material hooks or render pipeline are touched.
-// This file is included after OptLeviFabricScreen helpers in the same TU.
-
-static bool gOptShadersVisible = false;
-static bool gOptShadersScanned = false;
-static bool gOptCustomBuffersFound = false;
-static std::string gOptShadersError;
-static std::string gOptShadersSelection;
+// OptLevi 0.9: Iris-inspired Android shaderpacks UI, real Android SAF import,
+// and an explicit GLES3 fragment-pass test bench. Full Java render-pass injection
+// into RenderDragon is NOT implemented (the preview uses a test gradient).
 #include "OptLeviShaderCatalog.inc"
+#include "OptLeviShaderGlesTest.inc"
+
+static bool gOptShadersVisible=false;
+static bool gOptShadersScanned=false;
+static bool gOptCustomBuffersFound=false;
+static bool gOptPreviewEnabled=true;
+static std::string gOptShadersError;
+static std::string gOptShadersSelection;  // pending in UI, not Minecraft render state
+static std::string gOptSavedSelection;    // last accepted TEST choice, not world effects
+static std::string gOptImportStatus;
 
 static std::filesystem::path ofShaderpacksPath() {
-    // Paths::selfDir() comes from the native mod loader, not Android's cwd.
-    return paths::selfDir() / "shaderpacks";
+    return paths::selfDir()/"shaderpacks";
 }
 
 static void ofScanShaderpacks() {
@@ -20,188 +22,220 @@ static void ofScanShaderpacks() {
     gOptShadersError.clear();
     std::error_code ec;
     auto folder=ofShaderpacksPath();
-    if(!std::filesystem::exists(folder,ec) && !ec)
-        std::filesystem::create_directories(folder,ec);
+    std::filesystem::create_directories(folder,ec);
     if(ec)gOptShadersError=ec.message();
     else {
         std::filesystem::directory_iterator it(folder,ec),end;
-        for(;!ec && it!=end && gOptShaderFiles.size()<200;it.increment(ec)) {
+        for(;!ec && it!=end && gOptShaderFiles.size()<200;it.increment(ec))
             if(optCandidate(*it))gOptShaderFiles.push_back(optReadPack(it->path()));
-        }
         if(ec)gOptShadersError=ec.message();
     }
     std::sort(gOptShaderFiles.begin(),gOptShaderFiles.end(),
-        [](auto const& a,auto const& b) {
-            return a.path.filename().string()<b.path.filename().string();
-        });
+              [](auto const& a,auto const& b) {
+                  return a.path.filename().string()<b.path.filename().string();
+              });
     if(!gOptShadersSelection.empty() &&
        std::none_of(gOptShaderFiles.begin(),gOptShaderFiles.end(),
-          [](auto const& p) {
-              return p.path.filename().string()==gOptShadersSelection;
-          })) gOptShadersSelection.clear();
-    gOptCustomBuffersFound=false;
-    std::error_code modsError;
-    std::filesystem::directory_iterator mods(paths::modsDir(),modsError),stop;
-    for(;!modsError && mods!=stop;mods.increment(modsError)) {
-        std::error_code typeError;
-        if(!mods->is_directory(typeError))continue;
-        auto name=optLower(mods->path().filename().string());
-        if(name.find("custombuffer")!=std::string::npos ||
-           name.find("custom_buffer")!=std::string::npos ||
-           name.find("custom buffers")!=std::string::npos)
-            gOptCustomBuffersFound=true;
-    }
+            [](auto const& p){return p.path.filename().string()==gOptShadersSelection;}))
+       gOptShadersSelection.clear();
     gOptShadersScanned=true;
 }
 
-static void drawOptLeviShadersScreen(ImVec2 display) {
-    if (!gOptShadersScanned) ofScanShaderpacks();
-    float u = ofu(display);
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    ofVignette(dl,display);
-    ofNineSprite(dl, OptSprite::PanelDark,
-                 {8*u, 8*u}, {display.x-8*u, display.y-8*u}, u,
-                 IM_COL32(130, 136, 145, 130));
+static void ofReceiveImportedShaders() {
+    modmenu::android::shaderimport::Result result;
+    if(!modmenu::android::shaderimport::consumeResult(result))return;
+    gOptImportStatus=result.message;
+    if(result.success) {
+        ofScanShaderpacks();
+        // A newly imported archive is discoverable immediately.
+        // Selection remains a separate, explicit player action.
+    }
+}
 
-    float left = 20*u, split = display.x*0.475f;
-    float right = display.x*0.505f, rightEdge = display.x-20*u;
-    float listTop = 85*u, bottom = display.y-65*u;
-    float leftWidth = split-left, rightWidth = rightEdge-right;
-    if (leftWidth < 100*u || rightWidth < 100*u || bottom <= listTop+30*u) {
-        ofText(dl, fonts::body(), {20*u, 30*u},
-               "Shaders UI: screen too small", ofc(0xFFFFFF));
-        if (ofButton("##shaders_small_back", "Back to Mods",
-                     {20*u, display.y-49*u}, {155*u, 32*u}, u))
-            gOptShadersVisible = false;
+static void ofTestShaderSelection() {
+    auto pack=std::find_if(gOptShaderFiles.begin(),gOptShaderFiles.end(),
+        [](OptPackInfo const& p) {
+            return p.path.filename().string()==gOptShadersSelection;
+        });
+    optTestSelectedShader(pack==gOptShaderFiles.end()?nullptr:&*pack);
+}
+
+static void drawOptLeviShadersScreen(ImVec2 display) {
+    if(!gOptShadersScanned)ofScanShaderpacks();
+    ofReceiveImportedShaders();
+    optPreviewCheckContext();
+    float u=ofu(display);
+    ImDrawList* dl=ImGui::GetWindowDrawList();
+
+    // Iris-style centered browser; dark world background and Minecraft's own
+    // textured borders via the same Bedrock 26.60 texture atlas as ModMenu.
+    dl->AddRectFilled({0,0},display,ofc(0x111319,195));
+    float left=display.x*0.20f,right=display.x*0.80f;
+    float w=right-left;
+    float top=10*u,barY=74*u;
+    float bottom=display.y-130*u;
+    float line=32*u;
+    if(w<240*u||bottom<barY+100*u){
+        ofText(dl,fonts::bold(),{20*u,20*u},"Shaders: enlarge the screen",
+               ofc(0xFFFFFF));
+        if(ofButton("##sh_small_close","Done",{30*u,display.y-43*u},
+                    {125*u,30*u},u))gOptShadersVisible=false;
         return;
     }
 
-    ofText(dl, fonts::bold(), {left, 17*u}, "Shaders",
-           ofc(0xFFFFFF));
-    ofText(dl, fonts::body(), {left, 47*u},
-           "Select a shader pack (preview only)", ofc(0xD5D5D5));
-    dl->AddRectFilled({left, listTop}, {split, bottom}, ofc(0x202126, 188));
-    ofNineSprite(dl, OptSprite::PanelDark, {left, listTop}, {split, bottom},
-                 u, IM_COL32(112, 122, 136, 185));
+    // Two-line title and top enable switch mimic Iris, but the scope is
+    // explicitly the GPU TEST bench, not a claim of world-wide shader load.
+    std::string title="Shader Packs";
+    fonts::note(title);
+    ImFont* bold=fonts::bold();
+    float titleW=bold->CalcTextSizeA(bold->FontSize,FLT_MAX,0,title.c_str()).x;
+    ofText(dl,bold,{display.x*0.5f-titleW*0.5f,top},
+           title.c_str(),ofc(0xFFFFFF));
+    std::string sub="Select / GLES3 shader test";
+    fonts::note(sub);
+    ImFont* font=fonts::body();
+    float subW=font->CalcTextSizeA(font->FontSize,FLT_MAX,0,sub.c_str()).x;
+    ofText(dl,font,{display.x*0.5f-subW*0.5f,top+26*u},
+           sub.c_str(),ofc(0xDADADA));
 
-    ImGui::SetCursorScreenPos({left+4*u, listTop+4*u});
-    ImGui::BeginChild("##shader_pack_list",
-                      {leftWidth-8*u, bottom-listTop-8*u}, ImGuiChildFlags_None);
-    auto row = [&](char const* id, std::string const& title, bool selected) {
-        ImVec2 pos = ImGui::GetCursorScreenPos();
-        float width = ImGui::GetContentRegionAvail().x;
+    const float refreshW=37*u;
+    std::string enabled=gOptPreviewEnabled?"Shader test: Enabled":"Shader test: Disabled";
+    if(ofButton("##iris_enable",enabled.c_str(),{left,barY},
+                {w-refreshW-6*u,line},u))
+        gOptPreviewEnabled=!gOptPreviewEnabled;
+    if(ofButton("##iris_refresh","R",
+                {right-refreshW,barY},{refreshW,line},u))
+        ofScanShaderpacks();
+
+    float listTop=barY+line+7*u;
+    dl->AddRectFilled({left,listTop},{right,bottom},ofc(0x161A1E,192));
+    ofNineSprite(dl,OptSprite::PanelDark,{left,listTop},{right,bottom},u,
+                 IM_COL32(115,123,133,220));
+    ImGui::SetCursorScreenPos({left+3*u,listTop+3*u});
+    ImGui::BeginChild("##iris_pack_list",
+                     {w-6*u,bottom-listTop-6*u},ImGuiChildFlags_None);
+    auto row=[&](char const* id,std::string const& name,bool selected) {
+        ImVec2 pos=ImGui::GetCursorScreenPos();
+        float width=ImGui::GetContentRegionAvail().x-2*u;
         ImGui::PushID(id);
-        bool clicked = ImGui::InvisibleButton("##shader_row", {width, 49*u});
+        bool clicked=ImGui::InvisibleButton("##iris_pack_row",{width,36*u});
+        bool hover=ImGui::IsItemHovered();
         ImGui::PopID();
-        ImDrawList* child = ImGui::GetWindowDrawList();
-        child->AddRectFilled(pos, {pos.x+width,pos.y+49*u},
-                             selected ? ofc(0x506A83, 245) : ofc(0x2B2E33, 255));
-        if (selected)
-            child->AddRect(pos,{pos.x+width,pos.y+49*u},
-                           ofc(0xEEEEEE),0,0,std::max(1.0f,u));
-        child->PushClipRect({pos.x+6*u,pos.y},{pos.x+width-6*u,pos.y+49*u},true);
-        ofText(child,fonts::body(),{pos.x+9*u,pos.y+12*u},
-               title.c_str(),ofc(0xFFFFFF),0,width-18*u);
-        child->PopClipRect();
-        ImGui::Dummy({0,3*u});
+        ImDrawList* rowDraw=ImGui::GetWindowDrawList();
+        if(selected) {
+            rowDraw->AddRectFilled(pos,{pos.x+width,pos.y+36*u},
+                                   ofc(0x0B0C0F,255));
+            rowDraw->AddRect(pos,{pos.x+width,pos.y+36*u},
+                             ofc(0xE9E9E9),0,0,u);
+        }else if(hover)
+            rowDraw->AddRectFilled(pos,{pos.x+width,pos.y+36*u},
+                                   ofc(0x41494E,220));
+        fonts::note(name);
+        float maxW=width-12*u;
+        float tw=font->CalcTextSizeA(font->FontSize,FLT_MAX,0,name.c_str()).x;
+        rowDraw->PushClipRect({pos.x+5*u,pos.y},
+                              {pos.x+width-5*u,pos.y+36*u},true);
+        ofText(rowDraw,font,{pos.x+std::max(8*u,(width-tw)/2),
+                             pos.y+6*u},name.c_str(),
+               selected?ofc(0xFFF1A5):ofc(0xFFFFFF),0,maxW);
+        rowDraw->PopClipRect();
         return clicked;
     };
-    if (row("vanilla", "Off (vanilla Minecraft)",
-            gOptShadersSelection.empty())) gOptShadersSelection.clear();
-    for (size_t i=0; i<gOptShaderFiles.size(); ++i) {
-        auto name = gOptShaderFiles[i].path.filename().string();
+    if(row("vanilla","Off (vanilla / no shader test)",gOptShadersSelection.empty()))
+        gOptShadersSelection.clear();
+    for(size_t i=0;i<gOptShaderFiles.size();i++){
+        auto name=gOptShaderFiles[i].path.filename().string();
         ImGui::PushID(int(i));
-        bool selected = gOptShadersSelection == name;
-        if (row("archive",name,selected)) gOptShadersSelection=name;
+        if(row("pack",name,name==gOptShadersSelection))gOptShadersSelection=name;
         ImGui::PopID();
     }
-    if (gOptShaderFiles.empty())
-        ImGui::TextDisabled("No Java or RenderDragon shader packs found.");
+    if(gOptShaderFiles.empty())ImGui::TextDisabled("No shader packs. Choose Import.");
     ImGui::EndChild();
-    if(!gOptExportStatus.empty())
-        ofText(dl,fonts::body(),{left,display.y-76*u},
-               gOptExportStatus.c_str(),ofc(0xC5E2FC),fonts::body()->FontSize*0.74f,
-               leftWidth);
 
-    ofNineSprite(dl, OptSprite::PanelDark,
-                 {right,listTop},{rightEdge,bottom},u,
-                 IM_COL32(112,122,136,185));
-    float tx = right+12*u;
-    float ty = listTop+15*u;
-    ofText(dl, fonts::bold(), {tx,ty}, "Shader pack details", ofc(0xFFFFFF));
-    ty += 38*u;
-    std::string picked = gOptShadersSelection.empty()
-        ? "Vanilla / Off" : gOptShadersSelection;
-    ofText(dl,fonts::body(),{tx,ty},picked.c_str(),
-           ofc(0xE3E8EF),0,rightWidth-25*u);
-    ty += 36*u;
-    auto selected=std::find_if(gOptShaderFiles.begin(),gOptShaderFiles.end(),
-        [](OptPackInfo const& item) {
-            return item.path.filename().string()==gOptShadersSelection;
+    float infoY=bottom+4*u;
+    std::string label=gOptShadersSelection.empty()?
+        "Vanilla (no Java shader selected)" : gOptShadersSelection;
+    std::string status="Imported packs can be tested in an isolated GLES3 preview.";
+    auto picked=std::find_if(gOptShaderFiles.begin(),gOptShaderFiles.end(),
+        [](OptPackInfo const& p){
+            return p.path.filename().string()==gOptShadersSelection;
         });
-    std::string detected=selected==gOptShaderFiles.end()
-        ? "Pack type: Vanilla" : std::string("Pack type: ")+optPackLabel(selected->type);
-    ofText(dl,fonts::body(),{tx,ty},detected.c_str(),
-           ofc(0xC5E2FC),0,rightWidth-25*u);
-    ty += 31*u;
-    if(selected!=gOptShaderFiles.end()) {
-        std::string counts="Java files: "+std::to_string(selected->javaFiles)+
-            " | material.bin: "+std::to_string(selected->materialFiles);
-        ofText(dl,fonts::body(),{tx,ty},counts.c_str(),
-               ofc(0xD2D2D2),0,rightWidth-25*u);
+    if(picked!=gOptShaderFiles.end()){
+        label += " | ";
+        label += optPackLabel(picked->type);
     }
-    ty += 40*u;
-    ofText(dl,fonts::body(),{tx,ty},
-           "Backend: Android OpenGL ES / RenderDragon",
-           ofc(0xD2D2D2),0,rightWidth-25*u);
-    ty += 36*u;
-    ofText(dl,fonts::body(),{tx,ty},
-           gOptCustomBuffersFound ? "Custom Buffers: directory detected (not verified)"
-                                 : "Custom Buffers: not detected",
-           ofc(gOptCustomBuffersFound ? 0xB8F0B8 : 0xE5D49C));
-    ty += 36*u;
-    ofText(dl,fonts::body(),{tx,ty},
-           "Java Iris / Arke backend: not available on Android",
-           ofc(0xE5D49C),0,rightWidth-25*u);
-    ty += 42*u;
-    ofText(dl,fonts::body(),{tx,ty},
-           "Detection only - no shader was loaded or activated.",
-           ofc(0xFFFFFF),0,rightWidth-25*u);
-    ty += 38*u;
-    ofText(dl,fonts::body(),{tx,ty},
-           "Copy shader packs to:",ofc(0xC5C9CD));
-    ty += 26*u;
-    std::string folder = ofShaderpacksPath().string();
-    dl->PushClipRect({tx,ty},{rightEdge-10*u,bottom-5*u},true);
-    ofText(dl,fonts::body(),{tx,ty},folder.c_str(),
-           ofc(0xA7C6FF),fonts::body()->FontSize*0.79f,rightWidth-25*u);
-    ty += 32*u;
-    if (!gOptShadersError.empty())
-        ofText(dl,fonts::body(),{tx,ty},gOptShadersError.c_str(),
-               ofc(0xFFAA88),0,rightWidth-25*u);
+    dl->PushClipRect({left,infoY},{right,infoY+55*u},true);
+    ofText(dl,font,{left+5*u,infoY},label.c_str(),
+           ofc(0xDDE6EC),font->FontSize*0.84f,w-10*u);
+    if(!gOptImportStatus.empty())status=gOptImportStatus;
+    else if(!gOptShadersError.empty())status=gOptShadersError;
+    ofText(dl,font,{left+5*u,infoY+22*u},status.c_str(),
+           ofc(0xD7D7D7),font->FontSize*0.78f,w-10*u);
     dl->PopClipRect();
 
-    float by=display.y-50*u, bh=33*u;
-    if (ofButton("##shader_refresh","Refresh",
-                 {left,by},{155*u,bh},u)) ofScanShaderpacks();
-    if (ofButton("##shader_back","Back to Mods",
-                 {right,by},{170*u,bh},u)) gOptShadersVisible=false;
-    bool canExport=!gOptShadersSelection.empty() &&
-        std::any_of(gOptShaderFiles.begin(),gOptShaderFiles.end(),
-            [](auto const& pack) {
-                return pack.path.filename().string()==gOptShadersSelection;
-            });
-    if (ofButton("##shader_export","Export",
-                 {right+178*u,by},{125*u,bh},u,canExport)) {
-        auto found=std::find_if(gOptShaderFiles.begin(),gOptShaderFiles.end(),
-            [](auto const& pack) {
-                return pack.path.filename().string()==gOptShadersSelection;
-            });
-        if(found!=gOptShaderFiles.end())optExportPack(*found);
+    const float gap=7*u,buttonH=30*u;
+    float by=display.y-70*u;
+    float importW=w*0.32f;
+    float testW=w*0.32f;
+    float folderW=w-importW-testW-2*gap;
+    if(ofButton("##iris_import","Import Shader Pack",
+                {left,by},{importW,buttonH},u,
+                modmenu::android::shaderimport::available())){
+        if(!modmenu::android::shaderimport::openPicker())
+            gOptImportStatus="Android document picker unavailable";
+        else gOptImportStatus="Choose a ZIP or .mcpack in Android's document picker";
     }
-    if (ofButton("##shader_done","Done",
-                 {rightEdge-145*u,by},{145*u,bh},u)) {
+    if(ofButton("##iris_test","Test GLES Shader",
+                {left+importW+gap,by},{testW,buttonH},u,gOptPreviewEnabled))
+        ofTestShaderSelection();
+    if(ofButton("##iris_folder","Shader Pack Folder",
+                {right-folderW,by},{folderW,buttonH},u)){
+        if(!openFolder(ofShaderpacksPath()))
+            gOptImportStatus=ofShaderpacksPath().string();
+    }
+
+    float by2=display.y-35*u;
+    float third=(w-2*gap)/3;
+    if(ofButton("##iris_cancel","Cancel",{left,by2},{third,buttonH},u)) {
+        gOptShadersSelection=gOptSavedSelection;
+        gOptImportStatus="Selection reverted";
+    }
+    if(ofButton("##iris_apply","Apply",{left+third+gap,by2},
+                {third,buttonH},u)) {
+        gOptSavedSelection=gOptShadersSelection;
+        gOptImportStatus="Selection saved for GPU TEST only; world shader unchanged";
+    }
+    if(ofButton("##iris_done","Done",
+                {right-third,by2},{third,buttonH},u)) {
         gOptShadersVisible=false;
-        requestClose("Shader browser Done");
+    }
+
+    // Live GPU preview thumbnail, only after the explicit Test button succeeds.
+    // It uses a synthetic input gradient, NOT the RenderDragon world image.
+    if(gOptPreviewSuccess && gOptPreviewTexture &&
+       gOptPreviewContext==eglGetCurrentContext()){
+        float pw=210*u,ph=118*u;
+        ImVec2 pt{display.x-pw-10*u,12*u};
+        dl->AddRectFilled({pt.x-4*u,pt.y-4*u},
+                          {pt.x+pw+4*u,pt.y+ph+27*u},
+                           ofc(0x111111,255));
+        dl->AddImage(ImTextureID(intptr_t(gOptPreviewTexture)),pt,
+                     {pt.x+pw,pt.y+ph});
+        ofText(dl,font,{pt.x,pt.y+ph+4*u},"GLES3 test preview (not world)",
+               ofc(0xFFFFFF),font->FontSize*0.72f,pw);
+    }
+    if(!gOptPreviewReport.empty()) {
+        // Compilation errors are not discarded. Use a scrollable popup to
+        // inspect the real driver log instead of pretending support.
+        if(ofButton("##iris_compilelog","Compiler log",
+                    {display.x-140*u,display.y-118*u},
+                    {125*u,29*u},u))
+            ImGui::OpenPopup("##iris_compile_details");
+        if(ImGui::BeginPopup("##iris_compile_details")){
+            ImGui::TextWrapped("%s",gOptPreviewFile.c_str());
+            ImGui::Separator();
+            ImGui::TextWrapped("%s",gOptPreviewReport.c_str());
+            ImGui::EndPopup();
+        }
     }
 }

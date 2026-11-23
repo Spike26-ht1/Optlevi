@@ -2,24 +2,27 @@
 
 OptLevi brings a **Fabric Mod Menu-inspired native mod browser** to Minecraft Bedrock on Android, with Minecraft-style **Mods** buttons rendered by a minimal Levi API resource pack.
 
-## OptLevi 0.7.0 — shaderpack browser test (Android ARM64)
+## OptLevi 0.9.0 — Android import + Iris shader GPU test (ARM64)
 
-This development build adds a separate Iris-inspired Shaders screen accessible
-from the **Shaders** button at the top of the current OptLevi Mods frontend.
-It discovers local \`.zip\` and \`.mcpack\` archives in the native mod's
-\`shaderpacks/\` directory, provides Off, selection/inspection, Refresh,
-Back to Mods and Done, and reports Custom Buffers directory presence.
+This build extends OptLevi's Iris-inspired shader-pack browser with a **real
+Android Documents picker**. The launcher-provided `ACTION_OPEN_DOCUMENT`
+result is copied into OptLevi's `shaderpacks/` folder safely before the
+temporary file is removed. Import supports ZIP, MCPACK and RenderDragon
+`.material.bin`, with file-size and filename checks. A new refresh list
+automatically notices successful imports.
 
-**Important:** This is a testable **shader browser UI**, not yet a working
-Java/Iris/OptiFine shader loader. Selecting an archive does not apply it.
-Arke currently targets Windows D3D12; its README lists Android as future work.
-Custom Buffers provides extra render resources but is not a general Java
-shader compiler. The pause-menu Shaders control remains a placeholder;
-enter the new screen from the Mods frontend for this test.
+The **Test GLES Shader** button actually invokes the Android GPU's GLSL
+compiler. It can preview a built-in diagnostic shader or the `final.fsh` /
+`composite.fsh` fragment pass of a simple Iris/OptiFine archive in an
+isolated OpenGL ES 3 framebuffer. Driver errors are displayed under
+**Compiler log**. The interface also includes Cancel, Apply, and Done.
 
-See [Android shader research](docs/shaders-android-research.md). Do not
-merge into main or claim GPU shader effects until device testing and backend
-integration are completed.
+**Important limitation:** importing a shader pack or compiling one GLSL
+fragment in the test bench **does not apply it to Minecraft's 3D world**.
+Complex Iris shader packs need a version-validated Android RenderDragon
+pipeline with shadow passes, scene buffers and uniform mapping. This
+preview deliberately does not claim full Iris/OptiFine compatibility.
+See [Android shader GPU test architecture](docs/iris-android-v09-test-bench.md).
 
 ## OptLevi 0.6.0 — real Bedrock UI textures on the Fabric-style screen
 
