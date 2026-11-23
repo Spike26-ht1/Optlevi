@@ -106,6 +106,28 @@ jobs:
           PY
           readelf -h build/optlevi-arm64-v8a/package/OptLevi/libOptLevi.so | grep -q AArch64
 
+      - name: Validate corrected embedded LeviPack layout (synthetic icon fixture only)
+        run: |
+          python3 - <<'PY'
+          import struct, zlib
+          from pathlib import Path
+          p = Path("/tmp/optlevi-packaging-fixture-200.png")
+          def chunk(t, d):
+              from zlib import crc32
+              return struct.pack(">I", len(d)) + t + d + struct.pack(">I", crc32(t+d) & 0xffffffff)
+          w = h = 200
+          scanlines = b"".join(b"\\x00" + b"\\x00\\x7f\\x00\\xff" * w for _ in range(h))
+          data = b"\\x89PNG\\r\\n\\x1a\\n"
+          data += chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 6, 0, 0, 0))
+          data += chunk(b"IDAT", zlib.compress(scanlines))
+          data += chunk(b"IEND", b"")
+          p.write_bytes(data)
+          print("Generated test-only 200px image; not the project artwork")
+          PY
+          python3 scripts/package-optlevi.py \\
+            --high-res-icon /tmp/optlevi-packaging-fixture-200.png \\
+            --output build/OptLevi-packaging-structure-test-only.levipack
+
       - name: Upload Levi API resource pack
         uses: actions/upload-artifact@v4
         with:
@@ -114,10 +136,10 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      - name: Upload OptLevi test pack
+      - name: Upload OptLevi native module (no embedded assets — test only)
         uses: actions/upload-artifact@v4
         with:
-          name: OptLevi-0.1.0-arm64-v8a
+          name: OptLevi-native-only-0.1.0-arm64-v8a
           path: build/optlevi-arm64-v8a/OptLevi-0.1.0-arm64-v8a.levipack
           if-no-files-found: error
           retention-days: 14
