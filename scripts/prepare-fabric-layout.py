@@ -91,7 +91,7 @@ def main():
     if (hovered && !held)
         dl->AddRect(fmin, fmax, color::rgb(0xD3D8E2, 230), 0, 0, s(1));"""
     replace_once(theme_cpp, old_frame, new_frame)
-    replace_once(theme_cpp, 'float lip      = s(4);', 'float lip      = s(0);')
+    replace_once(theme_cpp, 'float  lip      = s(4);', 'float  lip      = s(0);')
     replace_once(theme_cpp, 'st.FrameBorderSize  = s(2);', 'st.FrameBorderSize  = s(1);')
     replace_once(theme_cpp, 'st.ScrollbarSize    = s(14);', 'st.ScrollbarSize    = s(10);')
     replace_once(theme_cpp, 'c[ImGuiCol_ChildBg]             = ImVec4(0, 0, 0, 0);',
