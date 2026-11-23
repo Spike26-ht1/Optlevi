@@ -293,14 +293,30 @@ void drawListView(ImVec2 bodyMin, ImVec2 bodyMax) {
     ImGui::SetCursorScreenPos(bodyMin);
     ImGui::BeginChild("fabric_left", {leftW, h}, ImGuiChildFlags_None);
     float aw = ImGui::GetContentRegionAvail().x;
-    float filterWidth = s(76);
+    float filterWidth = s(37);
     float searchWidth = std::max(s(90), aw - filterWidth - s(8));
     ore::searchField("##fabric_search", gState.search, sizeof(gState.search),
                      tr("search"), searchWidth);
     ImGui::SameLine(0, s(7));
     static bool showFilters = true;
-    if (ore::button("##fabric_filters", "Filters", ore::Variant::Dark,
+    if (ore::button("##fabric_filters", "", ore::Variant::Dark,
                     {filterWidth, s(35)})) showFilters = !showFilters;
+    // Draw an original small funnel directly in ImGui, matching Fabric's
+    // icon-only filter button without embedding Java-edition sprite assets.
+    ImVec2 fmin = ImGui::GetItemRectMin();
+    ImVec2 fmax = ImGui::GetItemRectMax();
+    ImVec2 center{(fmin.x + fmax.x) * 0.5f, (fmin.y + fmax.y) * 0.5f};
+    ImVec2 funnel[4] = {
+        {center.x - s(10), center.y - s(7)},
+        {center.x + s(10), center.y - s(7)},
+        {center.x + s(3), center.y + s(2)},
+        {center.x - s(3), center.y + s(2)}
+    };
+    ImGui::GetWindowDrawList()->AddConvexPolyFilled(funnel, 4, col::Text);
+    ImGui::GetWindowDrawList()->AddRectFilled(
+        {center.x - s(3), center.y + s(1)},
+        {center.x + s(3), center.y + s(10)}, col::Text);
+    ore::tooltip("Filter options");
 
     if (showFilters) {
         bool showLibraries = settings().showLibraries;
