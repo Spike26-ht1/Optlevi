@@ -13,6 +13,7 @@ on:
       - feature/bedrock-ui-fabric-v05
       - feature/textured-bedrock-atlas-v06
       - feature/shaders-manager-android-v07
+      - feature/shaders-import-materials-v08
     paths:
       - "scripts/prepare-optlevi.py"
       - "scripts/prepare-levi-api.py"
@@ -25,6 +26,9 @@ on:
       - "scripts/test-fabric-real-screen.py"
       - "scripts/test-bedrock-style.py"
       - "scripts/test-shaders-screen.py"
+      - "scripts/prepare-optlevi-font.py"
+      - "scripts/prepare-shaders-route.py"
+      - "src/ui/OptLeviShaderCatalog.inc"
       - "scripts/build-resource-pack.py"
       - "resources/levi_api/**"
       - "assets/**"
@@ -87,6 +91,8 @@ jobs:
           python3 scripts/prepare-fabric-layout.py
           python3 scripts/prepare-fabric21-fidelity.py
           python3 scripts/prepare-fabric-real-screen.py
+          python3 scripts/prepare-optlevi-font.py
+          python3 scripts/prepare-shaders-route.py
           python3 scripts/build-resource-pack.py
 
       - name: Check Fabric-inspired native layout rewrite
@@ -122,7 +128,7 @@ jobs:
         run: |
           python3 - <<'PY'
           import json, zipfile, pathlib
-          p = pathlib.Path("build/OptLevi-LeviAPI-0.7.0.mcpack")
+          p = pathlib.Path("build/OptLevi-LeviAPI-0.8.0.mcpack")
           assert p.is_file()
           with zipfile.ZipFile(p) as z:
               assert "ui/start_screen.json" in z.namelist()
@@ -172,6 +178,18 @@ jobs:
       - name: Verify Iris-inspired shader browser static contract
         run: python3 scripts/test-shaders-screen.py
 
+      - name: Stage OFL Minecraft-style font for the native package
+        run: |
+          mkdir -p build/font
+          curl -fsSL --retry 3 -o build/font/monocraft.ttf https://raw.githubusercontent.com/IdreesInc/Monocraft/e498bf70aeb25b4bdcff1e44d878fb2cb4f7c2a9/dist/Monocraft-ttf/Monocraft.ttf
+          curl -fsSL --retry 3 -o build/font/OFL.txt https://raw.githubusercontent.com/IdreesInc/Monocraft/e498bf70aeb25b4bdcff1e44d878fb2cb4f7c2a9/LICENSE
+          test "$(wc -c < build/font/monocraft.ttf)" -eq 210192
+          python3 - <<'PY'
+          from pathlib import Path
+          assert b'OFL' in Path('build/font/OFL.txt').read_bytes() or b'OPEN FONT LICENSE' in Path('build/font/OFL.txt').read_bytes().upper()
+          print('Monocraft OFL font staged')
+          PY
+
       - name: Configure ARM64
         run: |
           cmake -S ModMenuBE/android -B build/optlevi-arm64-v8a -G Ninja \
@@ -213,7 +231,7 @@ jobs:
           from hashlib import sha256
           import json, struct
 
-          package = Path("build/OptLevi-0.7.0-arm64-v8a.levipack")
+          package = Path("build/OptLevi-0.8.0-arm64-v8a.levipack")
           assert package.is_file(), package
           prefix = "OptLevi/resources/minecraft_resource_packs/LeviAPI/"
           original = Path("assets/optlevi-original-200.png").read_bytes()
@@ -242,16 +260,16 @@ jobs:
       - name: Upload complete OptLevi resource-integrated LeviPack
         uses: actions/upload-artifact@v4
         with:
-          name: OptLevi-0.7.0-arm64-v8a-complete
-          path: build/OptLevi-0.7.0-arm64-v8a.levipack
+          name: OptLevi-0.8.0-arm64-v8a-complete
+          path: build/OptLevi-0.8.0-arm64-v8a.levipack
           if-no-files-found: error
           retention-days: 14
 
       - name: Upload Levi API resource pack
         uses: actions/upload-artifact@v4
         with:
-          name: OptLevi-LeviAPI-0.7.0
-          path: build/OptLevi-LeviAPI-0.7.0.mcpack
+          name: OptLevi-LeviAPI-0.8.0
+          path: build/OptLevi-LeviAPI-0.8.0.mcpack
           if-no-files-found: error
           retention-days: 14
 

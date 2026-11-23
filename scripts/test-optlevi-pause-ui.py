@@ -31,7 +31,13 @@ mods = pause["optlevi_pause_mods_button@common_buttons.light_text_button"]
 assert mods["$pressed_button_name"] == "button.optlevi_open_pause_menu"
 assert mods["$button_text"] == "optlevi.menu.short_button"
 assert mods["size"] == [22, 24]
-assert pause["optlevi_pause_mods_panel"]["size"] == [24, 26]
+assert pause["optlevi_pause_mods_panel"]["size"] == [50, 26]
+assert pause["optlevi_pause_mods_panel"]["controls"][1] == {
+    "shaders_button@pause.optlevi_pause_shaders_button": {"offset": [25,0]}
+}
+assert pause["optlevi_pause_shaders_button@common_buttons.light_text_button"]["$pressed_button_name"] == "button.optlevi_shaders_pause"
+assert "kPauseShadersMinX" in native and "Target::Shaders" in native
+assert "state().shaderOpenRequested.store(true)" in native
 assert 0 < mods["$pressed_alpha"] < 1
 
 shaders = pause["optlevi_shaders_button@pause.pause_button_template"]
@@ -71,6 +77,7 @@ for name in ("en_US.lang","pt_BR.lang"):
     assert "optlevi.menu.button=Mods" in text
     assert "optlevi.menu.short_button=M" in text
     assert "optlevi.shaders.button=Shaders" in text
+    assert "optlevi.shaders.short_button=S" in text
 
 archive = ROOT / "build/OptLevi-LeviAPI-0.2.0.mcpack"
 if archive.is_file():

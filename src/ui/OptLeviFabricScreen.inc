@@ -10,6 +10,22 @@ static ImU32 ofc(unsigned rgb, unsigned alpha=255) {
     return col::rgb(rgb, alpha);
 }
 
+// Feathered, transparent overlay: Minecraft remains visible behind the UI.
+// Drawn once per frame with ImGui primitives (no screen capture, no extra hooks).
+static void ofVignette(ImDrawList* dl,ImVec2 display) {
+    float edge=std::min(display.x,display.y)*0.22f;
+    dl->AddRectFilled({0,0},display,ofc(0x0B0E13,65));
+    ImU32 dark=ofc(0x05070B,190), clear=ofc(0x05070B,0);
+    dl->AddRectFilledMultiColor({0,0},{display.x,edge},
+        dark,dark,clear,clear);
+    dl->AddRectFilledMultiColor({0,display.y-edge},{display.x,display.y},
+        clear,clear,dark,dark);
+    dl->AddRectFilledMultiColor({0,0},{edge,display.y},
+        dark,clear,clear,dark);
+    dl->AddRectFilledMultiColor({display.x-edge,0},{display.x,display.y},
+        clear,dark,dark,clear);
+}
+
 // Bedrock UI palette sampled from the supplied 26.60 UI reference archive:
  // NormalButtonStroke center ~#C6C6C6, black frame, white upper bevel;
  // ScrollHandle center ~#C6C6C6, edit_box_indent_hover ~#5E5E5E.
@@ -195,10 +211,10 @@ static void ofDetailPane(ModInfo const& mod, ImVec2 start,
 
     float contentY=start.y+110.0f*u;
     dl->AddRectFilled({start.x+3.0f*u,contentY},{end.x,end.y},
-                      ofc(kBedrockPanelDark,255));
+                      ofc(kBedrockPanelDark,188));
     ofNineSprite(dl,OptSprite::PanelDark,
                  {start.x+3.0f*u,contentY},{end.x,end.y},u,
-                 IM_COL32(112,121,136,255));
+                 IM_COL32(112,121,136,188));
     ImGui::SetCursorScreenPos({start.x+8.0f*u,contentY+8.0f*u});
     ImGui::BeginChild("##of_details_scroll",{width-16.0f*u,
                      std::max(20.0f,end.y-contentY-14.0f*u)},
@@ -276,6 +292,12 @@ static void ofDetailPane(ModInfo const& mod, ImVec2 start,
 #include "OptLeviShaderScreen.inc"
 
 static void drawOptLeviFabricScreen(ImVec2 display) {
+#ifdef __ANDROID__
+    if(modmenu::android::state().shaderOpenRequested.exchange(false)) {
+        gOptShadersVisible=true;
+        gOptShadersScanned=false;
+    }
+#endif
     if (gOptShadersVisible) {
         drawOptLeviShadersScreen(display);
         return;
@@ -283,14 +305,14 @@ static void drawOptLeviFabricScreen(ImVec2 display) {
     float u=ofu(display);
     ImDrawList* dl=ImGui::GetWindowDrawList();
     // Minecraft-like overlay rather than AFAlimru's large framed dialog.
-    dl->AddRectFilled({0,0},display,ofc(0x101116,215));
+    ofVignette(dl,display);
     // Minecraft's menu texture reference uses a crisp panel outline, not
     // transparent cards exposing game buttons behind their text.
     dl->AddRectFilled({8*u,8*u},{display.x-8*u,display.y-9*u},
-                      ofc(kBedrockPanel,251));
+                      ofc(kBedrockPanel,120));
     ofNineSprite(dl,OptSprite::PanelDark,
                  {8*u,8*u},{display.x-8*u,display.y-9*u},u,
-                 IM_COL32(135,140,148,255));
+                 IM_COL32(135,140,148,125));
     dl->AddRect({8*u,8*u},{display.x-8*u,display.y-9*u},
                 ofc(0x101010,255),0,0,std::max(1.0f,u));
     float xL=20.0f*u, xR=display.x*0.515f;
@@ -384,9 +406,9 @@ static void drawOptLeviFabricScreen(ImVec2 display) {
     ofText(dl,fonts::body(),{xL,88.0f*u},count,ofc(0xFFFFFF));
     float listY=111.0f*u;
     // Fabric list has its own scroll and a dark but see-through background.
-    dl->AddRectFilled({xL,listY},{leftEnd,bottom},ofc(kBedrockPanelDark,255));
+    dl->AddRectFilled({xL,listY},{leftEnd,bottom},ofc(kBedrockPanelDark,188));
     ofNineSprite(dl,OptSprite::PanelDark,{xL,listY},{leftEnd,bottom},u,
-                 IM_COL32(124,135,146,255));
+                 IM_COL32(124,135,146,188));
     dl->AddRect({xL,listY},{leftEnd,bottom},ofc(0x101010,255),0,0,std::max(1.0f,u));
     ImGui::SetCursorScreenPos({xL,listY});
     ImGui::BeginChild("##of_scroll_mods",{leftW,bottom-listY},ImGuiChildFlags_None);
@@ -410,10 +432,10 @@ static void drawOptLeviFabricScreen(ImVec2 display) {
 
     // Details panel: header + two buttons + scrolling description/credits.
     // No white AFAlimru shell, huge Config/Enable strip or oversized footer.
-    dl->AddRectFilled({xR,68.0f*u},{rightEnd,bottom},ofc(kBedrockPanelDark,255));
+    dl->AddRectFilled({xR,68.0f*u},{rightEnd,bottom},ofc(kBedrockPanelDark,188));
     ofNineSprite(dl,OptSprite::PanelDark,
                  {xR,68.0f*u},{rightEnd,bottom},u,
-                 IM_COL32(112,121,136,255));
+                 IM_COL32(112,121,136,188));
     dl->AddRect({xR,68.0f*u},{rightEnd,bottom},ofc(0x101010,255),0,0,std::max(1.0f,u));
     auto selected=ModRegistry::instance().find(gState.selected);
     if(!selected&&!mods.empty()){

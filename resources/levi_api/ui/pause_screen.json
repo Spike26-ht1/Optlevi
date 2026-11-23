@@ -25,12 +25,20 @@
   "optlevi_pause_mods_panel": {
     "type": "input_panel",
     "size": [
-      24,
+      50,
       26
     ],
     "controls": [
       {
         "mods_button@pause.optlevi_pause_mods_button": {}
+      },
+      {
+        "shaders_button@pause.optlevi_pause_shaders_button": {
+          "offset": [
+            25,
+            0
+          ]
+        }
       }
     ]
   },
@@ -81,6 +89,28 @@
     "controls": [
       {
         "shaders_button@pause.optlevi_shaders_small": {}
+      }
+    ]
+  },
+  "optlevi_pause_shaders_button@common_buttons.light_text_button": {
+    "size": [
+      22,
+      24
+    ],
+    "$button_text": "optlevi.shaders.short_button",
+    "$pressed_button_name": "button.optlevi_shaders_pause",
+    "$pressed_alpha": 0.55,
+    "focus_identifier": "optlevi_pause_shaders",
+    "button_mappings": [
+      {
+        "from_button_id": "button.menu_select",
+        "to_button_id": "$pressed_button_name",
+        "mapping_type": "pressed"
+      },
+      {
+        "from_button_id": "button.menu_ok",
+        "to_button_id": "$pressed_button_name",
+        "mapping_type": "pressed"
       }
     ]
   }
