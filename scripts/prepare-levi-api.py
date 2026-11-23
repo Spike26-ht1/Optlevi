@@ -1,0 +1,98 @@
+#!/usr/bin/env python3
+"""Replace the OptLevi prototype's floating launcher button with module-only registration.
+
+The JSON-UI button lives in resources/levi_api/ui/start_screen.json. Binding
+button.optlevi_open_menu to an Android MinecraftScreenController callback is
+separate, version-specific native-hook work; this script does NOT claim it exists.
+"""
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+SRC = ROOT / "ModMenuBE"
+
+def replace_once(path, old, new):
+    s = path.read_text(encoding="utf-8")
+    assert s.count(old) == 1, f"{path}: expected one occurrence of {old!r}, got {s.count(old)}"
+    path.write_text(s.replace(old, new), encoding="utf-8")
+
+def main():
+    entry = SRC / "android/src/Entry.cpp"
+    data = entry.read_text(encoding="utf-8-sig")
+    assert "namespace modmenu::android::entry {" in data
+    assert "namespace modmenu::ui {" in data
+    start = data.index("namespace modmenu::android::entry {")
+    # Eliminate all ButtonBuilder and floating position code from the translation unit.
+    entry.write_text("""#include "Entry.h"
+#include "ModMenuMod.h"
+#include "State.h"
+#include "LauncherHud.h"
+#include <pl/ModMenu.hpp>
+
+namespace modmenu::android::entry {
+namespace {
+constexpr char kModuleId[] = "optlevi";
+bool gModule = false;
+}
+
+void openButtonLayout() {
+    closeMenu();
+    launcher::openModMenu();
+}
+
+void resetButtonLayout() {
+    // Button placement belongs to the resource-pack UI, not an Android overlay.
+}
+
+void install() {
+    auto const& modId = ModMenuMod::instance().getSelf().getId();
+    gModule = pl::modmenu::ModuleBuilder(kModuleId, "OptLevi")
+        .description("OptLevi mod browser based on ModMenuBE; JSON UI entry in resource pack")
+        .modId(modId)
+        .defaultEnabled(true)
+        .onToggle([](std::string_view, bool enabled) {
+            if (!enabled) closeMenu();
+        })
+        .registerModule();
+    log().info("OptLevi native module {}", gModule ? "registered" : "FAILED");
+}
+
+void uninstall() {
+    if (gModule) pl::modmenu::unregisterModule(kModuleId);
+    gModule = false;
+}
+} // namespace modmenu::android::entry
+
+namespace modmenu::ui {
+void openButtonLayout() { android::entry::openButtonLayout(); }
+void resetButtonLayout() { android::entry::resetButtonLayout(); }
+} // namespace modmenu::ui
+""", encoding="utf-8")
+
+    # Fabric Mod Menu-inspired desktop layout, restrained dark cards and blue accents.
+    theme = SRC / "src/ui/OreTheme.h"
+    for old, new in [
+        ("rgb(0x313233)", "rgb(0x24262C)"),
+        ("rgb(0x48494A)", "rgb(0x323640)"),
+        ("rgb(0x5A5B5C)", "rgb(0x454A57)"),
+        ("rgb(0x242425)", "rgb(0x1A1C21)"),
+        ("rgb(0xB1B2B5)", "rgb(0xBBC1CC)"),
+        ("rgb(0x3C8527)", "rgb(0x467BEA)"),
+        ("rgb(0x2A641C)", "rgb(0x315EB8)"),
+        ("rgb(0x1D4D13)", "rgb(0x233F86)"),
+        ("rgb(0x6CC349)", "rgb(0x77A5FF)"),
+        ("rgb(0xFFFFFF);\ninline constexpr ImU32 Dim", "rgb(0x79A7FF);\ninline constexpr ImU32 Dim"),
+    ]:
+        replace_once(theme, old, new)
+
+    menu = SRC / "src/ui/ModMenuScreen.cpp"
+    for old, new in [
+        ('titleText = tr("title");', 'titleText = "OptLevi | Mods";'),
+        ("float leftW = std::max(s(320), total * 0.42f);",
+         "float leftW = std::clamp(total * 0.38f, std::min(s(220), total * 0.30f), total * 0.50f);"),
+        ("col::rgb(0x2A2A2B), false", "col::rgb(0x1A1C21), false"),
+    ]:
+        replace_once(menu, old, new)
+    print("Removed launcher floating button and applied OptLevi Fabric-like menu styling")
+
+if __name__ == "__main__":
+    main()
