@@ -1,3 +1,7 @@
 [submodule "LeviLauncher-Android"]
 	path = LeviLauncher-Android
 	url = https://github.com/LiteLDev/LeviLauncher-Android.git
+
+[submodule "ModMenuBE"]
+	path = ModMenuBE
+	url = https://github.com/AFAlimru/ModMenuBE.git
