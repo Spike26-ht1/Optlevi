@@ -1,0 +1,123 @@
+name: OptLevi Android ARM64 test build
+
+on:
+  push:
+    branches:
+      - feature/optlevi-native-menu
+      - feature/levi-api-resource-ui
+    paths:
+      - "scripts/prepare-optlevi.py"
+      - "scripts/prepare-levi-api.py"
+      - "scripts/build-resource-pack.py"
+      - "resources/levi_api/**"
+      - ".github/workflows/optlevi-android.yml"
+      - "patches/modmenube/**"
+  pull_request:
+    paths:
+      - "scripts/prepare-optlevi.py"
+      - "scripts/prepare-levi-api.py"
+      - "scripts/build-resource-pack.py"
+      - "resources/levi_api/**"
+      - ".github/workflows/optlevi-android.yml"
+      - "patches/modmenube/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  optlevi-arm64:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout OptLevi and upstream submodules
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+
+      - name: Install NDK
+        run: sdkmanager --install "ndk;28.2.13676358"
+
+      - name: Apply verified LeviLauncher compatibility patch
+        run: |
+          git -C ModMenuBE apply --check "$GITHUB_WORKSPACE/patches/modmenube/0001-align-current-levilauncher.patch"
+          git -C ModMenuBE apply "$GITHUB_WORKSPACE/patches/modmenube/0001-align-current-levilauncher.patch"
+
+      - name: Apply OptLevi native mod branding
+        run: python3 scripts/prepare-optlevi.py
+
+      - name: Replace floating launcher button with Levi API resource UI
+        run: |
+          python3 scripts/prepare-levi-api.py
+          python3 scripts/build-resource-pack.py
+
+      - name: Verify resource UI event contract
+        run: |
+          python3 - <<'PY'
+          import json, zipfile, pathlib
+          p = pathlib.Path("build/OptLevi-LeviAPI-0.2.0.mcpack")
+          assert p.is_file()
+          with zipfile.ZipFile(p) as z:
+              assert "ui/start_screen.json" in z.namelist()
+              manifest = json.loads(z.read("manifest.json"))
+              assert manifest["modules"][0]["type"] == "resources"
+              button = json.loads(z.read("ui/start_screen.json"))
+              key = "optlevi_menu_button@common_buttons.light_text_form_fitting_button"
+              assert button[key]["$pressed_button_name"] == "button.optlevi_open_menu"
+              assert button["start_screen_content"]["modifications"][0]["control_name"] == "skin_panel"
+              assert "pack_icon.png" in z.namelist()
+          entry = pathlib.Path("ModMenuBE/android/src/Entry.cpp").read_text()
+          assert "ButtonBuilder" not in entry, "Old native floating button still present"
+          assert "registerModule" in entry
+          print("Static JSON UI contract and floating-button removal verified")
+          PY
+
+      - name: Configure ARM64
+        run: |
+          cmake -S ModMenuBE/android -B build/optlevi-arm64-v8a -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="$ANDROID_HOME/ndk/28.2.13676358/build/cmake/android.toolchain.cmake" \
+            -DANDROID_NDK="$ANDROID_HOME/ndk/28.2.13676358" \
+            -DANDROID_ABI=arm64-v8a \
+            -DANDROID_PLATFORM=android-28 \
+            -DANDROID_STL=c++_shared \
+            -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build .levipack
+        run: cmake --build build/optlevi-arm64-v8a --target levi_package --parallel 2
+
+      - name: Verify package and architecture
+        run: |
+          python3 - <<'PY'
+          import json, zipfile, pathlib
+          p = pathlib.Path("build/optlevi-arm64-v8a/OptLevi-0.1.0-arm64-v8a.levipack")
+          assert p.is_file(), f"Missing {p}"
+          with zipfile.ZipFile(p) as z:
+              expected = {"OptLevi/manifest.json", "OptLevi/icon.png", "OptLevi/LICENSE", "OptLevi/libOptLevi.so"}
+              assert expected <= set(z.namelist()), z.namelist()
+              manifest = json.loads(z.read("OptLevi/manifest.json"))
+              assert manifest["name"] == "OptLevi", manifest
+              assert manifest["entry"] == "libOptLevi.so", manifest
+              assert z.read("OptLevi/libOptLevi.so")[:4] == bytes((0x7f,)) + b"ELF"
+          print("OptLevi archive structure and manifest verified")
+          PY
+          readelf -h build/optlevi-arm64-v8a/package/OptLevi/libOptLevi.so | grep -q AArch64
+
+      - name: Upload Levi API resource pack
+        uses: actions/upload-artifact@v4
+        with:
+          name: OptLevi-LeviAPI-0.2.0
+          path: build/OptLevi-LeviAPI-0.2.0.mcpack
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload OptLevi test pack
+        uses: actions/upload-artifact@v4
+        with:
+          name: OptLevi-0.1.0-arm64-v8a
+          path: build/optlevi-arm64-v8a/OptLevi-0.1.0-arm64-v8a.levipack
+          if-no-files-found: error
+          retention-days: 14
