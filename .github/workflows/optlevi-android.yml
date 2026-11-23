@@ -7,6 +7,7 @@ on:
       - feature/levi-api-resource-ui
       - feature/optlevi-menu-touch-bridge
       - feature/pause-ui-fabric-menu
+      - feature/fabric-layout-compact-pause
     paths:
       - "scripts/prepare-optlevi.py"
       - "scripts/prepare-levi-api.py"
