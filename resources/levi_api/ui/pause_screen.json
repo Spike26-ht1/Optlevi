@@ -2,10 +2,10 @@
   "namespace": "pause",
   "optlevi_pause_mods_button@common_buttons.light_text_button": {
     "size": [
-      56,
-      32
+      22,
+      24
     ],
-    "$button_text": "optlevi.menu.button",
+    "$button_text": "optlevi.menu.short_button",
     "$pressed_button_name": "button.optlevi_open_pause_menu",
     "$pressed_alpha": 0.55,
     "focus_identifier": "optlevi_pause_mods",
@@ -25,8 +25,8 @@
   "optlevi_pause_mods_panel": {
     "type": "input_panel",
     "size": [
-      60,
-      32
+      24,
+      26
     ],
     "controls": [
       {
