@@ -112,25 +112,11 @@ static bool optReadZipShader(std::filesystem::path const& file,
     return true;
 }
 
+#include "OptLeviJavaPack.inc"
+
 static bool optReadJavaShader(OptPackInfo const& pack,
                               std::string& source,std::string& origin) {
-    if(pack.folder) {
-        std::error_code ec;
-        for(char const* name:{"shaders/final.fsh","shaders/composite.fsh",
-                              "shaders/composite1.fsh"}) {
-            auto p=pack.path/name;
-            if(std::filesystem::is_regular_file(p,ec)&&
-               optReadBounded(p,source,kMaxShaderBytes)){
-                origin=name;
-                return true;
-            }
-        }
-        return false;
-    }
-    if(optEnds(optLower(pack.path.filename().string()),".zip")||
-       optEnds(optLower(pack.path.filename().string()),".mcpack"))
-        return optReadZipShader(pack.path,source,origin);
-    return false;
+    return optReadJavaFinalPass(pack,source,origin);
 }
 
 // Simple compatibility translation only; do NOT claim to support complete
@@ -143,14 +129,21 @@ static void optReplaceAll(std::string& s,std::string const& a,
     }
 }
 static std::string optTranslateFinal(std::string source) {
-    // Keep line numbers useful by removing just the first #version line.
-    auto version=source.find("#version");
-    if(version!=std::string::npos && (version==0||
-       source[version-1]=='\n')) {
-        auto end=source.find('\n',version);
-        source.erase(version,end==std::string::npos?
-                     std::string::npos:end-version+1);
+    // Translate desktop GLSL 120 directives to GLES3 without claiming full Iris.
+    std::istringstream lines(source);
+    std::string line,clean;
+    while(std::getline(lines,line)) {
+        size_t start=line.find_first_not_of(" \t\r");
+        if(start!=std::string::npos &&
+           (line.compare(start,8,"#version")==0 ||
+            line.compare(start,36,"#extension GL_ARB_shader_texture_lod")==0)) {
+            clean+='\n';
+            continue;
+        }
+        clean+=line;
+        clean+='\n';
     }
+    source=std::move(clean);
     optReplaceAll(source,"texture2D(","texture(");
     optReplaceAll(source,"textureCube(","texture(");
     optReplaceAll(source,"texture2DLod(","textureLod(");
@@ -194,10 +187,12 @@ static bool optRenderFragment(std::string const& source,
     static const char* vertex=R"(#version 300 es
 precision highp float;
 out vec2 texcoord;
+out vec2 texCoord;
 out vec2 vTexCoord;
 void main(){
     vec2 pos=vec2(float((gl_VertexID<<1)&2),float(gl_VertexID&2));
     texcoord=pos;
+    texCoord=pos;
     vTexCoord=pos;
     gl_Position=vec4(pos*2.0-1.0,0.0,1.0);
 }
@@ -285,6 +280,10 @@ void main(){
         }
         GLint height=glGetUniformLocation(program,"viewHeight");
         if(height>=0)glUniform1f(height,float(kPreviewH));
+        GLint aspect=glGetUniformLocation(program,"aspectRatio");
+        if(aspect>=0)glUniform1f(aspect,float(kPreviewW)/float(kPreviewH));
+        GLint time=glGetUniformLocation(program,"frameTimeCounter");
+        if(time>=0)glUniform1f(time,0.0f);
         glGenVertexArrays(1,&vao);
         glBindVertexArray(vao);
         glDrawArrays(GL_TRIANGLES,0,3);
@@ -331,8 +330,8 @@ void main(){unusedOutput=vec4(1.0)-texture(colortex0,texcoord);unusedOutput.a=1.
         optReplaceAll(src,"unusedOutput","optFragColor");
     }else if(!optReadJavaShader(*pack,src,origin)) {
         gOptPreviewSuccess=false;
-        gOptPreviewReport="No directly testable final.fsh or composite.fsh found. "
-            "Complex Iris packs need multi-pass RenderDragon integration.";
+        gOptPreviewReport=gOptJavaSourceError.empty()?
+            "No directly testable final/composite shader found":gOptJavaSourceError;
         gOptPreviewFile.clear();
         return;
     }

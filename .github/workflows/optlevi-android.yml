@@ -16,6 +16,7 @@ on:
       - feature/shaders-import-materials-v08
       - feature/iris-import-gles-test-v09
       - feature/java-final-world-test-v10
+      - feature/bsl-final-preprocessor-v11
     paths:
       - "scripts/prepare-optlevi.py"
       - "scripts/prepare-levi-api.py"
@@ -34,6 +35,8 @@ on:
       - "src/android/ShaderWorldRuntime.*"
       - "src/android/ShaderImportBridge.*"
       - "src/ui/OptLeviShaderGlesTest.inc"
+      - "src/ui/OptLeviJavaPack.inc"
+      - "scripts/test-java-bsl.py"
       - "scripts/prepare-optlevi-font.py"
       - "scripts/prepare-shaders-route.py"
       - "src/ui/OptLeviShaderCatalog.inc"
@@ -136,7 +139,7 @@ jobs:
         run: |
           python3 - <<'PY'
           import json, zipfile, pathlib
-          p = pathlib.Path("build/OptLevi-LeviAPI-0.10.0.mcpack")
+          p = pathlib.Path("build/OptLevi-LeviAPI-0.11.0.mcpack")
           assert p.is_file()
           with zipfile.ZipFile(p) as z:
               assert "ui/start_screen.json" in z.namelist()
@@ -187,6 +190,9 @@ jobs:
           assert "optTestSelectedShader" in screen
           print("Android SAF picker + JNI result hook and GLES3 shader test wired")
           PY
+
+      - name: Test Java shaderpack ZIP includes and safety on host C++
+        run: python3 scripts/test-java-bsl.py
 
       - name: Install opt-in Java final-pass world GPU test
         run: |
@@ -269,7 +275,7 @@ jobs:
           from hashlib import sha256
           import json, struct
 
-          package = Path("build/OptLevi-0.10.0-arm64-v8a.levipack")
+          package = Path("build/OptLevi-0.11.0-arm64-v8a.levipack")
           assert package.is_file(), package
           prefix = "OptLevi/resources/minecraft_resource_packs/LeviAPI/"
           original = Path("assets/optlevi-original-200.png").read_bytes()
@@ -298,16 +304,16 @@ jobs:
       - name: Upload complete OptLevi resource-integrated LeviPack
         uses: actions/upload-artifact@v4
         with:
-          name: OptLevi-0.10.0-arm64-v8a-complete
-          path: build/OptLevi-0.10.0-arm64-v8a.levipack
+          name: OptLevi-0.11.0-arm64-v8a-complete
+          path: build/OptLevi-0.11.0-arm64-v8a.levipack
           if-no-files-found: error
           retention-days: 14
 
       - name: Upload Levi API resource pack
         uses: actions/upload-artifact@v4
         with:
-          name: OptLevi-LeviAPI-0.10.0
-          path: build/OptLevi-LeviAPI-0.10.0.mcpack
+          name: OptLevi-LeviAPI-0.11.0
+          path: build/OptLevi-LeviAPI-0.11.0.mcpack
           if-no-files-found: error
           retention-days: 14
 

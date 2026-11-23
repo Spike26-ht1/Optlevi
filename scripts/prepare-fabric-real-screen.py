@@ -27,7 +27,7 @@ def main():
     shutil.copy2(INCLUDE,DEST)
     # Both native GPU sprite helpers must be co-located with the included
     # renderer, because the application loads these PNG bytes at runtime.
-    for name in ("OptLeviBedrockAtlas.inc", "OptLeviBedrockTexture.inc", "OptLeviShaderScreen.inc", "OptLeviShaderCatalog.inc", "OptLeviShaderGlesTest.inc"):
+    for name in ("OptLeviBedrockAtlas.inc", "OptLeviBedrockTexture.inc", "OptLeviShaderScreen.inc", "OptLeviShaderCatalog.inc", "OptLeviShaderGlesTest.inc", "OptLeviJavaPack.inc"):
         original=ROOT/"src"/"ui"/name
         if not original.is_file():
             raise RuntimeError(f"Bedrock atlas dependency missing: {original}")
@@ -45,7 +45,10 @@ def main():
         "#include <cstdint>\n"
         "#include <cstring>\n"
         "#include <fstream>\n"
-        "#include <vector>")
+        "#include <vector>\n"
+        "#include <set>\n"
+        "#include <sstream>\n"
+        "#include <chrono>")
 
     # Include into the same C++ namespace/translation unit to reuse registry
     # and mod actions, while replacing the entire View::List rendering path.

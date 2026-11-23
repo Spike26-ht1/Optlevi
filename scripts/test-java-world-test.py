@@ -13,7 +13,7 @@ ui=(R/"src/ui/OptLeviShaderScreen.inc").read_text()
 prep=(R/"scripts/prepare-java-world-test.py").read_text()
 fabricprep=(R/"scripts/prepare-fabric-real-screen.py").read_text()
 version=json.loads((R/"resources/levi_api/manifest.json").read_text())
-assert version["header"]["version"]==[0,10,0]
+assert version["header"]["version"]==[0,11,0]
 for symbol in (
  "void requestEnable(std::string translatedFragment",
  "void requestDisable()",
@@ -45,7 +45,7 @@ for symbol in (
     "optReadJavaShader(*selected,src,origin)",
     "optTranslateFinal(src)",
     "Experimental world postprocess disabled",
-    "compiling" if False else "Compiling experimental world postprocess pass",
+    "Compiling selected Java final pass",
 ):
     assert symbol in ui,symbol
 for symbol in (
