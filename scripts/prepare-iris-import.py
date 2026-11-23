@@ -23,6 +23,9 @@ def main():
     once(SRC/"android/CMakeLists.txt",
          "    src/GameUiTouchBridge.cpp\n",
          "    src/GameUiTouchBridge.cpp\n    src/ShaderImportBridge.cpp\n")
+    once(SRC/"android/CMakeLists.txt",
+         "    log android EGL GLESv3\n",
+         "    log android EGL GLESv3 z\n")
     entry=target/"Entry.cpp"
     once(entry,'#include "GameUiTouchBridge.h"\n',
          '#include "GameUiTouchBridge.h"\n#include "ShaderImportBridge.h"\n')
