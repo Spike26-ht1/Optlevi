@@ -8,7 +8,7 @@ static bool gOptShadersScanned = false;
 static bool gOptCustomBuffersFound = false;
 static std::string gOptShadersError;
 static std::string gOptShadersSelection;
-static std::vector<std::filesystem::path> gOptShaderFiles;
+#include "OptLeviShaderCatalog.inc"
 
 static std::filesystem::path ofShaderpacksPath() {
     // Paths::selfDir() comes from the native mod loader, not Android's cwd.
@@ -19,53 +19,49 @@ static void ofScanShaderpacks() {
     gOptShaderFiles.clear();
     gOptShadersError.clear();
     std::error_code ec;
-    auto folder = ofShaderpacksPath();
-    if (!std::filesystem::exists(folder, ec) && !ec)
-        std::filesystem::create_directories(folder, ec);
-    if (ec) {
-        gOptShadersError = ec.message();
-    } else {
-        std::filesystem::directory_iterator it(folder, ec), end;
-        for (; !ec && it != end && gOptShaderFiles.size() < 200; it.increment(ec)) {
-            std::error_code entryError;
-            if (!it->is_regular_file(entryError)) continue;
-            auto ext = it->path().extension().string();
-            for (char& c : ext) if (c >= 'A' && c <= 'Z') c = char(c - 'A' + 'a');
-            if (ext == ".zip" || ext == ".mcpack")
-                gOptShaderFiles.push_back(it->path());
+    auto folder=ofShaderpacksPath();
+    if(!std::filesystem::exists(folder,ec) && !ec)
+        std::filesystem::create_directories(folder,ec);
+    if(ec)gOptShadersError=ec.message();
+    else {
+        std::filesystem::directory_iterator it(folder,ec),end;
+        for(;!ec && it!=end && gOptShaderFiles.size()<200;it.increment(ec)) {
+            if(optCandidate(*it))gOptShaderFiles.push_back(optReadPack(it->path()));
         }
-        if (ec) gOptShadersError = ec.message();
+        if(ec)gOptShadersError=ec.message();
     }
-    std::sort(gOptShaderFiles.begin(), gOptShaderFiles.end(),
-              [](auto const& a, auto const& b) {
-                  return a.filename().string() < b.filename().string();
-              });
-    if (!gOptShadersSelection.empty() &&
-        std::none_of(gOptShaderFiles.begin(), gOptShaderFiles.end(),
-                     [](auto const& p) {
-                         return p.filename().string() == gOptShadersSelection;
-                     }))
-        gOptShadersSelection.clear();
-
-    gOptCustomBuffersFound = false;
-    for (char const* name : {"CustomBuffers", "CustomBuffer", "custombuffer"}) {
-        std::error_code foundError;
-        if (std::filesystem::is_directory(paths::modsDir() / name, foundError)) {
-            gOptCustomBuffersFound = true;
-            break;
-        }
+    std::sort(gOptShaderFiles.begin(),gOptShaderFiles.end(),
+        [](auto const& a,auto const& b) {
+            return a.path.filename().string()<b.path.filename().string();
+        });
+    if(!gOptShadersSelection.empty() &&
+       std::none_of(gOptShaderFiles.begin(),gOptShaderFiles.end(),
+          [](auto const& p) {
+              return p.path.filename().string()==gOptShadersSelection;
+          })) gOptShadersSelection.clear();
+    gOptCustomBuffersFound=false;
+    std::error_code modsError;
+    std::filesystem::directory_iterator mods(paths::modsDir(),modsError),stop;
+    for(;!modsError && mods!=stop;mods.increment(modsError)) {
+        std::error_code typeError;
+        if(!mods->is_directory(typeError))continue;
+        auto name=optLower(mods->path().filename().string());
+        if(name.find("custombuffer")!=std::string::npos ||
+           name.find("custom_buffer")!=std::string::npos ||
+           name.find("custom buffers")!=std::string::npos)
+            gOptCustomBuffersFound=true;
     }
-    gOptShadersScanned = true;
+    gOptShadersScanned=true;
 }
 
 static void drawOptLeviShadersScreen(ImVec2 display) {
     if (!gOptShadersScanned) ofScanShaderpacks();
     float u = ofu(display);
     ImDrawList* dl = ImGui::GetWindowDrawList();
-    dl->AddRectFilled({0, 0}, display, ofc(0x111318, 235));
+    ofVignette(dl,display);
     ofNineSprite(dl, OptSprite::PanelDark,
                  {8*u, 8*u}, {display.x-8*u, display.y-8*u}, u,
-                 IM_COL32(130, 136, 145, 255));
+                 IM_COL32(130, 136, 145, 130));
 
     float left = 20*u, split = display.x*0.475f;
     float right = display.x*0.505f, rightEdge = display.x-20*u;
@@ -84,9 +80,9 @@ static void drawOptLeviShadersScreen(ImVec2 display) {
            ofc(0xFFFFFF));
     ofText(dl, fonts::body(), {left, 47*u},
            "Select a shader pack (preview only)", ofc(0xD5D5D5));
-    dl->AddRectFilled({left, listTop}, {split, bottom}, ofc(0x202126, 255));
+    dl->AddRectFilled({left, listTop}, {split, bottom}, ofc(0x202126, 188));
     ofNineSprite(dl, OptSprite::PanelDark, {left, listTop}, {split, bottom},
-                 u, IM_COL32(112, 122, 136, 255));
+                 u, IM_COL32(112, 122, 136, 185));
 
     ImGui::SetCursorScreenPos({left+4*u, listTop+4*u});
     ImGui::BeginChild("##shader_pack_list",
@@ -113,19 +109,23 @@ static void drawOptLeviShadersScreen(ImVec2 display) {
     if (row("vanilla", "Off (vanilla Minecraft)",
             gOptShadersSelection.empty())) gOptShadersSelection.clear();
     for (size_t i=0; i<gOptShaderFiles.size(); ++i) {
-        auto name = gOptShaderFiles[i].filename().string();
+        auto name = gOptShaderFiles[i].path.filename().string();
         ImGui::PushID(int(i));
         bool selected = gOptShadersSelection == name;
         if (row("archive",name,selected)) gOptShadersSelection=name;
         ImGui::PopID();
     }
     if (gOptShaderFiles.empty())
-        ImGui::TextDisabled("No .zip or .mcpack files found.");
+        ImGui::TextDisabled("No Java or RenderDragon shader packs found.");
     ImGui::EndChild();
+    if(!gOptExportStatus.empty())
+        ofText(dl,fonts::body(),{left,display.y-76*u},
+               gOptExportStatus.c_str(),ofc(0xC5E2FC),fonts::body()->FontSize*0.74f,
+               leftWidth);
 
     ofNineSprite(dl, OptSprite::PanelDark,
                  {right,listTop},{rightEdge,bottom},u,
-                 IM_COL32(112,122,136,255));
+                 IM_COL32(112,122,136,185));
     float tx = right+12*u;
     float ty = listTop+15*u;
     ofText(dl, fonts::bold(), {tx,ty}, "Shader pack details", ofc(0xFFFFFF));
@@ -134,13 +134,29 @@ static void drawOptLeviShadersScreen(ImVec2 display) {
         ? "Vanilla / Off" : gOptShadersSelection;
     ofText(dl,fonts::body(),{tx,ty},picked.c_str(),
            ofc(0xE3E8EF),0,rightWidth-25*u);
-    ty += 42*u;
+    ty += 36*u;
+    auto selected=std::find_if(gOptShaderFiles.begin(),gOptShaderFiles.end(),
+        [](OptPackInfo const& item) {
+            return item.path.filename().string()==gOptShadersSelection;
+        });
+    std::string detected=selected==gOptShaderFiles.end()
+        ? "Pack type: Vanilla" : std::string("Pack type: ")+optPackLabel(selected->type);
+    ofText(dl,fonts::body(),{tx,ty},detected.c_str(),
+           ofc(0xC5E2FC),0,rightWidth-25*u);
+    ty += 31*u;
+    if(selected!=gOptShaderFiles.end()) {
+        std::string counts="Java files: "+std::to_string(selected->javaFiles)+
+            " | material.bin: "+std::to_string(selected->materialFiles);
+        ofText(dl,fonts::body(),{tx,ty},counts.c_str(),
+               ofc(0xD2D2D2),0,rightWidth-25*u);
+    }
+    ty += 40*u;
     ofText(dl,fonts::body(),{tx,ty},
            "Backend: Android OpenGL ES / RenderDragon",
            ofc(0xD2D2D2),0,rightWidth-25*u);
     ty += 36*u;
     ofText(dl,fonts::body(),{tx,ty},
-           gOptCustomBuffersFound ? "Custom Buffers: directory detected"
+           gOptCustomBuffersFound ? "Custom Buffers: directory detected (not verified)"
                                  : "Custom Buffers: not detected",
            ofc(gOptCustomBuffersFound ? 0xB8F0B8 : 0xE5D49C));
     ty += 36*u;
@@ -170,6 +186,19 @@ static void drawOptLeviShadersScreen(ImVec2 display) {
                  {left,by},{155*u,bh},u)) ofScanShaderpacks();
     if (ofButton("##shader_back","Back to Mods",
                  {right,by},{170*u,bh},u)) gOptShadersVisible=false;
+    bool canExport=!gOptShadersSelection.empty() &&
+        std::any_of(gOptShaderFiles.begin(),gOptShaderFiles.end(),
+            [](auto const& pack) {
+                return pack.path.filename().string()==gOptShadersSelection;
+            });
+    if (ofButton("##shader_export","Export",
+                 {right+178*u,by},{125*u,bh},u,canExport)) {
+        auto found=std::find_if(gOptShaderFiles.begin(),gOptShaderFiles.end(),
+            [](auto const& pack) {
+                return pack.path.filename().string()==gOptShadersSelection;
+            });
+        if(found!=gOptShaderFiles.end())optExportPack(*found);
+    }
     if (ofButton("##shader_done","Done",
                  {rightEdge-145*u,by},{145*u,bh},u)) {
         gOptShadersVisible=false;
