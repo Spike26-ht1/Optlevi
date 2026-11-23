@@ -4,31 +4,45 @@ OptLevi is an Android-focused Bedrock enhancement project inspired by the OptiFi
 
 ## Repository layout
 
-- `LeviLauncher-Android/` — upstream LeviLauncher Android source, tracked as a Git submodule.
-- `LICENSE` — MIT license for original OptLevi-authored material in this repository.
+- `LeviLauncher-Android/` — official LeviLauncher Android source, tracked as a Git submodule.
+- `ModMenuBE/` — upstream ModMenuBE source, tracked as a Git submodule.
+- `patches/modmenube/` — OptLevi compatibility patch for the selected LeviLauncher/Preloader revision.
+- `docs/modmenu-android.md` — build and device-test instructions.
+- `.github/workflows/modmenu-android.yml` — ARM64 Android build validation.
 
-## LeviLauncher upstream
+## Upstream components
 
-The launcher source is maintained by **LeviMC / LiteLDev** and is included without modifying its upstream files.
+| Component | Upstream | Pinned revision | License |
+| --- | --- | --- | --- |
+| LeviLauncher Android | https://github.com/LiteLDev/LeviLauncher-Android | `d544df8cafab731ba7686dfb88951602f13293ef` | Apache-2.0 |
+| ModMenuBE | https://github.com/AFAlimru/ModMenuBE | `dcca382ec0a15e3849e9a65dcdf8fe64480d3a71` (0.2.1) | MIT, AFAlimru |
 
-- Upstream: https://github.com/LiteLDev/LeviLauncher-Android
-- Pinned revision: `d544df8cafab731ba7686dfb88951602f13293ef`
-- Upstream license: Apache License 2.0 (see `LeviLauncher-Android/LICENSE` after initializing the submodule).
+These are separate upstream projects. Their source and licenses remain identifiable; OptLevi's MIT license applies only to OptLevi-authored files.
 
-Initialize or clone the submodule with:
+## Clone
 
-```bash
-git submodule update --init --recursive
-```
-
-When cloning OptLevi for the first time:
+Clone with submodules so both source trees are populated:
 
 ```bash
 git clone --recurse-submodules https://github.com/Spike26-ht1/Optlevi.git
 ```
 
-## Important
+If you already cloned without submodules:
 
-OptLevi's MIT license applies to OptLevi-authored material only. It does not replace the licenses of included third-party projects. Preserve the upstream Apache-2.0 license and notices when using or redistributing LeviLauncher code.
+```bash
+git submodule update --init --recursive
+```
 
-The launcher is currently included as a pinned upstream dependency; this repository setup does not claim that OptLevi integration or an Android build has been completed.
+## ModMenuBE Android build
+
+The current focus is the Android ARM64 ModMenuBE package. See [docs/modmenu-android.md](docs/modmenu-android.md).
+
+The GitHub Actions workflow builds a `.levipack` artifact for `arm64-v8a`. A successful CI build proves compilation and packaging only; the package still needs to be installed and tested in LeviLauncher on a physical Android device.
+
+## License boundaries
+
+- OptLevi-authored material: MIT (see `LICENSE`).
+- LeviLauncher Android: Apache License 2.0 (see `LeviLauncher-Android/LICENSE`).
+- ModMenuBE: MIT, copyright AFAlimru (see `ModMenuBE/LICENSE`).
+
+Do not replace upstream license files or attribution when modifying, distributing, or integrating these projects.
