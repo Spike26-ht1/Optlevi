@@ -36,6 +36,7 @@ def main():
     src=once(src, "#include <imgui_internal.h>",
         "#include <imgui_internal.h>\n"
         "#include <EGL/egl.h>\n"
+        "#include \"State.h\"\n"
         "#include <GLES3/gl3.h>\n"
         "#include <stb_image.h>\n"
         "#include <cstdint>\n"
