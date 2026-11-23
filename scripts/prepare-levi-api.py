@@ -96,6 +96,13 @@ void resetButtonLayout() { android::entry::resetButtonLayout(); }
          "if (selected) dl->AddRectFilled(min, {min.x + s(4), max.y}, col::Selection);"),
         ("ore::panel(dl, min, {min.x + width, min.y + height}, col::PanelLight, true);",
          "ore::panel(dl, min, {min.x + width, min.y + height}, col::PanelLight, false);"),
+        ("float       height = s(66);", "float       height = s(62);"),
+        ("float  iconSize = s(46);", "float  iconSize = s(42);"),
+        ("float headerH = s(60), footerH = s(58), pad = s(14);",
+         "float headerH = s(56), footerH = s(52), pad = s(12);"),
+        ('titleText = tr("title");', 'titleText = "OptLevi  /  Mods";'),
+        ('ore::panel(dl, min, {min.x + width, min.y + height}, col::PanelLight, true);',
+         'ore::panel(dl, min, {min.x + width, min.y + height}, col::PanelLight, false);'),
     ]:
         replace_once(menu, old, new)
     print("Removed launcher floating button and applied OptLevi Fabric-like menu styling")
