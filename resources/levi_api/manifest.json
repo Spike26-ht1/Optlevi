@@ -1,0 +1,17 @@
+{
+  "format_version": 2,
+  "header": {
+    "name": "OptLevi Levi API",
+    "description": "Vanilla-style main-menu Mods button for OptLevi; Android native event hook pending.",
+    "uuid": "01f12b79-38e4-4e68-b6cd-6f6db1ecc1c0",
+    "version": [0, 2, 0],
+    "min_engine_version": [1, 21, 0]
+  },
+  "modules": [
+    {
+      "type": "resources",
+      "uuid": "b3c15d6d-fdab-4bcd-a974-08b90d1d6eed",
+      "version": [0, 2, 0]
+    }
+  ]
+}
