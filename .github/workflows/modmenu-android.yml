@@ -1,0 +1,73 @@
+name: ModMenuBE Android ARM64
+
+on:
+  pull_request:
+    paths:
+      - "ModMenuBE"
+      - "ModMenuBE/**"
+      - ".gitmodules"
+      - "patches/modmenube/**"
+      - ".github/workflows/modmenu-android.yml"
+      - "docs/modmenu-android.md"
+  push:
+    branches:
+      - main
+      - feature/modmenu-android
+    paths:
+      - "ModMenuBE"
+      - "ModMenuBE/**"
+      - ".gitmodules"
+      - "patches/modmenube/**"
+      - ".github/workflows/modmenu-android.yml"
+      - "docs/modmenu-android.md"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-arm64:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout OptLevi and upstream submodules
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install pinned Android NDK
+        run: sdkmanager --install "ndk;28.2.13676358"
+
+      - name: Apply OptLevi compatibility patch
+        run: |
+          git -C ModMenuBE apply --check "$GITHUB_WORKSPACE/patches/modmenube/0001-align-current-levilauncher.patch"
+          git -C ModMenuBE apply "$GITHUB_WORKSPACE/patches/modmenube/0001-align-current-levilauncher.patch"
+
+      - name: Configure ARM64 build
+        run: |
+          cmake -S ModMenuBE/android -B build/modmenu-arm64-v8a -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="$ANDROID_HOME/ndk/28.2.13676358/build/cmake/android.toolchain.cmake" \
+            -DANDROID_NDK="$ANDROID_HOME/ndk/28.2.13676358" \
+            -DANDROID_ABI=arm64-v8a \
+            -DANDROID_PLATFORM=android-28 \
+            -DANDROID_STL=c++_shared \
+            -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build and package .levipack
+        run: cmake --build build/modmenu-arm64-v8a --target levi_package --parallel 2
+
+      - name: Verify package and native architecture
+        run: |
+          test -f build/modmenu-arm64-v8a/ModMenuBE-0.2.1-arm64-v8a.levipack
+          test -f build/modmenu-arm64-v8a/package/ModMenuBE/libModMenuBE.so
+          readelf -h build/modmenu-arm64-v8a/package/ModMenuBE/libModMenuBE.so | grep -q "AArch64"
+
+      - name: Upload test package
+        uses: actions/upload-artifact@v4
+        with:
+          name: ModMenuBE-0.2.1-arm64-v8a
+          path: build/modmenu-arm64-v8a/ModMenuBE-0.2.1-arm64-v8a.levipack
+          if-no-files-found: error
+          retention-days: 14
