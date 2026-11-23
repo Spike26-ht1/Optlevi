@@ -9,7 +9,7 @@ fabric = (ROOT/"src/ui/OptLeviFabricScreen.inc").read_text(encoding="utf-8")
 prep = (ROOT/"scripts/prepare-fabric-real-screen.py").read_text(encoding="utf-8")
 manifest = json.loads((ROOT/"resources/levi_api/manifest.json").read_text())
 
-assert manifest["header"]["version"] == [0,7,0]
+assert manifest["header"]["version"] == [0,8,0]
 assert '#include "OptLeviShaderScreen.inc"' in fabric
 assert "drawOptLeviShadersScreen(display);" in fabric
 assert 'ofButton("##of_shaders","Shaders"' in fabric
