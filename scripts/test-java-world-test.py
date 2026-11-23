@@ -45,7 +45,7 @@ for symbol in (
     "optReadJavaShader(*selected,src,origin)",
     "optTranslateFinal(src)",
     "Experimental world postprocess disabled",
-    "compiling" if False else "Compiling experimental world postprocess pass",
+    "Compiling selected Java final pass",
 ):
     assert symbol in ui,symbol
 for symbol in (
