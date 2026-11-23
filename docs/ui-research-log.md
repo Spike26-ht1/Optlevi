@@ -47,3 +47,17 @@ Record the precise Minecraft version, screen, UI scale/aspect ratio, control ID,
 3. Does the native Preloader `isPauseMenuOpen()` state become true early enough for touch input on this screen?
 4. Can a verified Bedrock screen-controller hook replace approximate hit areas in Minecraft 26.62?
 5. What nonblocking press animation or transitional effect can be implemented without stealing Minecraft's touch state?
+
+
+## Second pause/menu visual test (owner screenshots, 2026-11-23)
+
+The game rendered the *Shaders* replacement in the large Marketplace position. The pause *Mods* button rendered between the book and help icons and was wired to native menu open, but its button face was approximately **180×96 px**, much too large for the row of roughly **74×74 px** square buttons. The menu screenshot on the main screen showed the original dark panel extending over most of the game view, with large chrome and a narrow left mod list. Even after dark-blue recoloring, this did **not** sufficiently resemble the owner's Fabric Mod Menu reference.
+
+### Changes following that evidence
+- Reduced pause Mods JSON-UI dimensions to `size: [22,24]`, panel `[24,26]`, using a short `M` label rather than `Mods`. Exact pixel sizing still needs checking in Minecraft, because Bedrock applies GUI scale.
+- Adjusted pause-only native touch hit region to `x=0.197–0.250` and `y=0.794–0.938` relative to the Android view, avoiding the help control.
+- The native bridge now returns input to Minecraft for touch-down and touch-up so the original Bedrock button can animate its pressed face. It opens the native OptLevi browser 95 ms after a matching release. The delay is asynchronous; no artificial overlay control is created.
+- Reworked the native ImGui view: translucent background revealing Minecraft, larger left mod-list region, flatter selected rows, softer separators, compact details and a centered Done action. The native widget theme also has flat button drawing and reduced artificial bevels.
+- The source of truth for native UI changes is `scripts/prepare-fabric-layout.py`, applied after `scripts/prepare-levi-api.py` in CI.
+
+**Next device test:** confirm 1) the pause Mods button matches the dimensions of the open-book icon, 2) a visible press state occurs *before* the native menu appears, 3) gameplay and help icon input remain unaffected, 4) the mod list/details split is readable at the device's GUI scale, and 5) the Shaders placeholder remains where Procure Complementos was.
