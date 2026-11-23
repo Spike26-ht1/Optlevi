@@ -1,6 +1,5 @@
-// OptLevi 0.9: Iris-inspired Android shaderpacks UI, real Android SAF import,
-// and an explicit GLES3 fragment-pass test bench. Full Java render-pass injection
-// into RenderDragon is NOT implemented (the preview uses a test gradient).
+// OptLevi 0.11: Android shaderpack import, GLES3 test preview, and opt-in
+// single-pass world postprocess. Full Java/Iris multi-pass rendering is not supported.
 #include "OptLeviShaderCatalog.inc"
 #include "OptLeviShaderGlesTest.inc"
 
