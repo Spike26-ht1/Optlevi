@@ -15,6 +15,7 @@ on:
       - feature/shaders-manager-android-v07
       - feature/shaders-import-materials-v08
       - feature/iris-import-gles-test-v09
+      - feature/java-final-world-test-v10
     paths:
       - "scripts/prepare-optlevi.py"
       - "scripts/prepare-levi-api.py"
@@ -28,6 +29,9 @@ on:
       - "scripts/test-bedrock-style.py"
       - "scripts/test-shaders-screen.py"
       - "scripts/prepare-iris-import.py"
+      - "scripts/prepare-java-world-test.py"
+      - "scripts/test-java-world-test.py"
+      - "src/android/ShaderWorldRuntime.*"
       - "src/android/ShaderImportBridge.*"
       - "src/ui/OptLeviShaderGlesTest.inc"
       - "scripts/prepare-optlevi-font.py"
@@ -132,7 +136,7 @@ jobs:
         run: |
           python3 - <<'PY'
           import json, zipfile, pathlib
-          p = pathlib.Path("build/OptLevi-LeviAPI-0.9.0.mcpack")
+          p = pathlib.Path("build/OptLevi-LeviAPI-0.10.0.mcpack")
           assert p.is_file()
           with zipfile.ZipFile(p) as z:
               assert "ui/start_screen.json" in z.namelist()
@@ -182,6 +186,19 @@ jobs:
           assert "nativeOnDocumentResult" in Path("ModMenuBE/android/src/ShaderImportBridge.cpp").read_text()
           assert "optTestSelectedShader" in screen
           print("Android SAF picker + JNI result hook and GLES3 shader test wired")
+          PY
+
+      - name: Install opt-in Java final-pass world GPU test
+        run: |
+          python3 scripts/prepare-java-world-test.py
+          python3 scripts/test-java-world-test.py
+          python3 - <<'PY'
+          from pathlib import Path
+          native = Path("ModMenuBE/android/src")
+          assert 'shaderworld::beforeSwap(worldW,worldH)' in (native/"EglOverlay.cpp").read_text()
+          assert 'ShaderWorldRuntime.cpp' in Path("ModMenuBE/android/CMakeLists.txt").read_text()
+          assert 'shaderworld::stop();' in (native/"Entry.cpp").read_text()
+          print("Experimental world GLSL pass installed in existing game EGL hook")
           PY
 
       - name: Check original Mods button geometry and native touch path
@@ -252,7 +269,7 @@ jobs:
           from hashlib import sha256
           import json, struct
 
-          package = Path("build/OptLevi-0.9.0-arm64-v8a.levipack")
+          package = Path("build/OptLevi-0.10.0-arm64-v8a.levipack")
           assert package.is_file(), package
           prefix = "OptLevi/resources/minecraft_resource_packs/LeviAPI/"
           original = Path("assets/optlevi-original-200.png").read_bytes()
@@ -281,16 +298,16 @@ jobs:
       - name: Upload complete OptLevi resource-integrated LeviPack
         uses: actions/upload-artifact@v4
         with:
-          name: OptLevi-0.9.0-arm64-v8a-complete
-          path: build/OptLevi-0.9.0-arm64-v8a.levipack
+          name: OptLevi-0.10.0-arm64-v8a-complete
+          path: build/OptLevi-0.10.0-arm64-v8a.levipack
           if-no-files-found: error
           retention-days: 14
 
       - name: Upload Levi API resource pack
         uses: actions/upload-artifact@v4
         with:
-          name: OptLevi-LeviAPI-0.9.0
-          path: build/OptLevi-LeviAPI-0.9.0.mcpack
+          name: OptLevi-LeviAPI-0.10.0
+          path: build/OptLevi-LeviAPI-0.10.0.mcpack
           if-no-files-found: error
           retention-days: 14
 
