@@ -5,6 +5,7 @@ on:
     branches:
       - feature/optlevi-native-menu
       - feature/levi-api-resource-ui
+      - feature/optlevi-menu-touch-bridge
     paths:
       - "scripts/prepare-optlevi.py"
       - "scripts/prepare-levi-api.py"
