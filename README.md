@@ -6,6 +6,7 @@ OptLevi is an Android-focused Bedrock enhancement project inspired by the OptiFi
 
 - `LeviLauncher-Android/` — official LeviLauncher Android source, tracked as a Git submodule.
 - `ModMenuBE/` — upstream ModMenuBE source, tracked as a Git submodule.
+- `patches/modmenube/` — OptLevi compatibility patch for the selected LeviLauncher/Preloader revision.
 - `docs/modmenu-android.md` — build and device-test instructions.
 - `.github/workflows/modmenu-android.yml` — ARM64 Android build validation.
 

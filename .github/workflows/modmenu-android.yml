@@ -6,6 +6,7 @@ on:
       - "ModMenuBE"
       - "ModMenuBE/**"
       - ".gitmodules"
+      - "patches/modmenube/**"
       - ".github/workflows/modmenu-android.yml"
       - "docs/modmenu-android.md"
   push:
@@ -16,6 +17,7 @@ on:
       - "ModMenuBE"
       - "ModMenuBE/**"
       - ".gitmodules"
+      - "patches/modmenube/**"
       - ".github/workflows/modmenu-android.yml"
       - "docs/modmenu-android.md"
   workflow_dispatch:
@@ -37,6 +39,11 @@ jobs:
 
       - name: Install pinned Android NDK
         run: sdkmanager --install "ndk;28.2.13676358"
+
+      - name: Apply OptLevi compatibility patch
+        run: |
+          git -C ModMenuBE apply --check "$GITHUB_WORKSPACE/patches/modmenube/0001-align-current-levilauncher.patch"
+          git -C ModMenuBE apply "$GITHUB_WORKSPACE/patches/modmenube/0001-align-current-levilauncher.patch"
 
       - name: Configure ARM64 build
         run: |
