@@ -22,6 +22,12 @@ constexpr float kMinX = 0.244f;
 constexpr float kMaxX = 0.326f;
 constexpr float kMinY = 0.700f;
 constexpr float kMaxY = 0.795f;
+// The second Mods button is inserted after the pause menu's open-book control.
+// These normalized bounds are experimental and will be verified on device.
+constexpr float kPauseMinX = 0.250f;
+constexpr float kPauseMaxX = 0.340f;
+constexpr float kPauseMinY = 0.806f;
+constexpr float kPauseMaxY = 0.934f;
 constexpr int kDown = 0;
 constexpr int kUp = 1;
 constexpr int kMove = 2;
@@ -31,6 +37,8 @@ constexpr int kPointerUp = 6;
 std::atomic<bool> gEnabled{false};
 bool gRegistered = false;
 std::atomic<int> gCapturedPointer{-1};
+enum class Target : int { None, Start, Pause };
+std::atomic<Target> gCapturedTarget{Target::None};
 
 bool getWindowSize(float& width, float& height) {
     JNIEnv* env = jni::env();
@@ -65,7 +73,7 @@ bool getWindowSize(float& width, float& height) {
 // Fail closed in the game HUD and pause menu, even if the user taps the same
 // position as the start screen's Mods button. For other menu pages, the
 // version-specific controller hook remains necessary for perfect gating.
-bool isStartMenuCandidate() {
+bool isScreenCandidate(Target target) {
     if (!gEnabled.load() || !state().active.load() || state().menuOpen.load())
         return false;
     JNIEnv* env = jni::env();
@@ -78,7 +86,7 @@ bool isStartMenuCandidate() {
     if (hud && pause) {
         bool hudOpen = env->CallStaticBooleanMethod(cls, hud);
         bool pauseOpen = env->CallStaticBooleanMethod(cls, pause);
-        allowed = !hudOpen && !pauseOpen;
+        allowed = target == Target::Pause ? pauseOpen : (!hudOpen && !pauseOpen);
     }
     if (auto ex = jni::takeException(env); !ex.empty()) {
         log().warn("OptLevi touch bridge: game state unavailable: {}", ex);
@@ -88,9 +96,12 @@ bool isStartMenuCandidate() {
     return allowed;
 }
 
-bool inModsButton(float x, float y) {
+bool inModsButton(Target target, float x, float y) {
     float w = 0.0f, h = 0.0f;
     if (!getWindowSize(w, h)) return false;
+    if (target == Target::Pause)
+        return x >= w * kPauseMinX && x <= w * kPauseMaxX &&
+               y >= h * kPauseMinY && y <= h * kPauseMaxY;
     return x >= w * kMinX && x <= w * kMaxX &&
            y >= h * kMinY && y <= h * kMaxY;
 }
@@ -98,11 +109,19 @@ bool inModsButton(float x, float y) {
 bool onTouch(pl::input::TouchEvent const& e) {
     if (!gEnabled.load()) {
         gCapturedPointer.store(-1);
+        gCapturedTarget.store(Target::None);
         return false;
     }
     if (e.action == kDown) {
         gCapturedPointer.store(-1);
-        if (inModsButton(e.x, e.y) && isStartMenuCandidate()) {
+        gCapturedTarget.store(Target::None);
+        Target target = Target::None;
+        if (inModsButton(Target::Pause, e.x, e.y) && isScreenCandidate(Target::Pause))
+            target = Target::Pause;
+        else if (inModsButton(Target::Start, e.x, e.y) && isScreenCandidate(Target::Start))
+            target = Target::Start;
+        if (target != Target::None) {
+            gCapturedTarget.store(target);
             gCapturedPointer.store(e.pointerId);
             return true;
         }
@@ -113,12 +132,15 @@ bool onTouch(pl::input::TouchEvent const& e) {
     if (e.action == kMove) return true;
     if (e.action == kCancel) {
         gCapturedPointer.store(-1);
+        gCapturedTarget.store(Target::None);
         return true;
     }
     if (e.action == kUp || e.action == kPointerUp) {
         gCapturedPointer.store(-1);
-        if (inModsButton(e.x, e.y) && isStartMenuCandidate()) {
-            log().info("OptLevi Mods JSON UI button tapped; opening native mod browser");
+        const Target target = gCapturedTarget.exchange(Target::None);
+        if (target != Target::None && inModsButton(target, e.x, e.y) && isScreenCandidate(target)) {
+            log().info("OptLevi UI study: {} Mods control activated; opening native browser",
+                target == Target::Pause ? "pause" : "start");
             openMenu();
         }
         return true;
@@ -140,6 +162,7 @@ void uninstall() {
     // Preloader's input API does not offer callback removal.
     gEnabled.store(false);
     gCapturedPointer.store(-1);
+    gCapturedTarget.store(Target::None);
 }
 
 } // namespace modmenu::android::gameui
