@@ -11,6 +11,8 @@ The reference is never redistributed or committed as a whole.
 """
 import argparse
 import json
+import base64
+import re
 from pathlib import Path
 from zipfile import ZipFile, ZIP_DEFLATED
 
@@ -19,6 +21,20 @@ NATIVE = ROOT / "build/optlevi-arm64-v8a/OptLevi-0.1.0-arm64-v8a.levipack"
 UI = ROOT / "build/OptLevi-LeviAPI-0.5.0.mcpack"
 OUTPUT = ROOT / "build/OptLevi-0.5.0-arm64-v8a.levipack"
 PREFIX = "OptLevi/resources/minecraft_resource_packs/LeviAPI/"
+ATLAS_HEADER = ROOT / "src/ui/OptLeviBedrockAtlas.inc"
+ATLAS_IN_PACK = "OptLevi/assets/ui/bedrock26_atlas.png"
+
+def load_embedded_atlas():
+    code = ATLAS_HEADER.read_text(encoding="utf-8")
+    match = re.search(r'kOptAtlasPngBase64\[\]\s*=\s*"([A-Za-z0-9+/=]+)"', code)
+    if not match:
+        raise ValueError("Embedded Bedrock UI PNG data missing")
+    png = base64.b64decode(match.group(1), validate=True)
+    import struct
+    if png[:8] != bytes((137, 80, 78, 71, 13, 10, 26, 10)):
+        raise ValueError("Corrupt UI atlas PNG")
+    assert struct.unpack(">II", png[16:24]) == (128, 128)
+    return png
 
 def package(native=NATIVE, resource=UI, output=OUTPUT, reference=None, high_res_icon=None):
     assert native.is_file(), native
@@ -37,7 +53,7 @@ def package(native=NATIVE, resource=UI, output=OUTPUT, reference=None, high_res_
     with ZipFile(native) as n, ZipFile(resource) as resource_zip, ZipFile(output, "w", ZIP_DEFLATED) as out:
         manifest = json.loads(n.read("OptLevi/manifest.json"))
         assert manifest["entry"] == "libOptLevi.so"
-        manifest["version"] = "0.5.0"
+        manifest["version"] = "0.6.0"
         manifest["icon"] = "icon.png"
         manifest["overwrite_folders"] = ["resources/minecraft_resource_packs"]
         # Keep actual override entries synchronized with the files stored in the ZIP.
@@ -63,6 +79,9 @@ def package(native=NATIVE, resource=UI, output=OUTPUT, reference=None, high_res_
             out.writestr(info.filename, n.read(info.filename))
         out.writestr("OptLevi/manifest.json", json.dumps(manifest, indent=2) + "\n")
         out.writestr("OptLevi/icon.png", icon)
+        # The native .so embeds this PNG for runtime GPU upload. A second
+        # copy in the pack makes the pixel assets auditable and reusable.
+        out.writestr(ATLAS_IN_PACK, load_embedded_atlas())
         if reference_font:
             out.writestr("OptLevi/resources/minecraft.ttf", reference_font)
         for info in resource_zip.infolist():
@@ -73,6 +92,8 @@ def package(native=NATIVE, resource=UI, output=OUTPUT, reference=None, high_res_
     with ZipFile(output) as z:
         names = set(z.namelist())
         assert "OptLevi/libOptLevi.so" in names
+        assert ATLAS_IN_PACK in names
+        assert z.read(ATLAS_IN_PACK) == load_embedded_atlas()
         assert PREFIX + "manifest.json" in names
         assert PREFIX + "ui/start_screen.json" in names
         actual = json.loads(z.read("OptLevi/manifest.json"))
@@ -81,7 +102,7 @@ def package(native=NATIVE, resource=UI, output=OUTPUT, reference=None, high_res_
         assert z.read(PREFIX + "pack_icon.png") == z.read("OptLevi/icon.png")
     print("Validated OptLevi package:", output)
     print("Embedded icon:", f"{w}x{h}")
-    print("Native UI event bridge still pending: this verifies packaging only")
+    print("Embedded the actual Bedrock texture atlas for the native ImGui GPU renderer")
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
