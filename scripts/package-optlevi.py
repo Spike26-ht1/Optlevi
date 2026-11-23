@@ -18,8 +18,8 @@ from zipfile import ZipFile, ZIP_DEFLATED
 
 ROOT = Path(__file__).resolve().parents[1]
 NATIVE = ROOT / "build/optlevi-arm64-v8a/OptLevi-0.1.0-arm64-v8a.levipack"
-UI = ROOT / "build/OptLevi-LeviAPI-0.5.0.mcpack"
-OUTPUT = ROOT / "build/OptLevi-0.5.0-arm64-v8a.levipack"
+UI = ROOT / "build/OptLevi-LeviAPI-0.6.0.mcpack"
+OUTPUT = ROOT / "build/OptLevi-0.6.0-arm64-v8a.levipack"
 PREFIX = "OptLevi/resources/minecraft_resource_packs/LeviAPI/"
 ATLAS_HEADER = ROOT / "src/ui/OptLeviBedrockAtlas.inc"
 ATLAS_IN_PACK = "OptLevi/assets/ui/bedrock26_atlas.png"
