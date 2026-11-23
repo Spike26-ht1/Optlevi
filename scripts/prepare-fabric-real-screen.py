@@ -34,11 +34,11 @@ def main():
         shutil.copy2(original,DEST.parent/name)
     src=MENU.read_text(encoding="utf-8")
     src=once(src, "#include <imgui_internal.h>",
-        "#include <imgui_internal.h>\\n"
-        "#include <EGL/egl.h>\\n"
-        "#include <GLES3/gl3.h>\\n"
-        "#include <stb_image.h>\\n"
-        "#include <cstdint>\\n"
+        "#include <imgui_internal.h>\n"
+        "#include <EGL/egl.h>\n"
+        "#include <GLES3/gl3.h>\n"
+        "#include <stb_image.h>\n"
+        "#include <cstdint>\n"
         "#include <vector>")
 
     # Include into the same C++ namespace/translation unit to reuse registry
