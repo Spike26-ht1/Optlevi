@@ -16,8 +16,8 @@ from zipfile import ZipFile, ZIP_DEFLATED
 
 ROOT = Path(__file__).resolve().parents[1]
 NATIVE = ROOT / "build/optlevi-arm64-v8a/OptLevi-0.1.0-arm64-v8a.levipack"
-UI = ROOT / "build/OptLevi-LeviAPI-0.3.0.mcpack"
-OUTPUT = ROOT / "build/OptLevi-0.3.0-arm64-v8a.levipack"
+UI = ROOT / "build/OptLevi-LeviAPI-0.4.0.mcpack"
+OUTPUT = ROOT / "build/OptLevi-0.4.0-arm64-v8a.levipack"
 PREFIX = "OptLevi/resources/minecraft_resource_packs/LeviAPI/"
 
 def package(native=NATIVE, resource=UI, output=OUTPUT, reference=None, high_res_icon=None):
@@ -37,7 +37,7 @@ def package(native=NATIVE, resource=UI, output=OUTPUT, reference=None, high_res_
     with ZipFile(native) as n, ZipFile(resource) as resource_zip, ZipFile(output, "w", ZIP_DEFLATED) as out:
         manifest = json.loads(n.read("OptLevi/manifest.json"))
         assert manifest["entry"] == "libOptLevi.so"
-        manifest["version"] = "0.3.0"
+        manifest["version"] = "0.4.0"
         manifest["icon"] = "icon.png"
         manifest["overwrite_folders"] = ["resources/minecraft_resource_packs"]
         # Keep actual override entries synchronized with the files stored in the ZIP.
