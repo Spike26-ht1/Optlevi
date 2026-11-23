@@ -20,7 +20,7 @@ for contract in (
     "paths::selfDir()", ' / "shaderpacks"',
     "std::filesystem::directory_iterator", "create_directories",
     'ext == ".zip"', 'ext == ".mcpack"',
-    "gOptCustomBuffersFound", "gOptShadersVisible=false",
+    "gOptCustomBuffersFound", "gOptShadersVisible = false;",
     "Backend: Android OpenGL ES / RenderDragon",
     "Java Iris / Arke backend: not available on Android",
     "Detection only - no shader was loaded or activated.",
