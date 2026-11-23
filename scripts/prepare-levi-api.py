@@ -90,6 +90,12 @@ void resetButtonLayout() { android::entry::resetButtonLayout(); }
         ("float leftW = std::max(s(320), total * 0.42f);",
          "float leftW = std::clamp(total * 0.38f, std::min(s(220), total * 0.30f), total * 0.50f);"),
         ("col::rgb(0x2A2A2B), false", "col::rgb(0x1A1C21), false"),
+        ("ore::panel(dl, min, max, selected ? col::PanelLight : (hovered ? col::rgb(0x3B3C3E) : col::Panel), true);",
+         "ore::panel(dl, min, max, selected ? col::PanelLight : (hovered ? col::rgb(0x303543) : col::Panel), false);"),
+        ("if (selected) dl->AddRect(min, max, col::Selection, 0, 0, s(2));",
+         "if (selected) dl->AddRectFilled(min, {min.x + s(4), max.y}, col::Selection);"),
+        ("ore::panel(dl, min, {min.x + width, min.y + height}, col::PanelLight, true);",
+         "ore::panel(dl, min, {min.x + width, min.y + height}, col::PanelLight, false);"),
     ]:
         replace_once(menu, old, new)
     print("Removed launcher floating button and applied OptLevi Fabric-like menu styling")
