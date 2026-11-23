@@ -6,6 +6,7 @@ on:
       - feature/optlevi-native-menu
       - feature/levi-api-resource-ui
       - feature/optlevi-menu-touch-bridge
+      - feature/pause-ui-fabric-menu
     paths:
       - "scripts/prepare-optlevi.py"
       - "scripts/prepare-levi-api.py"
@@ -16,6 +17,8 @@ on:
       - "scripts/prepare-optlevi-touch.py"
       - "src/android/**"
       - "scripts/test-optlevi-touch.py"
+      - "scripts/test-optlevi-pause-ui.py"
+      - "docs/ui-research-log.md"
       - ".github/workflows/optlevi-android.yml"
       - "patches/modmenube/**"
   pull_request:
@@ -71,6 +74,7 @@ jobs:
           assert p.is_file()
           with zipfile.ZipFile(p) as z:
               assert "ui/start_screen.json" in z.namelist()
+              assert "ui/pause_screen.json" in z.namelist()
               manifest = json.loads(z.read("manifest.json"))
               assert manifest["modules"][0]["type"] == "resources"
               button = json.loads(z.read("ui/start_screen.json"))
@@ -103,6 +107,9 @@ jobs:
 
       - name: Check original Mods button geometry and native touch path
         run: python3 scripts/test-optlevi-touch.py
+
+      - name: Validate pause Mods, Shaders and UI study contract
+        run: python3 scripts/test-optlevi-pause-ui.py
 
       - name: Configure ARM64
         run: |
@@ -155,7 +162,7 @@ jobs:
               assert manifest["entry"] == "libOptLevi.so"
               assert manifest["overwrite_folders"] == ["resources/minecraft_resource_packs"]
               assert manifest["icon"] == "icon.png"
-              for path in ["manifest.json", "ui/start_screen.json", "ui/_ui_defs.json", "pack_icon.png"]:
+              for path in ["manifest.json", "ui/start_screen.json", "ui/pause_screen.json", "ui/_ui_defs.json", "pack_icon.png"]:
                   assert prefix + path in z.namelist(), path
               assert z.read("OptLevi/icon.png") == original
               assert z.read(prefix + "pack_icon.png") == original

@@ -13,7 +13,7 @@ OUTPUT = ROOT / "build" / "OptLevi-LeviAPI-0.2.0.mcpack"
 
 def build(output=OUTPUT, icon=DEFAULT_ICON):
     output.parent.mkdir(parents=True, exist_ok=True)
-    for f in ("manifest.json", "ui/_ui_defs.json", "ui/start_screen.json", "texts/languages.json"):
+    for f in ("manifest.json", "ui/_ui_defs.json", "ui/start_screen.json", "ui/pause_screen.json", "texts/languages.json"):
         json.loads((SOURCE / f).read_text(encoding="utf-8"))
     ui = json.loads((SOURCE / "ui/start_screen.json").read_text(encoding="utf-8"))
     button = ui["optlevi_menu_button@common_buttons.light_text_form_fitting_button"]

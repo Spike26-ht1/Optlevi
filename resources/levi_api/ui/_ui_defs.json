@@ -1,3 +1,6 @@
 {
-  "ui_defs": ["ui/start_screen.json"]
+  "ui_defs": [
+    "ui/start_screen.json",
+    "ui/pause_screen.json"
+  ]
 }
