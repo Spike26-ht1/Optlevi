@@ -10,6 +10,17 @@ static ImU32 ofc(unsigned rgb, unsigned alpha=255) {
     return col::rgb(rgb, alpha);
 }
 
+// Bedrock UI palette sampled from the supplied 26.60 UI reference archive:
+ // NormalButtonStroke center ~#C6C6C6, black frame, white upper bevel;
+ // ScrollHandle center ~#C6C6C6, edit_box_indent_hover ~#5E5E5E.
+ // Use original ImGui primitives instead of copying bundled game PNG assets.
+static constexpr unsigned kBedrockButtonFace = 0xC6C6C6;
+static constexpr unsigned kBedrockButtonHover = 0xE0E0E0;
+static constexpr unsigned kBedrockButtonPressed = 0x919191;
+static constexpr unsigned kBedrockButtonDisabled = 0x8B8B8B;
+static constexpr unsigned kBedrockPanel = 0x303137;
+static constexpr unsigned kBedrockPanelDark = 0x202126;
+
 static float ofu(ImVec2 display) {
     // Fabric reference canvas is 1096x609. Keep physical sizes reasonable on
     // Android regardless of the launcher's ImGui uiScale.
@@ -39,11 +50,11 @@ static bool ofButton(char const* id, char const* label, ImVec2 pos,
     ImDrawList* dl=ImGui::GetWindowDrawList();
     float edge=std::max(1.0f, std::round(unit));
     ImVec2 max{pos.x+dims.x,pos.y+dims.y};
-    dl->AddRectFilled(pos,max,ofc(0x060606,244));
+    dl->AddRectFilled(pos,max,ofc(0x101010,255));
     ImVec2 imin{pos.x+edge*2,pos.y+edge*2};
     ImVec2 imax{max.x-edge*2,max.y-edge*2};
-    ImU32 surface=!enabled?ofc(0x717171):held?ofc(0x7E7E7E)
-                 :hovered?ofc(0xE1E1E1):ofc(0xC7C7C7);
+    ImU32 surface=!enabled?ofc(kBedrockButtonDisabled):held?ofc(kBedrockButtonPressed)
+                 :hovered?ofc(kBedrockButtonHover):ofc(kBedrockButtonFace);
     dl->AddRectFilled(imin,imax,surface);
     dl->AddRectFilled(imin,{imax.x,imin.y+edge},
                       held?ofc(0x404040):ofc(0xF8F8F8));
@@ -78,12 +89,12 @@ static void ofModEntry(ModInfo const& mod, ImVec2 pos,
     ImVec2 p{pos.x+inset,pos.y}, m{pos.x+width,pos.y+height};
     // The Fabric reference rows float over a translucent dark list.
     if(selected){
-        dl->AddRectFilled(p,m,ofc(0x253348,234));
+        dl->AddRectFilled(p,m,ofc(0x44546C,255));
         dl->AddRect(p,m,ofc(0xEEEEEE),0,0,std::max(1.0f,unit));
     }else if(hovered){
-        dl->AddRectFilled(p,m,ofc(0x324254,195));
+        dl->AddRectFilled(p,m,ofc(0x3D454F,255));
     }else{
-        dl->AddRectFilled(p,m,ofc(0x101C22,94));
+        dl->AddRectFilled(p,m,ofc(0x282B32,255));
     }
     float iconSize=46.0f*unit;
     ImVec2 iconPos{p.x+5.0f*unit,p.y+(height-iconSize)*0.5f};
@@ -178,7 +189,7 @@ static void ofDetailPane(ModInfo const& mod, ImVec2 start,
 
     float contentY=start.y+110.0f*u;
     dl->AddRectFilled({start.x+3.0f*u,contentY},{end.x,end.y},
-                      ofc(0x091014,121));
+                      ofc(kBedrockPanelDark,255));
     ImGui::SetCursorScreenPos({start.x+8.0f*u,contentY+8.0f*u});
     ImGui::BeginChild("##of_details_scroll",{width-16.0f*u,
                      std::max(20.0f,end.y-contentY-14.0f*u)},
@@ -253,12 +264,24 @@ static void drawOptLeviFabricScreen(ImVec2 display) {
     float u=ofu(display);
     ImDrawList* dl=ImGui::GetWindowDrawList();
     // Minecraft-like overlay rather than AFAlimru's large framed dialog.
-    dl->AddRectFilled({0,0},display,ofc(0x101216,116));
-    float xL=18.0f*u, xR=display.x*0.515f;
-    float leftEnd=display.x*0.484f, rightEnd=display.x-18.0f*u;
+    dl->AddRectFilled({0,0},display,ofc(0x101116,215));
+    // Minecraft's menu texture reference uses a crisp panel outline, not
+    // transparent cards exposing game buttons behind their text.
+    dl->AddRectFilled({8*u,8*u},{display.x-8*u,display.y-9*u},
+                      ofc(kBedrockPanel,251));
+    dl->AddRect({8*u,8*u},{display.x-8*u,display.y-9*u},
+                ofc(0x101010,255),0,0,std::max(1.0f,u));
+    float xL=20.0f*u, xR=display.x*0.515f;
+    float leftEnd=display.x*0.484f, rightEnd=display.x-20.0f*u;
     float leftW=leftEnd-xL, rightW=rightEnd-xR;
     float top=12.0f*u;
-    float bottom=display.y-58.0f*u;
+    float bottom=display.y-57.0f*u;
+    // Scoped scrollbar colors mimic the supplied Bedrock scroll track.
+    ImGui::PushStyleColor(ImGuiCol_ScrollbarBg,ImGui::ColorConvertU32ToFloat4(ofc(0x151515,255)));
+    ImGui::PushStyleColor(ImGuiCol_ScrollbarGrab,ImGui::ColorConvertU32ToFloat4(ofc(0xC6C6C6,255)));
+    ImGui::PushStyleColor(ImGuiCol_ScrollbarGrabHovered,ImGui::ColorConvertU32ToFloat4(ofc(0xE2E2E2,255)));
+    ImGui::PushStyleColor(ImGuiCol_ChildBg,ImGui::ColorConvertU32ToFloat4(ofc(0x25272C,255)));
+    ImGui::PushStyleVar(ImGuiStyleVar_ScrollbarSize,std::max(9.0f,10.0f*u));
 
     // Distinct title centered above the list, as in Fabric ModsScreen.
     char const* heading="Mods";
@@ -266,12 +289,16 @@ static void drawOptLeviFabricScreen(ImVec2 display) {
     ImFont* title=fonts::bold();
     float h=title->FontSize;
     float tw=title->CalcTextSizeA(h,FLT_MAX,0,heading).x;
-    dl->AddText(title,h,{xL+leftW*0.5f-tw*0.5f,top},ofc(0xFFFFFF),heading);
+    // A Bedrock-like slim gray title strip within the Fabric two-pane layout.
+    dl->AddRectFilled({xL,top-2*u},{leftEnd,top+24*u},ofc(0xC6C6C6,255));
+    dl->AddRectFilled({xL,top-2*u},{leftEnd,top},ofc(0xFFFFFF,255));
+    dl->AddRectFilled({xL,top+23*u},{leftEnd,top+24*u},ofc(0x484848,255));
+    dl->AddText(title,h,{xL+leftW*0.5f-tw*0.5f,top},ofc(0x222222),heading);
 
     float searchY=39.0f*u, searchH=33.0f*u;
     float filterW=33.0f*u, searchW=leftW-filterW-7.0f*u;
     ImGui::SetCursorScreenPos({xL,searchY});
-    ImGui::PushStyleColor(ImGuiCol_FrameBg,ImGui::ColorConvertU32ToFloat4(ofc(0x050505,240)));
+    ImGui::PushStyleColor(ImGuiCol_FrameBg,ImGui::ColorConvertU32ToFloat4(ofc(0x080808,255)));
     ImGui::PushStyleColor(ImGuiCol_Border,ImGui::ColorConvertU32ToFloat4(ofc(0xCCCCCC)));
     ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize,std::max(1.0f,u));
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,ImVec2{5.0f*u,7.0f*u});
@@ -322,7 +349,8 @@ static void drawOptLeviFabricScreen(ImVec2 display) {
     ofText(dl,fonts::body(),{xL,88.0f*u},count,ofc(0xFFFFFF));
     float listY=111.0f*u;
     // Fabric list has its own scroll and a dark but see-through background.
-    dl->AddRectFilled({xL,listY},{leftEnd,bottom},ofc(0x0D131A,171));
+    dl->AddRectFilled({xL,listY},{leftEnd,bottom},ofc(kBedrockPanelDark,255));
+    dl->AddRect({xL,listY},{leftEnd,bottom},ofc(0x101010,255),0,0,std::max(1.0f,u));
     ImGui::SetCursorScreenPos({xL,listY});
     ImGui::BeginChild("##of_scroll_mods",{leftW,bottom-listY},ImGuiChildFlags_None);
     float entryHeight=59.0f*u;
@@ -341,7 +369,8 @@ static void drawOptLeviFabricScreen(ImVec2 display) {
 
     // Details panel: header + two buttons + scrolling description/credits.
     // No white AFAlimru shell, huge Config/Enable strip or oversized footer.
-    dl->AddRectFilled({xR,68.0f*u},{rightEnd,bottom},ofc(0x10171D,176));
+    dl->AddRectFilled({xR,68.0f*u},{rightEnd,bottom},ofc(kBedrockPanelDark,255));
+    dl->AddRect({xR,68.0f*u},{rightEnd,bottom},ofc(0x101010,255),0,0,std::max(1.0f,u));
     auto selected=ModRegistry::instance().find(gState.selected);
     if(!selected&&!mods.empty()){
         selected=mods.front();
@@ -363,4 +392,6 @@ static void drawOptLeviFabricScreen(ImVec2 display) {
     if(!gState.toast.empty() && ImGui::GetTime()<gState.toastUntil)
         ofText(dl,fonts::body(),{xL,display.y-57.0f*u},
                gState.toast.c_str(),ofc(0xFFFF99));
+    ImGui::PopStyleVar();
+    ImGui::PopStyleColor(4);
 }

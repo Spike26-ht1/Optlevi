@@ -2,11 +2,11 @@
 
 OptLevi brings a **Fabric Mod Menu-inspired native mod browser** to Minecraft Bedrock on Android, with Minecraft-style **Mods** buttons rendered by a minimal Levi API resource pack.
 
-## OptLevi 0.4.0 — independent Fabric-style UI test
+## OptLevi 0.5.0 — Fabric layout, Bedrock 26.60 visual styling
 
 The project owner has confirmed the **main-menu Mods button opens OptLevi in Minecraft Bedrock 26.62**. The pause menu now has an additional compact Mods button beside the book and a Shaders placeholder in the former Marketplace slot. A native Android Preloader touch bridge handles menu opening without registering a floating launcher button.
 
-Version 0.4.0 replaces the old ModMenuBE **View::List** drawing path with an independent Fabric-style renderer, informed by the owner's supplied **Fabric Mod Menu 21.0.1** JAR:
+Version 0.5.0 builds on the independent renderer from 0.4.0, which replaced the old ModMenuBE **View::List** drawing path with an independent Fabric-style renderer, informed by the owner's supplied **Fabric Mod Menu 21.0.1** JAR:
 
 - Balanced left mod list and right detail panes
 - Search, icon-only filter, library visibility, sorting and visible mod count
@@ -33,8 +33,9 @@ The original project icon is preserved at 200×200. Shaders remains a placeholde
 - `src/ui/OptLeviFabricScreen.inc` — **new independent full-screen Mods frontend**, used instead of the old native list renderer
 - `scripts/prepare-fabric-real-screen.py` — inject independent frontend into the native ModMenu build
 - `scripts/prepare-optlevi-touch.py` — Android native menu touch routing
-- `scripts/build-resource-pack.py` — standalone `OptLevi-LeviAPI-0.4.0.mcpack`
-- `scripts/package-optlevi.py` — combined `OptLevi-0.4.0-arm64-v8a.levipack`
+- `scripts/build-resource-pack.py` — standalone `OptLevi-LeviAPI-0.5.0.mcpack`
+- `scripts/package-optlevi.py` — combined `OptLevi-0.5.0-arm64-v8a.levipack`
+- `docs/bedrock-26.60-ui-study.md` — sampled UI texture reference and design decisions
 - `docs/ui-research-log.md`, `docs/fabric-modmenu-21-reference.md`, and `docs/fabric-fullscreen-design.md` — UI study notes
 - `.github/workflows/optlevi-android.yml` — ARM64 build and resource validation
 
