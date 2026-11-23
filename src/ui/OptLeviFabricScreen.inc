@@ -273,7 +273,13 @@ static void ofDetailPane(ModInfo const& mod, ImVec2 start,
                         {end.x-4*u,end.y-6*u},detailsScroll,detailsMax,u);
 }
 
+#include "OptLeviShaderScreen.inc"
+
 static void drawOptLeviFabricScreen(ImVec2 display) {
+    if (gOptShadersVisible) {
+        drawOptLeviShadersScreen(display);
+        return;
+    }
     float u=ofu(display);
     ImDrawList* dl=ImGui::GetWindowDrawList();
     // Minecraft-like overlay rather than AFAlimru's large framed dialog.
@@ -292,6 +298,15 @@ static void drawOptLeviFabricScreen(ImVec2 display) {
     float leftW=leftEnd-xL, rightW=rightEnd-xR;
     float top=12.0f*u;
     float bottom=display.y-57.0f*u;
+    // Opens the independently rendered Iris-inspired shaderpack browser.
+    // The existing Mods controls and native registry remain unchanged.
+    if (ofButton("##of_shaders","Shaders",
+                 {xR+10.0f*u,top},{185.0f*u,36.0f*u},u)) {
+        gOptShadersVisible=true;
+        ofScanShaderpacks();
+        drawOptLeviShadersScreen(display);
+        return;
+    }
     // Scoped scrollbar colors mimic the supplied Bedrock scroll track.
     ImGui::PushStyleColor(ImGuiCol_ScrollbarBg,ImGui::ColorConvertU32ToFloat4(ofc(0x151515,255)));
     ImGui::PushStyleColor(ImGuiCol_ScrollbarGrab,ImGui::ColorConvertU32ToFloat4(ofc(0xC6C6C6,255)));
