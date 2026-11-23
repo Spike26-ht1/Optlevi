@@ -3,6 +3,7 @@ name: ModMenuBE Android ARM64
 on:
   pull_request:
     paths:
+      - "ModMenuBE"
       - "ModMenuBE/**"
       - ".gitmodules"
       - ".github/workflows/modmenu-android.yml"
@@ -10,7 +11,9 @@ on:
   push:
     branches:
       - main
+      - feature/modmenu-android
     paths:
+      - "ModMenuBE"
       - "ModMenuBE/**"
       - ".gitmodules"
       - ".github/workflows/modmenu-android.yml"
@@ -38,8 +41,8 @@ jobs:
       - name: Configure ARM64 build
         run: |
           cmake -S ModMenuBE/android -B build/modmenu-arm64-v8a -G Ninja \
-            -DCMAKE_TOOLCHAIN_FILE="$ANDROID_SDK_ROOT/ndk/28.2.13676358/build/cmake/android.toolchain.cmake" \
-            -DANDROID_NDK="$ANDROID_SDK_ROOT/ndk/28.2.13676358" \
+            -DCMAKE_TOOLCHAIN_FILE="$ANDROID_HOME/ndk/28.2.13676358/build/cmake/android.toolchain.cmake" \
+            -DANDROID_NDK="$ANDROID_HOME/ndk/28.2.13676358" \
             -DANDROID_ABI=arm64-v8a \
             -DANDROID_PLATFORM=android-28 \
             -DANDROID_STL=c++_shared \
