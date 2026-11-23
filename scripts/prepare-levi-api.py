@@ -100,6 +100,12 @@ void resetButtonLayout() { android::entry::resetButtonLayout(); }
         ("float  iconSize = s(46);", "float  iconSize = s(42);"),
         ("float headerH = s(60), footerH = s(58), pad = s(14);",
          "float headerH = s(56), footerH = s(52), pad = s(12);"),
+        ('ore::searchField("##search", gState.search, sizeof(gState.search), tr("search"), leftW - s(4));',
+         'ore::searchField("##search", gState.search, sizeof(gState.search), tr("search"), leftW - s(4));\\n    ImGui::Spacing();'),
+        ('    ImGui::BeginChild("list", {0, 0}, ImGuiChildFlags_None);',
+         '    ImGui::TextDisabled("Mods: %d", static_cast<int>(mods.size()));\\n    ImGui::Separator();\\n    ImGui::BeginChild("list", {0, 0}, ImGuiChildFlags_None);'),
+        ('    if (gState.view == View::List) {\\n#ifdef _WIN32',
+         '    if (gState.view == View::List) {\\n        if (placeRight("##done_mods", tr("done"), ore::Variant::Primary, false)) requestClose("Done");\\n#ifdef _WIN32'),
     ]:
         replace_once(menu, old, new)
     print("Removed launcher floating button and applied OptLevi Fabric-like menu styling")
