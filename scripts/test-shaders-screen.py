@@ -29,7 +29,7 @@ assert "shaderimport::install();" in installer
 assert "shaderimport::uninstall();" in installer
 assert "src/ShaderImportBridge.cpp" in installer
 assert "GLESv3 z" in installer
-assert "onDocumentResult" in android
+assert "nativeOnDocumentResult" in android
 assert "openPreloaderDocumentPicker" in android
 assert "RegisterNatives" in android
 assert "paths::selfDir()" in android
