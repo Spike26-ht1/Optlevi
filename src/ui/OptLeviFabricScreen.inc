@@ -292,6 +292,12 @@ static void ofDetailPane(ModInfo const& mod, ImVec2 start,
 #include "OptLeviShaderScreen.inc"
 
 static void drawOptLeviFabricScreen(ImVec2 display) {
+#ifdef __ANDROID__
+    if(modmenu::android::state().shaderOpenRequested.exchange(false)) {
+        gOptShadersVisible=true;
+        gOptShadersScanned=false;
+    }
+#endif
     if (gOptShadersVisible) {
         drawOptLeviShadersScreen(display);
         return;
