@@ -4,13 +4,20 @@ on:
   push:
     branches:
       - feature/optlevi-native-menu
+      - feature/levi-api-resource-ui
     paths:
       - "scripts/prepare-optlevi.py"
+      - "scripts/prepare-levi-api.py"
+      - "scripts/build-resource-pack.py"
+      - "resources/levi_api/**"
       - ".github/workflows/optlevi-android.yml"
       - "patches/modmenube/**"
   pull_request:
     paths:
       - "scripts/prepare-optlevi.py"
+      - "scripts/prepare-levi-api.py"
+      - "scripts/build-resource-pack.py"
+      - "resources/levi_api/**"
       - ".github/workflows/optlevi-android.yml"
       - "patches/modmenube/**"
   workflow_dispatch:
@@ -40,8 +47,34 @@ jobs:
           git -C ModMenuBE apply --check "$GITHUB_WORKSPACE/patches/modmenube/0001-align-current-levilauncher.patch"
           git -C ModMenuBE apply "$GITHUB_WORKSPACE/patches/modmenube/0001-align-current-levilauncher.patch"
 
-      - name: Apply OptLevi branding and native menu button
+      - name: Apply OptLevi native mod branding
         run: python3 scripts/prepare-optlevi.py
+
+      - name: Replace floating launcher button with Levi API resource UI
+        run: |
+          python3 scripts/prepare-levi-api.py
+          python3 scripts/build-resource-pack.py
+
+      - name: Verify resource UI event contract
+        run: |
+          python3 - <<'PY'
+          import json, zipfile, pathlib
+          p = pathlib.Path("build/OptLevi-LeviAPI-0.2.0.mcpack")
+          assert p.is_file()
+          with zipfile.ZipFile(p) as z:
+              assert "ui/start_screen.json" in z.namelist()
+              manifest = json.loads(z.read("manifest.json"))
+              assert manifest["modules"][0]["type"] == "resources"
+              button = json.loads(z.read("ui/start_screen.json"))
+              key = "optlevi_menu_button@common_buttons.light_text_form_fitting_button"
+              assert button[key]["$pressed_button_name"] == "button.optlevi_open_menu"
+              assert button["start_screen_content"]["modifications"][0]["control_name"] == "skin_panel"
+              assert "pack_icon.png" in z.namelist()
+          entry = pathlib.Path("ModMenuBE/android/src/Entry.cpp").read_text()
+          assert "ButtonBuilder" not in entry, "Old native floating button still present"
+          assert "registerModule" in entry
+          print("Static JSON UI contract and floating-button removal verified")
+          PY
 
       - name: Configure ARM64
         run: |
@@ -72,6 +105,14 @@ jobs:
           print("OptLevi archive structure and manifest verified")
           PY
           readelf -h build/optlevi-arm64-v8a/package/OptLevi/libOptLevi.so | grep -q AArch64
+
+      - name: Upload Levi API resource pack
+        uses: actions/upload-artifact@v4
+        with:
+          name: OptLevi-LeviAPI-0.2.0
+          path: build/OptLevi-LeviAPI-0.2.0.mcpack
+          if-no-files-found: error
+          retention-days: 14
 
       - name: Upload OptLevi test pack
         uses: actions/upload-artifact@v4
