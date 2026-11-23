@@ -39,6 +39,8 @@ static void ofText(ImDrawList* dl, ImFont* font, ImVec2 pos,
 
 // Native Minecraft/ModMenu-like pixel button. Deliberately not OreTheme's
 // 3-D themed button: this is an independent rendering path.
+#include "OptLeviBedrockTexture.inc"
+
 static bool ofButton(char const* id, char const* label, ImVec2 pos,
                      ImVec2 dims, float unit, bool enabled=true) {
     ImGui::SetCursorScreenPos(pos);
@@ -50,17 +52,19 @@ static bool ofButton(char const* id, char const* label, ImVec2 pos,
     ImDrawList* dl=ImGui::GetWindowDrawList();
     float edge=std::max(1.0f, std::round(unit));
     ImVec2 max{pos.x+dims.x,pos.y+dims.y};
-    dl->AddRectFilled(pos,max,ofc(0x101010,255));
     ImVec2 imin{pos.x+edge*2,pos.y+edge*2};
     ImVec2 imax{max.x-edge*2,max.y-edge*2};
-    ImU32 surface=!enabled?ofc(kBedrockButtonDisabled):held?ofc(kBedrockButtonPressed)
-                 :hovered?ofc(kBedrockButtonHover):ofc(kBedrockButtonFace);
-    dl->AddRectFilled(imin,imax,surface);
-    dl->AddRectFilled(imin,{imax.x,imin.y+edge},
-                      held?ofc(0x404040):ofc(0xF8F8F8));
-    dl->AddRectFilled(imin,{imin.x+edge,imax.y},
-                      held?ofc(0x404040):ofc(0xF8F8F8));
-    dl->AddRectFilled({imin.x,imax.y-edge},{imax.x,imax.y},ofc(0x535353));
+    // The actual UI source PNG is stretched using a nine-slice GPU image,
+    // not approximated with a rectangle-only button.
+    OptSprite sprite=!enabled?OptSprite::ButtonDisabled:
+            held?(hovered?OptSprite::ButtonHoverPressed:OptSprite::ButtonPressed):
+            hovered?OptSprite::ButtonHover:OptSprite::ButtonNormal;
+    if(!ofNineSprite(dl,sprite,pos,max,unit)) {
+        dl->AddRectFilled(pos,max,ofc(0x101010,255));
+        dl->AddRectFilled(imin,imax,
+            !enabled?ofc(kBedrockButtonDisabled):held?ofc(kBedrockButtonPressed):
+            hovered?ofc(kBedrockButtonHover):ofc(kBedrockButtonFace));
+    }
     if (label && *label) {
         ImFont* font=fonts::body();
         fonts::note(label);
@@ -87,14 +91,16 @@ static void ofModEntry(ModInfo const& mod, ImVec2 pos,
     ImDrawList* dl=ImGui::GetWindowDrawList();
     float inset=child?14.0f*unit:0.0f;
     ImVec2 p{pos.x+inset,pos.y}, m{pos.x+width,pos.y+height};
-    // The Fabric reference rows float over a translucent dark list.
+    // Real nine-sliced Bedrock inset textures back every selectable row.
+    if(!ofNineSprite(dl,OptSprite::PanelDark,p,m,unit,
+                     IM_COL32(125,135,150,255)))
+        dl->AddRectFilled(p,m,ofc(0x282B32,255));
     if(selected){
-        dl->AddRectFilled(p,m,ofc(0x44546C,255));
+        dl->AddRectFilled(p,m,ofc(0x435679,140));
+        ofNineSprite(dl,OptSprite::PanelOutline,p,m,unit);
         dl->AddRect(p,m,ofc(0xEEEEEE),0,0,std::max(1.0f,unit));
     }else if(hovered){
-        dl->AddRectFilled(p,m,ofc(0x3D454F,255));
-    }else{
-        dl->AddRectFilled(p,m,ofc(0x282B32,255));
+        dl->AddRectFilled(p,m,ofc(0x78889B,55));
     }
     float iconSize=46.0f*unit;
     ImVec2 iconPos{p.x+5.0f*unit,p.y+(height-iconSize)*0.5f};
@@ -190,6 +196,9 @@ static void ofDetailPane(ModInfo const& mod, ImVec2 start,
     float contentY=start.y+110.0f*u;
     dl->AddRectFilled({start.x+3.0f*u,contentY},{end.x,end.y},
                       ofc(kBedrockPanelDark,255));
+    ofNineSprite(dl,OptSprite::PanelDark,
+                 {start.x+3.0f*u,contentY},{end.x,end.y},u,
+                 IM_COL32(112,121,136,255));
     ImGui::SetCursorScreenPos({start.x+8.0f*u,contentY+8.0f*u});
     ImGui::BeginChild("##of_details_scroll",{width-16.0f*u,
                      std::max(20.0f,end.y-contentY-14.0f*u)},
@@ -257,7 +266,11 @@ static void ofDetailPane(ModInfo const& mod, ImVec2 start,
         }
     }
     drawReadme(mod);
+    float detailsScroll=ImGui::GetScrollY();
+    float detailsMax=ImGui::GetScrollMaxY();
     ImGui::EndChild();
+    ofTexturedScrollbar(dl,{end.x-12*u,contentY+3*u},
+                        {end.x-4*u,end.y-6*u},detailsScroll,detailsMax,u);
 }
 
 static void drawOptLeviFabricScreen(ImVec2 display) {
@@ -269,6 +282,9 @@ static void drawOptLeviFabricScreen(ImVec2 display) {
     // transparent cards exposing game buttons behind their text.
     dl->AddRectFilled({8*u,8*u},{display.x-8*u,display.y-9*u},
                       ofc(kBedrockPanel,251));
+    ofNineSprite(dl,OptSprite::PanelDark,
+                 {8*u,8*u},{display.x-8*u,display.y-9*u},u,
+                 IM_COL32(135,140,148,255));
     dl->AddRect({8*u,8*u},{display.x-8*u,display.y-9*u},
                 ofc(0x101010,255),0,0,std::max(1.0f,u));
     float xL=20.0f*u, xR=display.x*0.515f;
@@ -291,6 +307,8 @@ static void drawOptLeviFabricScreen(ImVec2 display) {
     float tw=title->CalcTextSizeA(h,FLT_MAX,0,heading).x;
     // A Bedrock-like slim gray title strip within the Fabric two-pane layout.
     dl->AddRectFilled({xL,top-2*u},{leftEnd,top+24*u},ofc(0xC6C6C6,255));
+    ofNineSprite(dl,OptSprite::PanelLight,
+                 {xL,top-2*u},{leftEnd,top+24*u},u);
     dl->AddRectFilled({xL,top-2*u},{leftEnd,top},ofc(0xFFFFFF,255));
     dl->AddRectFilled({xL,top+23*u},{leftEnd,top+24*u},ofc(0x484848,255));
     dl->AddText(title,h,{xL+leftW*0.5f-tw*0.5f,top},ofc(0x222222),heading);
@@ -298,8 +316,10 @@ static void drawOptLeviFabricScreen(ImVec2 display) {
     float searchY=39.0f*u, searchH=33.0f*u;
     float filterW=33.0f*u, searchW=leftW-filterW-7.0f*u;
     ImGui::SetCursorScreenPos({xL,searchY});
-    ImGui::PushStyleColor(ImGuiCol_FrameBg,ImGui::ColorConvertU32ToFloat4(ofc(0x080808,255)));
-    ImGui::PushStyleColor(ImGuiCol_Border,ImGui::ColorConvertU32ToFloat4(ofc(0xCCCCCC)));
+    ofNineSprite(dl,OptSprite::Input,{xL,searchY},
+                 {xL+searchW,searchY+searchH},u,IM_COL32(95,95,95,255));
+    ImGui::PushStyleColor(ImGuiCol_FrameBg,ImGui::ColorConvertU32ToFloat4(ofc(0x080808,0)));
+    ImGui::PushStyleColor(ImGuiCol_Border,ImGui::ColorConvertU32ToFloat4(ofc(0xCCCCCC,0)));
     ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize,std::max(1.0f,u));
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,ImVec2{5.0f*u,7.0f*u});
     ImGui::SetNextItemWidth(searchW);
@@ -324,7 +344,7 @@ static void drawOptLeviFabricScreen(ImVec2 display) {
                             ImGuiCond_Appearing);
     if(ImGui::BeginPopup("##of_filters")){
         bool libs=settings().showLibraries;
-        if(ImGui::Checkbox("Show libraries",&libs)){
+        if(ofTexturedCheckbox("##atlas_libraries","Show libraries",libs,u)){
             settings().showLibraries=libs;
             settings().save();
         }
@@ -350,6 +370,8 @@ static void drawOptLeviFabricScreen(ImVec2 display) {
     float listY=111.0f*u;
     // Fabric list has its own scroll and a dark but see-through background.
     dl->AddRectFilled({xL,listY},{leftEnd,bottom},ofc(kBedrockPanelDark,255));
+    ofNineSprite(dl,OptSprite::PanelDark,{xL,listY},{leftEnd,bottom},u,
+                 IM_COL32(124,135,146,255));
     dl->AddRect({xL,listY},{leftEnd,bottom},ofc(0x101010,255),0,0,std::max(1.0f,u));
     ImGui::SetCursorScreenPos({xL,listY});
     ImGui::BeginChild("##of_scroll_mods",{leftW,bottom-listY},ImGuiChildFlags_None);
@@ -365,11 +387,18 @@ static void drawOptLeviFabricScreen(ImVec2 display) {
         ImGui::Dummy({0,2.0f*u});
     }
     if(mods.empty())ImGui::TextDisabled("No mods match the search.");
+    float listScroll=ImGui::GetScrollY();
+    float listScrollMax=ImGui::GetScrollMaxY();
     ImGui::EndChild();
+    ofTexturedScrollbar(dl,{leftEnd-12*u,listY+3*u},
+                        {leftEnd-4*u,bottom-5*u},listScroll,listScrollMax,u);
 
     // Details panel: header + two buttons + scrolling description/credits.
     // No white AFAlimru shell, huge Config/Enable strip or oversized footer.
     dl->AddRectFilled({xR,68.0f*u},{rightEnd,bottom},ofc(kBedrockPanelDark,255));
+    ofNineSprite(dl,OptSprite::PanelDark,
+                 {xR,68.0f*u},{rightEnd,bottom},u,
+                 IM_COL32(112,121,136,255));
     dl->AddRect({xR,68.0f*u},{rightEnd,bottom},ofc(0x101010,255),0,0,std::max(1.0f,u));
     auto selected=ModRegistry::instance().find(gState.selected);
     if(!selected&&!mods.empty()){

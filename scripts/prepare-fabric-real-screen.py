@@ -25,7 +25,21 @@ def main():
     if not INCLUDE.is_file():
         raise RuntimeError("Custom Fabric renderer source is missing")
     shutil.copy2(INCLUDE,DEST)
+    # Both native GPU sprite helpers must be co-located with the included
+    # renderer, because the application loads these PNG bytes at runtime.
+    for name in ("OptLeviBedrockAtlas.inc", "OptLeviBedrockTexture.inc"):
+        original=ROOT/"src"/"ui"/name
+        if not original.is_file():
+            raise RuntimeError(f"Bedrock atlas dependency missing: {original}")
+        shutil.copy2(original,DEST.parent/name)
     src=MENU.read_text(encoding="utf-8")
+    src=once(src, "#include <imgui_internal.h>",
+        "#include <imgui_internal.h>\n"
+        "#include <EGL/egl.h>\n"
+        "#include <GLES3/gl3.h>\n"
+        "#include <stb_image.h>\n"
+        "#include <cstdint>\n"
+        "#include <vector>")
 
     # Include into the same C++ namespace/translation unit to reuse registry
     # and mod actions, while replacing the entire View::List rendering path.

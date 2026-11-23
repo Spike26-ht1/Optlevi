@@ -7,7 +7,7 @@ root=Path(__file__).resolve().parents[1]
 screen=(root/"ModMenuBE/src/ui/OptLeviFabricScreen.inc").read_text()
 native=(root/"ModMenuBE/src/ui/ModMenuScreen.cpp").read_text()
 resource=json.loads((root/"resources/levi_api/manifest.json").read_text())
-assert resource["header"]["version"] == [0,5,0]
+assert resource["header"]["version"] == [0,6,0]
 assert native.count("drawOptLeviFabricScreen(display);") == 1
 for required in (
   "kBedrockButtonFace = 0xC6C6C6",
@@ -42,4 +42,4 @@ ui=json.loads((root/"resources/levi_api/ui/pause_screen.json").read_text())
 assert ui["optlevi_pause_mods_button@common_buttons.light_text_button"]["size"] == [22,24]
 assert ui["optlevi_shaders_button@pause.pause_button_template"]["$button_text"] == "optlevi.shaders.button"
 print("Bedrock-derived pixel palette, opaque panels, scrollbar, native actions, and pause controls: OK")
-print("The 26.60 source textures are references only; no proprietary texture files are included.")
+print("The 26.60 source textures are now embedded as an actual GPU sprite atlas.")
