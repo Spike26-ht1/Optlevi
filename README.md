@@ -2,7 +2,7 @@
 
 OptLevi brings a **Fabric Mod Menu-inspired native mod browser** to Minecraft Bedrock on Android, with Minecraft-style **Mods** buttons rendered by a minimal Levi API resource pack.
 
-## OptLevi 0.9.0 — Android import + Iris shader GPU test (ARM64)
+## OptLevi 0.10.0 — experimental Java final shader postprocess (Android ARM64)
 
 This build extends OptLevi's Iris-inspired shader-pack browser with a **real
 Android Documents picker**. The launcher-provided `ACTION_OPEN_DOCUMENT`
@@ -17,12 +17,15 @@ compiler. It can preview a built-in diagnostic shader or the `final.fsh` /
 isolated OpenGL ES 3 framebuffer. Driver errors are displayed under
 **Compiler log**. The interface also includes Cancel, Apply, and Done.
 
-**Important limitation:** importing a shader pack or compiling one GLSL
-fragment in the test bench **does not apply it to Minecraft's 3D world**.
-Complex Iris shader packs need a version-validated Android RenderDragon
-pipeline with shadow passes, scene buffers and uniform mapping. This
-preview deliberately does not claim full Iris/OptiFine compatibility.
-See [Android shader GPU test architecture](docs/iris-android-v09-test-bench.md).
+**Experimental in-world effect:** a selected simple Java `final.fsh` or
+`composite.fsh` fragment can now be applied on the OpenGL ES game backbuffer
+as a single fullscreen postprocess through the **Apply** button. This effect
+is off by default, and Off + Apply disables it. The rendering code restores
+OpenGL state, rejects unsupported uniforms and reports errors. Full Iris
+compatibility is **not** implemented: complex shader packs still require
+proper RenderDragon framebuffers, shadow/depth passes and uniform mapping.
+See [Android shader test architecture](docs/iris-android-v09-test-bench.md)
+and [in-world final-pass test](docs/java-final-world-test-v10.md).
 
 ## OptLevi 0.6.0 — real Bedrock UI textures on the Fabric-style screen
 

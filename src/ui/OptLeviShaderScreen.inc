@@ -8,6 +8,7 @@ static bool gOptShadersVisible=false;
 static bool gOptShadersScanned=false;
 static bool gOptCustomBuffersFound=false;
 static bool gOptPreviewEnabled=true;
+static bool gOptSavedEnabled=true;
 static std::string gOptShadersError;
 static std::string gOptShadersSelection;  // pending in UI, not Minecraft render state
 static std::string gOptSavedSelection;    // last accepted TEST choice, not world effects
@@ -99,7 +100,7 @@ static void drawOptLeviShadersScreen(ImVec2 display) {
            sub.c_str(),ofc(0xDADADA));
 
     const float refreshW=37*u;
-    std::string enabled=gOptPreviewEnabled?"Shader test: Enabled":"Shader test: Disabled";
+    std::string enabled=gOptPreviewEnabled?"Shaders: Enabled (experimental)":"Shaders: Disabled";
     if(ofButton("##iris_enable",enabled.c_str(),{left,barY},
                 {w-refreshW-6*u,line},u))
         gOptPreviewEnabled=!gOptPreviewEnabled;
@@ -155,7 +156,8 @@ static void drawOptLeviShadersScreen(ImVec2 display) {
     float infoY=bottom+4*u;
     std::string label=gOptShadersSelection.empty()?
         "Vanilla (no Java shader selected)" : gOptShadersSelection;
-    std::string status="Imported packs can be tested in an isolated GLES3 preview.";
+    auto world=modmenu::android::shaderworld::status();
+    std::string status=world.message;
     auto picked=std::find_if(gOptShaderFiles.begin(),gOptShaderFiles.end(),
         [](OptPackInfo const& p){
             return p.path.filename().string()==gOptShadersSelection;
@@ -198,12 +200,32 @@ static void drawOptLeviShadersScreen(ImVec2 display) {
     float third=(w-2*gap)/3;
     if(ofButton("##iris_cancel","Cancel",{left,by2},{third,buttonH},u)) {
         gOptShadersSelection=gOptSavedSelection;
-        gOptImportStatus="Selection reverted";
+        gOptPreviewEnabled=gOptSavedEnabled;
+        gOptImportStatus="Selection reverted (world effect unchanged)";
     }
     if(ofButton("##iris_apply","Apply",{left+third+gap,by2},
                 {third,buttonH},u)) {
-        gOptSavedSelection=gOptShadersSelection;
-        gOptImportStatus="Selection saved for GPU TEST only; world shader unchanged";
+        if(!gOptPreviewEnabled||gOptShadersSelection.empty()) {
+            modmenu::android::shaderworld::requestDisable();
+            gOptSavedSelection=gOptShadersSelection;
+            gOptSavedEnabled=gOptPreviewEnabled;
+            gOptImportStatus="Experimental world postprocess disabled";
+        }else{
+            auto selected=std::find_if(gOptShaderFiles.begin(),gOptShaderFiles.end(),
+                [](OptPackInfo const& p) {
+                    return p.path.filename().string()==gOptShadersSelection;
+                });
+            std::string src,origin;
+            if(selected!=gOptShaderFiles.end() &&
+               optReadJavaShader(*selected,src,origin)) {
+                modmenu::android::shaderworld::requestEnable(
+                    optTranslateFinal(src),selected->path.filename().string()+":"+origin);
+                gOptSavedSelection=gOptShadersSelection;
+                gOptSavedEnabled=gOptPreviewEnabled;
+                gOptImportStatus="Compiling experimental world postprocess pass...";
+            }else
+                gOptImportStatus="Not supported for world testing: requires Java final.fsh or composite.fsh";
+        }
     }
     if(ofButton("##iris_done","Done",
                 {right-third,by2},{third,buttonH},u)) {
@@ -224,7 +246,7 @@ static void drawOptLeviShadersScreen(ImVec2 display) {
         ofText(dl,font,{pt.x,pt.y+ph+4*u},"GLES3 test preview (not world)",
                ofc(0xFFFFFF),font->FontSize*0.72f,pw);
     }
-    if(!gOptPreviewReport.empty()) {
+    if(!gOptPreviewReport.empty()||world.failed) {
         // Compilation errors are not discarded. Use a scrollable popup to
         // inspect the real driver log instead of pretending support.
         if(ofButton("##iris_compilelog","Compiler log",
@@ -235,6 +257,7 @@ static void drawOptLeviShadersScreen(ImVec2 display) {
             ImGui::TextWrapped("%s",gOptPreviewFile.c_str());
             ImGui::Separator();
             ImGui::TextWrapped("%s",gOptPreviewReport.c_str());
+            ImGui::TextWrapped("World: %s",world.message.c_str());
             ImGui::EndPopup();
         }
     }

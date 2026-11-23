@@ -40,6 +40,7 @@ def main():
         "#include <GLES3/gl3.h>\n"
         "#include <zlib.h>\n"
         "#include \"ShaderImportBridge.h\"\n"
+        "#include \"ShaderWorldRuntime.h\"\n"
         "#include <stb_image.h>\n"
         "#include <cstdint>\n"
         "#include <cstring>\n"
