@@ -39,6 +39,8 @@ bool gRegistered = false;
 std::atomic<int> gCapturedPointer{-1};
 enum class Target : int { None, Start, Pause };
 std::atomic<Target> gCapturedTarget{Target::None};
+// Development-only screen-state study counter (no coordinates or player data).
+std::atomic<bool> gPauseStateWarningLogged{false};
 
 bool getWindowSize(float& width, float& height) {
     JNIEnv* env = jni::env();
@@ -116,10 +118,14 @@ bool onTouch(pl::input::TouchEvent const& e) {
         gCapturedPointer.store(-1);
         gCapturedTarget.store(Target::None);
         Target target = Target::None;
-        if (inModsButton(Target::Pause, e.x, e.y) && isScreenCandidate(Target::Pause))
-            target = Target::Pause;
-        else if (inModsButton(Target::Start, e.x, e.y) && isScreenCandidate(Target::Start))
+        if (inModsButton(Target::Pause, e.x, e.y)) {
+            if (isScreenCandidate(Target::Pause))
+                target = Target::Pause;
+            else if (!gPauseStateWarningLogged.exchange(true))
+                log().info("OptLevi UI study: pause button region touched while pause-menu state unavailable");
+        } else if (inModsButton(Target::Start, e.x, e.y) && isScreenCandidate(Target::Start)) {
             target = Target::Start;
+        }
         if (target != Target::None) {
             gCapturedTarget.store(target);
             gCapturedPointer.store(e.pointerId);
