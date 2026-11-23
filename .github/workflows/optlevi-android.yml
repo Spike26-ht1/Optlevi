@@ -10,6 +10,8 @@ on:
       - "scripts/prepare-levi-api.py"
       - "scripts/build-resource-pack.py"
       - "resources/levi_api/**"
+      - "assets/**"
+      - "scripts/package-optlevi.py"
       - ".github/workflows/optlevi-android.yml"
       - "patches/modmenube/**"
   pull_request:
@@ -18,6 +20,8 @@ on:
       - "scripts/prepare-levi-api.py"
       - "scripts/build-resource-pack.py"
       - "resources/levi_api/**"
+      - "assets/**"
+      - "scripts/package-optlevi.py"
       - ".github/workflows/optlevi-android.yml"
       - "patches/modmenube/**"
   workflow_dispatch:
@@ -66,9 +70,9 @@ jobs:
               manifest = json.loads(z.read("manifest.json"))
               assert manifest["modules"][0]["type"] == "resources"
               button = json.loads(z.read("ui/start_screen.json"))
-              key = "optlevi_menu_button@common_buttons.light_text_form_fitting_button"
+              key = "optlevi_menu_button@start.dressing_room_button"
               assert button[key]["$pressed_button_name"] == "button.optlevi_open_menu"
-              assert button["start_screen_content"]["modifications"][0]["control_name"] == "skin_panel"
+              assert button["skin_panel/centering_panel"]["modifications"][0]["control_name"] == "change_profile_or_skin"
               assert "pack_icon.png" in z.namelist()
           entry = pathlib.Path("ModMenuBE/android/src/Entry.cpp").read_text()
           assert "ButtonBuilder" not in entry, "Old native floating button still present"
@@ -106,6 +110,49 @@ jobs:
           PY
           readelf -h build/optlevi-arm64-v8a/package/OptLevi/libOptLevi.so | grep -q AArch64
 
+      - name: Assemble complete LeviPack with original project icon
+        run: python3 scripts/package-optlevi.py
+
+      - name: Verify complete embedded pack and original icon
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          from zipfile import ZipFile
+          from hashlib import sha256
+          import json, struct
+
+          package = Path("build/OptLevi-0.2.0-arm64-v8a.levipack")
+          assert package.is_file(), package
+          prefix = "OptLevi/resources/minecraft_resource_packs/LeviAPI/"
+          original = Path("assets/optlevi-original-200.png").read_bytes()
+          with ZipFile(package) as z:
+              manifest = json.loads(z.read("OptLevi/manifest.json"))
+              assert manifest["name"] == "OptLevi"
+              assert manifest["entry"] == "libOptLevi.so"
+              assert manifest["overwrite_folders"] == ["resources/minecraft_resource_packs"]
+              assert manifest["icon"] == "icon.png"
+              for path in ["manifest.json", "ui/start_screen.json", "ui/_ui_defs.json", "pack_icon.png"]:
+                  assert prefix + path in z.namelist(), path
+              assert z.read("OptLevi/icon.png") == original
+              assert z.read(prefix + "pack_icon.png") == original
+              assert struct.unpack(">II", original[16:24]) == (200, 200)
+              assert z.read("OptLevi/libOptLevi.so")[:4] == bytes((127,)) + b"ELF"
+              ui = json.loads(z.read(prefix + "ui/start_screen.json"))
+              button = ui["optlevi_menu_button@start.dressing_room_button"]
+              assert button["$pressed_button_name"] == "button.optlevi_open_menu"
+          print("Complete resource injection layout and original 200x200 icon verified")
+          print("Icon SHA-256:", sha256(original).hexdigest())
+          print("NOTE: Native Bedrock JSON-UI event callback is not implemented")
+          PY
+
+      - name: Upload complete OptLevi resource-integrated LeviPack
+        uses: actions/upload-artifact@v4
+        with:
+          name: OptLevi-0.2.0-arm64-v8a-complete
+          path: build/OptLevi-0.2.0-arm64-v8a.levipack
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Upload Levi API resource pack
         uses: actions/upload-artifact@v4
         with:
@@ -114,10 +161,10 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      - name: Upload OptLevi test pack
+      - name: Upload OptLevi native module (no embedded assets — test only)
         uses: actions/upload-artifact@v4
         with:
-          name: OptLevi-0.1.0-arm64-v8a
+          name: OptLevi-native-only-0.1.0-arm64-v8a
           path: build/optlevi-arm64-v8a/OptLevi-0.1.0-arm64-v8a.levipack
           if-no-files-found: error
           retention-days: 14

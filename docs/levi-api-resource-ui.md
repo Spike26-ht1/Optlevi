@@ -40,3 +40,62 @@ python3 scripts/build-resource-pack.py
 ```
 
 Import `build/OptLevi-LeviAPI-0.2.0.mcpack` as a Bedrock resource pack and enable it globally, then inspect the start screen. The button can appear without the native event callback, but clicking it will not open the native menu until the Android bridge is complete.
+
+
+## 2026-11-23 device test: packaging fixed, button still inert
+
+The project owner tested Minecraft v26.62 and provided screenshots showing:
+- OptLevi API **active** in Global Resources.
+- The native OptLevi mod **enabled** in LeviLauncher.
+- The **Mods** button rendered on the Minecraft start screen, but pressing it did **not** open OptLevi.
+
+They also provided `OptLevi-0.1.0_new style_arm64.levipack.zip`; inspection confirms this *working-for-injection* package uses exactly:
+
+```
+OptLevi/
+  manifest.json
+  icon.png                         (original 200×200 PNG)
+  libOptLevi.so
+  LICENSE
+  resources/
+    minecraft.ttf
+    minecraft_resource_packs/
+      LeviAPI/
+        manifest.json
+        pack_icon.png              (original 200×200 PNG)
+        ui/_ui_defs.json
+        ui/start_screen.json
+        texts/en_US.lang
+        texts/pt_BR.lang
+        texts/languages.json
+```
+
+The corrected native manifest contains:
+
+```json
+{
+  "type": "preload-native",
+  "name": "OptLevi",
+  "author": "BRSpike26",
+  "version": "0.1.0",
+  "entry": "libOptLevi.so",
+  "icon": "icon.png",
+  "overwrite_files": ["icon.png", "resources/minecraft.ttf"],
+  "overwrite_folders": ["resources/minecraft_resource_packs"]
+}
+```
+
+`scripts/package-optlevi.py` reproduces the embedded folder layout and automatically checks icon dimensions and manifest structure. Local use:
+
+```sh
+python3 scripts/package-optlevi.py \
+  --native build/optlevi-arm64-v8a/OptLevi-0.1.0-arm64-v8a.levipack \
+  --resource build/OptLevi-LeviAPI-0.2.0.mcpack \
+  --reference /path/to/owner-corrected.levipack.zip
+```
+
+The user's original icon is **200×200**, SHA-256 `e6ef56829966646b0718d3ac785b7fbd19b5894449860dbead49c6ef3948e270`. A previous OptLevi script resized it to **40×40**. Do not scale it down again, and do not publish a purported corrected package using only a 40×40 substitute.
+
+**Native event bridge remains blocked**: The JSON-UI `button.optlevi_open_menu` is a Bedrock `MinecraftScreenController` action. The Android Preloader's `pl::modmenu` module registration is a separate subsystem and does *not* automatically dispatch JSON-UI actions. Playback implements `MainMenuScreenController::$onOpen` and `StartMenuScreenController::_registerEventHandlers` hooks on LeviLamina (Windows). A corresponding, version-validated Android native hook has **not** been implemented or tested. Do not claim the Mods button is functional or ship a speculative pattern/offset.
+
+The screenshot also places the button to the **left of Realms**, rather than below Dressing Room, so the JSON UI placement must be corrected against the observed screen rather than assumed from anchor constants.
