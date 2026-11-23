@@ -1,7 +1,5 @@
 // Bounded Java shaderpack member reader and GLSL #include expander.
 // This is a source preprocessor for *one* selected pass, not an Iris renderer.
-#include <set>
-#include <sstream>
 
 static constexpr size_t kOptJavaExpandedLimit = 512 * 1024;
 
