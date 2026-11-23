@@ -74,6 +74,7 @@ jobs:
         run: |
           python3 - <<'PY'
           from pathlib import Path
+          import json
           screen = Path("ModMenuBE/src/ui/ModMenuScreen.cpp").read_text()
           widgets = Path("ModMenuBE/src/ui/OreTheme.cpp").read_text()
           pause = Path("resources/levi_api/ui/pause_screen.json").read_text()
@@ -83,7 +84,8 @@ jobs:
           assert 'col::rgb(0x343A45, 225)' in screen
           assert 'width * 0.5f - s(65)' in screen
           assert 'color::rgb(0xD3D8E2, 230)' in widgets
-          assert '"size": [22, 24]' in pause or '"size": [\n    22,\n    24\n  ]' in pause
+          button = json.loads(pause)["optlevi_pause_mods_button@common_buttons.light_text_button"]
+          assert button["size"] == [22, 24]
           print("Fabric layout, translucent panels, flat buttons and compact pause icon: OK")
           PY
 
