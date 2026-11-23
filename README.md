@@ -2,6 +2,25 @@
 
 OptLevi brings a **Fabric Mod Menu-inspired native mod browser** to Minecraft Bedrock on Android, with Minecraft-style **Mods** buttons rendered by a minimal Levi API resource pack.
 
+## OptLevi 0.7.0 — shaderpack browser test (Android ARM64)
+
+This development build adds a separate Iris-inspired Shaders screen accessible
+from the **Shaders** button at the top of the current OptLevi Mods frontend.
+It discovers local \`.zip\` and \`.mcpack\` archives in the native mod's
+\`shaderpacks/\` directory, provides Off, selection/inspection, Refresh,
+Back to Mods and Done, and reports Custom Buffers directory presence.
+
+**Important:** This is a testable **shader browser UI**, not yet a working
+Java/Iris/OptiFine shader loader. Selecting an archive does not apply it.
+Arke currently targets Windows D3D12; its README lists Android as future work.
+Custom Buffers provides extra render resources but is not a general Java
+shader compiler. The pause-menu Shaders control remains a placeholder;
+enter the new screen from the Mods frontend for this test.
+
+See [Android shader research](docs/shaders-android-research.md). Do not
+merge into main or claim GPU shader effects until device testing and backend
+integration are completed.
+
 ## OptLevi 0.6.0 — real Bedrock UI textures on the Fabric-style screen
 
 The project owner has confirmed the **main-menu Mods button opens OptLevi in Minecraft Bedrock 26.62**. The pause menu now has an additional compact Mods button beside the book and a Shaders placeholder in the former Marketplace slot. A native Android Preloader touch bridge handles menu opening without registering a floating launcher button.
