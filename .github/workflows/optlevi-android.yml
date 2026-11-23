@@ -68,7 +68,7 @@ jobs:
               manifest = json.loads(z.read("OptLevi/manifest.json"))
               assert manifest["name"] == "OptLevi", manifest
               assert manifest["entry"] == "libOptLevi.so", manifest
-              assert z.read("OptLevi/libOptLevi.so")[:4] == b"\\x7fELF"
+              assert z.read("OptLevi/libOptLevi.so")[:4] == bytes((0x7f,)) + b"ELF"
           print("OptLevi archive structure and manifest verified")
           PY
           readelf -h build/optlevi-arm64-v8a/package/OptLevi/libOptLevi.so | grep -q AArch64
