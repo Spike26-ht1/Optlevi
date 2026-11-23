@@ -16,7 +16,7 @@ def build(output=OUTPUT, icon=DEFAULT_ICON):
     for f in ("manifest.json", "ui/_ui_defs.json", "ui/start_screen.json", "texts/languages.json"):
         json.loads((SOURCE / f).read_text(encoding="utf-8"))
     ui = json.loads((SOURCE / "ui/start_screen.json").read_text(encoding="utf-8"))
-    button = ui["optlevi_menu_button@start.dressing_room_button"]
+    button = ui["optlevi_menu_button@common_buttons.light_text_form_fitting_button"]
     assert button["$pressed_button_name"] == "button.optlevi_open_menu"
     assert icon.is_file(), "OptLevi icon missing: run prepare-optlevi.py first"
     assert icon.read_bytes().startswith(bytes((137, 80, 78, 71, 13, 10, 26, 10)))
