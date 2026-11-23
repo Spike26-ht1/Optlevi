@@ -2,7 +2,22 @@
 
 OptLevi brings a **Fabric Mod Menu-inspired native mod browser** to Minecraft Bedrock on Android, with Minecraft-style **Mods** buttons rendered by a minimal Levi API resource pack.
 
-## OptLevi 0.10.0 — experimental Java final shader postprocess (Android ARM64)
+## OptLevi 0.11.0 — BSL Java final-pass compatibility experiment (Android ARM64)
+
+This release builds on 0.11.0 by reading the **actual Java shader program** (including
+BSL 10.1.8's `shaders/world0/final.fsh` and its `#include` chain), providing
+`texCoord`, `colortex1`, `viewWidth`, `viewHeight`, `aspectRatio` and
+`frameTimeCounter` for a restricted single-pass GPU preview/world postprocess.
+Bounded ZIP entry decompression and include recursion reject oversized/unsafe input.
+
+**This is not full BSL/Iris compatibility.** `final.fsh` is the last pass
+of a multi-pass renderer; mapping `colortex1` to the captured world color
+cannot provide BSL terrain, shadow, water, bloom, reflection, or depth buffers.
+A successful final-pass test proves one fragment compiles/renders, not that
+the complete BSL shaderpack works. GLES3 and the world postprocess hook still
+require physical Android device validation. This release does not modify `main`.
+
+## OptLevi 0.11.0 — experimental Java final shader postprocess (Android ARM64)
 
 This build extends OptLevi's Iris-inspired shader-pack browser with a **real
 Android Documents picker**. The launcher-provided `ACTION_OPEN_DOCUMENT`
