@@ -5,6 +5,7 @@ on:
     branches:
       - feature/optlevi-native-menu
       - feature/levi-api-resource-ui
+      - feature/optlevi-menu-touch-bridge
     paths:
       - "scripts/prepare-optlevi.py"
       - "scripts/prepare-levi-api.py"
@@ -12,6 +13,9 @@ on:
       - "resources/levi_api/**"
       - "assets/**"
       - "scripts/package-optlevi.py"
+      - "scripts/prepare-optlevi-touch.py"
+      - "src/android/**"
+      - "scripts/test-optlevi-touch.py"
       - ".github/workflows/optlevi-android.yml"
       - "patches/modmenube/**"
   pull_request:
@@ -70,15 +74,35 @@ jobs:
               manifest = json.loads(z.read("manifest.json"))
               assert manifest["modules"][0]["type"] == "resources"
               button = json.loads(z.read("ui/start_screen.json"))
-              key = "optlevi_menu_button@start.dressing_room_button"
+              key = "optlevi_menu_button@common_buttons.light_text_form_fitting_button"
               assert button[key]["$pressed_button_name"] == "button.optlevi_open_menu"
-              assert button["skin_panel/centering_panel"]["modifications"][0]["control_name"] == "change_profile_or_skin"
+              assert button["start_screen_content"]["modifications"][0]["control_name"] == "skin_panel"
               assert "pack_icon.png" in z.namelist()
           entry = pathlib.Path("ModMenuBE/android/src/Entry.cpp").read_text()
           assert "ButtonBuilder" not in entry, "Old native floating button still present"
           assert "registerModule" in entry
           print("Static JSON UI contract and floating-button removal verified")
           PY
+
+      - name: Install OptLevi native button touch bridge
+        run: |
+          python3 scripts/prepare-optlevi-touch.py
+          python3 - <<'PY'
+          from pathlib import Path
+          entry = Path("ModMenuBE/android/src/Entry.cpp").read_text()
+          bridge = Path("ModMenuBE/android/src/GameUiTouchBridge.cpp").read_text()
+          cmake = Path("ModMenuBE/android/CMakeLists.txt").read_text()
+          assert "gameui::install();" in entry
+          assert "gameui::uninstall();" in entry
+          assert "src/GameUiTouchBridge.cpp" in cmake
+          assert "pl::input::registerTouchCallback" in bridge
+          assert "openMenu();" in bridge
+          assert "ButtonBuilder" not in entry
+          print("Native touch bridge statically connected; runtime behavior needs device test")
+          PY
+
+      - name: Check original Mods button geometry and native touch path
+        run: python3 scripts/test-optlevi-touch.py
 
       - name: Configure ARM64
         run: |
@@ -138,7 +162,7 @@ jobs:
               assert struct.unpack(">II", original[16:24]) == (200, 200)
               assert z.read("OptLevi/libOptLevi.so")[:4] == bytes((127,)) + b"ELF"
               ui = json.loads(z.read(prefix + "ui/start_screen.json"))
-              button = ui["optlevi_menu_button@start.dressing_room_button"]
+              button = ui["optlevi_menu_button@common_buttons.light_text_form_fitting_button"]
               assert button["$pressed_button_name"] == "button.optlevi_open_menu"
           print("Complete resource injection layout and original 200x200 icon verified")
           print("Icon SHA-256:", sha256(original).hexdigest())
