@@ -30,7 +30,7 @@ constexpr int kPointerUp = 6;
 
 std::atomic<bool> gEnabled{false};
 bool gRegistered = false;
-int gCapturedPointer = -1;
+std::atomic<int> gCapturedPointer{-1};
 
 bool getWindowSize(float& width, float& height) {
     JNIEnv* env = jni::env();
@@ -97,26 +97,26 @@ bool inModsButton(float x, float y) {
 
 bool onTouch(pl::input::TouchEvent const& e) {
     if (!gEnabled.load()) {
-        gCapturedPointer = -1;
+        gCapturedPointer.store(-1);
         return false;
     }
     if (e.action == kDown) {
-        gCapturedPointer = -1;
+        gCapturedPointer.store(-1);
         if (inModsButton(e.x, e.y) && isStartMenuCandidate()) {
-            gCapturedPointer = e.pointerId;
+            gCapturedPointer.store(e.pointerId);
             return true;
         }
         return false;
     }
-    if (e.pointerId != gCapturedPointer) return false;
+    if (e.pointerId != gCapturedPointer.load()) return false;
 
     if (e.action == kMove) return true;
     if (e.action == kCancel) {
-        gCapturedPointer = -1;
+        gCapturedPointer.store(-1);
         return true;
     }
     if (e.action == kUp || e.action == kPointerUp) {
-        gCapturedPointer = -1;
+        gCapturedPointer.store(-1);
         if (inModsButton(e.x, e.y) && isStartMenuCandidate()) {
             log().info("OptLevi Mods JSON UI button tapped; opening native mod browser");
             openMenu();
@@ -139,7 +139,7 @@ void install() {
 void uninstall() {
     // Preloader's input API does not offer callback removal.
     gEnabled.store(false);
-    gCapturedPointer = -1;
+    gCapturedPointer.store(-1);
 }
 
 } // namespace modmenu::android::gameui
