@@ -1,0 +1,46 @@
+{
+  "namespace": "start",
+  "optlevi_menu_button@common_buttons.light_text_form_fitting_button": {
+    "size": [174, 32],
+    "$button_text": "optlevi.menu.button",
+    "$pressed_button_name": "button.optlevi_open_menu",
+    "$focus_id": "optlevi_menu_button",
+    "button_mappings": [
+      {
+        "from_button_id": "button.menu_select",
+        "to_button_id": "$pressed_button_name",
+        "mapping_type": "pressed"
+      },
+      {
+        "from_button_id": "button.menu_ok",
+        "to_button_id": "$pressed_button_name",
+        "mapping_type": "pressed"
+      }
+    ]
+  },
+  "optlevi_button_panel": {
+    "type": "panel",
+    "size": [174, 32],
+    "anchor_from": "bottom_right",
+    "anchor_to": "bottom_right",
+    "offset": [-178, -36],
+    "layer": 15,
+    "controls": [
+      {
+        "optlevi_button@start.optlevi_menu_button": {}
+      }
+    ]
+  },
+  "start_screen_content": {
+    "modifications": [
+      {
+        "array_name": "controls",
+        "operation": "insert_after",
+        "control_name": "skin_panel",
+        "value": {
+          "optlevi_button_panel@start.optlevi_button_panel": {}
+        }
+      }
+    ]
+  }
+}
