@@ -40,40 +40,13 @@ def main():
     ]:
         replace_once(cm, old, new)
 
-    entry = SRC / "android/src/Entry.cpp"
-    for old, new in [
-        ('#include "ButtonIcons.inc"', '#include "OptLeviIcon.inc"'),
-        ('constexpr const char* kModuleId = "modmenube";', 'constexpr const char* kModuleId = "optlevi";'),
-        ('constexpr const char* kButtonId = "modmenube.open";', 'constexpr const char* kButtonId = "optlevi.open";'),
-        ('constexpr int   kLayoutVersion   = 2;', 'constexpr int   kLayoutVersion   = 3;'),
-        ('constexpr float kIconDp          = 24.5f;', 'constexpr float kIconDp          = 31.0f;'),
-        ('constexpr float kGapDp           = 2.5f;', 'constexpr float kGapDp           = 2.0f;'),
-        ('constexpr float kVanillaHalfSpan = 39.25f;', 'constexpr float kRightFraction   = 0.83f;'),
-        ('jmethodID setSize = e->GetMethodID(mgrCls, "setOverlayButtonSize", "(Ljava/lang/String;I)V");',
-         'jmethodID setSize = e->GetMethodID(mgrCls, "setOverlayButtonSize", "(Ljava/lang/String;I)V");\n'
-         '        jmethodID setEverywhere = e->GetMethodID(mgrCls, "setOverlayShowEverywhere", "(Ljava/lang/String;Z)V");'),
-        ('int       x      = int(std::lround(width / 2.0f + (kVanillaHalfSpan + kGapDp - kViewPaddingDp) * d));',
-         'int       height = std::min(w, h);\n'
-         '                int       x      = int(std::lround(width * kRightFraction - viewPx / 2.0f));\n'
-         '                int       y      = std::max(0, height - viewPx - int(std::lround(kGapDp * d)));'),
-        ('e->CallVoidMethod(mgr, setPos, jkey, x, 0);',
-         'e->CallVoidMethod(mgr, setPos, jkey, x, y);\n'
-         '                if (setEverywhere) e->CallVoidMethod(mgr, setEverywhere, jkey, JNI_TRUE);'),
-        ('log().info("MOD button placed at its default position ({}, 0), {} px", x, viewPx);',
-         'log().info("OptLevi button default at ({}, {}), {} px", x, y, viewPx);'),
-        ('ButtonBuilder(kButtonId, "ModMenuBE")', 'ButtonBuilder(kButtonId, "OptLevi")'),
-        ('.label("MOD")', '.label("OptLevi")'),
-        ('kButtonIconPng, sizeof(kButtonIconPng)', 'kOptLeviIconPng, sizeof(kOptLeviIconPng)'),
-        ('ModuleBuilder(kModuleId, "ModMenuBE")', 'ModuleBuilder(kModuleId, "OptLevi")'),
-        ('模組選單：已安裝模組、說明與設定。開啟後畫面上會出現 MOD 按鈕。',
-         'OptLevi: menu nativo para mods, baseado no ModMenuBE de AFAlimru.'),
-    ]:
-        replace_once(entry, old, new)
+    # Do not register or configure a floating launcher button here.
+    # scripts/prepare-levi-api.py supplies the native module-only entrypoint.
 
     mod = SRC / "android/src/ModMenuMod.cpp"
     replace_once(mod, 'modmenu::log::info("ModMenuBE loaded from {} ({} mods found)"',
                  'modmenu::log::info("OptLevi menu loaded from {} ({} mods found)"')
-    print("Prepared OptLevi 0.1.0 with the supplied icon and a lower-right menu button")
+    print("Prepared OptLevi 0.1.0 metadata and project icon (no floating button)")
 
 if __name__ == "__main__":
     main()
