@@ -2,11 +2,11 @@
 
 OptLevi brings a **Fabric Mod Menu-inspired native mod browser** to Minecraft Bedrock on Android, with Minecraft-style **Mods** buttons rendered by a minimal Levi API resource pack.
 
-## OptLevi 0.5.0 — Fabric layout, Bedrock 26.60 visual styling
+## OptLevi 0.6.0 — real Bedrock UI textures on the Fabric-style screen
 
 The project owner has confirmed the **main-menu Mods button opens OptLevi in Minecraft Bedrock 26.62**. The pause menu now has an additional compact Mods button beside the book and a Shaders placeholder in the former Marketplace slot. A native Android Preloader touch bridge handles menu opening without registering a floating launcher button.
 
-Version 0.5.0 builds on the independent renderer from 0.4.0, which replaced the old ModMenuBE **View::List** drawing path with an independent Fabric-style renderer, informed by the owner's supplied **Fabric Mod Menu 21.0.1** JAR:
+Version 0.6.0 builds on the independent renderer from 0.4.0, which replaced the old ModMenuBE **View::List** drawing path with an independent Fabric-style renderer, informed by the owner's supplied **Fabric Mod Menu 21.0.1** JAR:
 
 - Balanced left mod list and right detail panes
 - Search, icon-only filter, library visibility, sorting and visible mod count
@@ -16,7 +16,9 @@ Version 0.5.0 builds on the independent renderer from 0.4.0, which replaced the 
 - Fabric-like custom pixel-edge buttons, two-action bottom row (Refresh and Done), and physical-screen-height scaling independent of oversized Android UI settings
 - Technical metadata and Bedrock-only configuration actions in a collapsible section rather than dominating the selected-mod details
 
-The original project icon is preserved at 200×200. Shaders remains a placeholder; shader management is not implemented.
+The original project icon is preserved at 200×200.
+
+**Real texture rendering:** Unlike version 0.5, version 0.6 uses the original 26.60 pixel-art PNG textures for normal/hover/pressed buttons, panels, list rows, search field, checkboxes and scrollbar handles. The PNG atlas is decoded/uploaded once per GL context and rendered in ImGui with true nine-slice sprite regions. The complete native package includes the atlas for inspection; the full source ZIP is not redistributed. Shaders remains a placeholder; shader management is not implemented.
 
 **Device validation:** Android ARM64 CI can compile and validate the LeviPack, but cannot prove that the latest UI matches Java pixel-by-pixel on an actual Minecraft screen. Fabric's Java-edition font and blur are not bundled. Android uses a coordinate-calibrated native touch fallback, not a complete Bedrock screen-controller event hook.
 
@@ -33,8 +35,12 @@ The original project icon is preserved at 200×200. Shaders remains a placeholde
 - `src/ui/OptLeviFabricScreen.inc` — **new independent full-screen Mods frontend**, used instead of the old native list renderer
 - `scripts/prepare-fabric-real-screen.py` — inject independent frontend into the native ModMenu build
 - `scripts/prepare-optlevi-touch.py` — Android native menu touch routing
-- `scripts/build-resource-pack.py` — standalone `OptLevi-LeviAPI-0.5.0.mcpack`
-- `scripts/package-optlevi.py` — combined `OptLevi-0.5.0-arm64-v8a.levipack`
+- `scripts/build-resource-pack.py` — standalone `OptLevi-LeviAPI-0.6.0.mcpack`
+- `scripts/package-optlevi.py` — combined `OptLevi-0.6.0-arm64-v8a.levipack`
+- `src/ui/OptLeviBedrockAtlas.inc` — 16 original Bedrock 26.60 UI sprites, losslessly embedded as a PNG atlas
+- `src/ui/OptLeviBedrockTexture.inc` — GLES3 PNG loading, GPU nine-slice rendering, textured scrollbars and checkboxes
+- `scripts/generate-bedrock-atlas.py` — reproduce the atlas from the owner's local UI texture ZIP
+- `docs/bedrock-native-atlas.md` — exact image source mapping, runtime design and testing
 - `docs/bedrock-26.60-ui-study.md` — sampled UI texture reference and design decisions
 - `docs/ui-research-log.md`, `docs/fabric-modmenu-21-reference.md`, and `docs/fabric-fullscreen-design.md` — UI study notes
 - `.github/workflows/optlevi-android.yml` — ARM64 build and resource validation
