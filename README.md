@@ -2,18 +2,19 @@
 
 OptLevi brings a **Fabric Mod Menu-inspired native mod browser** to Minecraft Bedrock on Android, with Minecraft-style **Mods** buttons rendered by a minimal Levi API resource pack.
 
-## OptLevi 0.3.0 — Fabric UI test
+## OptLevi 0.4.0 — independent Fabric-style UI test
 
 The project owner has confirmed the **main-menu Mods button opens OptLevi in Minecraft Bedrock 26.62**. The pause menu now has an additional compact Mods button beside the book and a Shaders placeholder in the former Marketplace slot. A native Android Preloader touch bridge handles menu opening without registering a floating launcher button.
 
-Version 0.3.0 rebuilds the native browser's actual layout based on the owner's supplied **Fabric Mod Menu 21.0.1** JAR:
+Version 0.4.0 replaces the old ModMenuBE **View::List** drawing path with an independent Fabric-style renderer, informed by the owner's supplied **Fabric Mod Menu 21.0.1** JAR:
 
 - Balanced left mod list and right detail panes
 - Search, icon-only filter, library visibility, sorting and visible mod count
 - Selectable entries with icon, name, version, badges and description
 - Details with version/authors, Website/Issues, description, license, credits and technical info
 - Native mod Configure, Enable/Disable, Refresh and Update actions
-- Centered Done action, clearer background contrast and smaller Android font metrics
+- Fabric-like custom pixel-edge buttons, two-action bottom row (Refresh and Done), and physical-screen-height scaling independent of oversized Android UI settings
+- Technical metadata and Bedrock-only configuration actions in a collapsible section rather than dominating the selected-mod details
 
 The original project icon is preserved at 200×200. Shaders remains a placeholder; shader management is not implemented.
 
@@ -28,11 +29,13 @@ The original project icon is preserved at 200×200. Shaders remains a placeholde
 - `scripts/prepare-optlevi.py` — OptLevi native branding
 - `scripts/prepare-levi-api.py` — remove obsolete floating launcher button
 - `scripts/prepare-fabric-layout.py` — initial native theme/style modifications
-- `scripts/prepare-fabric21-fidelity.py` — Fabric 21-inspired complete screen composition
+- `scripts/prepare-fabric21-fidelity.py` — earlier Fabric layout work used as a compatibility baseline
+- `src/ui/OptLeviFabricScreen.inc` — **new independent full-screen Mods frontend**, used instead of the old native list renderer
+- `scripts/prepare-fabric-real-screen.py` — inject independent frontend into the native ModMenu build
 - `scripts/prepare-optlevi-touch.py` — Android native menu touch routing
-- `scripts/build-resource-pack.py` — standalone `OptLevi-LeviAPI-0.3.0.mcpack`
-- `scripts/package-optlevi.py` — combined `OptLevi-0.3.0-arm64-v8a.levipack`
-- `docs/ui-research-log.md` and `docs/fabric-modmenu-21-reference.md` — UI study notes
+- `scripts/build-resource-pack.py` — standalone `OptLevi-LeviAPI-0.4.0.mcpack`
+- `scripts/package-optlevi.py` — combined `OptLevi-0.4.0-arm64-v8a.levipack`
+- `docs/ui-research-log.md`, `docs/fabric-modmenu-21-reference.md`, and `docs/fabric-fullscreen-design.md` — UI study notes
 - `.github/workflows/optlevi-android.yml` — ARM64 build and resource validation
 
 ## Getting the code
