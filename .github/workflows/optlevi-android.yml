@@ -82,7 +82,7 @@ jobs:
           assert 'Showing %d mods' in screen
           assert 'col::rgb(0x343A45, 225)' in screen
           assert 'width * 0.5f - s(65)' in screen
-          assert 'col::rgb(0xD3D8E2, 230)' in widgets
+          assert 'color::rgb(0xD3D8E2, 230)' in widgets
           assert '"size": [22, 24]' in pause or '"size": [\n    22,\n    24\n  ]' in pause
           print("Fabric layout, translucent panels, flat buttons and compact pause icon: OK")
           PY
