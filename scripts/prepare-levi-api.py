@@ -71,16 +71,16 @@ void resetButtonLayout() { android::entry::resetButtonLayout(); }
     # Fabric Mod Menu-inspired desktop layout, restrained dark cards and blue accents.
     theme = SRC / "src/ui/OreTheme.h"
     for old, new in [
-        ("rgb(0x313233)", "rgb(0x24262C)"),
-        ("rgb(0x48494A)", "rgb(0x323640)"),
-        ("rgb(0x5A5B5C)", "rgb(0x454A57)"),
-        ("rgb(0x242425)", "rgb(0x1A1C21)"),
-        ("rgb(0xB1B2B5)", "rgb(0xBBC1CC)"),
-        ("rgb(0x3C8527)", "rgb(0x467BEA)"),
-        ("rgb(0x2A641C)", "rgb(0x315EB8)"),
-        ("rgb(0x1D4D13)", "rgb(0x233F86)"),
-        ("rgb(0x6CC349)", "rgb(0x77A5FF)"),
-        ("rgb(0xFFFFFF);\ninline constexpr ImU32 Dim", "rgb(0x79A7FF);\ninline constexpr ImU32 Dim"),
+        ("inline constexpr ImU32 Panel        = rgb(0x313233);", "inline constexpr ImU32 Panel        = rgb(0x24262C);"),
+        ("inline constexpr ImU32 PanelLight   = rgb(0x48494A);", "inline constexpr ImU32 PanelLight   = rgb(0x323640);"),
+        ("inline constexpr ImU32 PanelEdge    = rgb(0x5A5B5C);", "inline constexpr ImU32 PanelEdge    = rgb(0x454A57);"),
+        ("inline constexpr ImU32 Inset        = rgb(0x242425);", "inline constexpr ImU32 Inset        = rgb(0x1A1C21);"),
+        ("inline constexpr ImU32 TextDim      = rgb(0xB1B2B5);", "inline constexpr ImU32 TextDim      = rgb(0xBBC1CC);"),
+        ("inline constexpr ImU32 Green        = rgb(0x3C8527);", "inline constexpr ImU32 Green        = rgb(0x467BEA);"),
+        ("inline constexpr ImU32 GreenHover   = rgb(0x2A641C);", "inline constexpr ImU32 GreenHover   = rgb(0x315EB8);"),
+        ("inline constexpr ImU32 GreenLip     = rgb(0x1D4D13);", "inline constexpr ImU32 GreenLip     = rgb(0x233F86);"),
+        ("inline constexpr ImU32 GreenEdge    = rgb(0x6CC349);", "inline constexpr ImU32 GreenEdge    = rgb(0x77A5FF);"),
+        ("inline constexpr ImU32 Selection    = rgb(0xFFFFFF);", "inline constexpr ImU32 Selection    = rgb(0x79A7FF);"),
     ]:
         replace_once(theme, old, new)
 
