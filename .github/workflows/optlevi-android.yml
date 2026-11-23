@@ -15,6 +15,7 @@ on:
       - "scripts/package-optlevi.py"
       - "scripts/prepare-optlevi-touch.py"
       - "src/android/**"
+      - "scripts/test-optlevi-touch.py"
       - ".github/workflows/optlevi-android.yml"
       - "patches/modmenube/**"
   pull_request:
@@ -99,6 +100,9 @@ jobs:
           assert "ButtonBuilder" not in entry
           print("Native touch bridge statically connected; runtime behavior needs device test")
           PY
+
+      - name: Check original Mods button geometry and native touch path
+        run: python3 scripts/test-optlevi-touch.py
 
       - name: Configure ARM64
         run: |
