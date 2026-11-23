@@ -27,7 +27,7 @@ def main():
     shutil.copy2(INCLUDE,DEST)
     # Both native GPU sprite helpers must be co-located with the included
     # renderer, because the application loads these PNG bytes at runtime.
-    for name in ("OptLeviBedrockAtlas.inc", "OptLeviBedrockTexture.inc", "OptLeviShaderScreen.inc", "OptLeviShaderCatalog.inc"):
+    for name in ("OptLeviBedrockAtlas.inc", "OptLeviBedrockTexture.inc", "OptLeviShaderScreen.inc", "OptLeviShaderCatalog.inc", "OptLeviShaderGlesTest.inc"):
         original=ROOT/"src"/"ui"/name
         if not original.is_file():
             raise RuntimeError(f"Bedrock atlas dependency missing: {original}")
@@ -38,6 +38,8 @@ def main():
         "#include <EGL/egl.h>\n"
         "#include \"State.h\"\n"
         "#include <GLES3/gl3.h>\n"
+        "#include <zlib.h>\n"
+        "#include \"ShaderImportBridge.h\"\n"
         "#include <stb_image.h>\n"
         "#include <cstdint>\n"
         "#include <cstring>\n"
