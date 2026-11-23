@@ -28,6 +28,8 @@ constexpr float kMaxY = 0.795f;
 // These normalized bounds are experimental and will be verified on device.
 constexpr float kPauseMinX = 0.197f;
 constexpr float kPauseMaxX = 0.250f;
+constexpr float kPauseShadersMinX = 0.250f;
+constexpr float kPauseShadersMaxX = 0.305f;
 constexpr float kPauseMinY = 0.794f;
 constexpr float kPauseMaxY = 0.938f;
 constexpr int kDown = 0;
@@ -39,7 +41,7 @@ constexpr int kPointerUp = 6;
 std::atomic<bool> gEnabled{false};
 bool gRegistered = false;
 std::atomic<int> gCapturedPointer{-1};
-enum class Target : int { None, Start, Pause };
+enum class Target : int { None, Start, Pause, Shaders };
 std::atomic<Target> gCapturedTarget{Target::None};
 // Development-only screen-state study counter (no coordinates or player data).
 std::atomic<bool> gPauseStateWarningLogged{false};
@@ -91,7 +93,7 @@ bool isScreenCandidate(Target target) {
     if (hud && pause) {
         bool hudOpen = env->CallStaticBooleanMethod(cls, hud);
         bool pauseOpen = env->CallStaticBooleanMethod(cls, pause);
-        allowed = target == Target::Pause ? pauseOpen : (!hudOpen && !pauseOpen);
+        allowed = (target == Target::Pause || target == Target::Shaders) ? pauseOpen : (!hudOpen && !pauseOpen);
     }
     if (auto ex = jni::takeException(env); !ex.empty()) {
         log().warn("OptLevi touch bridge: game state unavailable: {}", ex);
@@ -104,6 +106,9 @@ bool isScreenCandidate(Target target) {
 bool inModsButton(Target target, float x, float y) {
     float w = 0.0f, h = 0.0f;
     if (!getWindowSize(w, h)) return false;
+    if(target == Target::Shaders)
+        return x >= w * kPauseShadersMinX && x <= w * kPauseShadersMaxX &&
+               y >= h * kPauseMinY && y <= h * kPauseMaxY;
     if (target == Target::Pause)
         return x >= w * kPauseMinX && x <= w * kPauseMaxX &&
                y >= h * kPauseMinY && y <= h * kPauseMaxY;
@@ -121,7 +126,10 @@ bool onTouch(pl::input::TouchEvent const& e) {
         gCapturedPointer.store(-1);
         gCapturedTarget.store(Target::None);
         Target target = Target::None;
-        if (inModsButton(Target::Pause, e.x, e.y)) {
+        if(inModsButton(Target::Shaders, e.x, e.y) &&
+           isScreenCandidate(Target::Shaders)) {
+            target = Target::Shaders;
+        } else if (inModsButton(Target::Pause, e.x, e.y)) {
             if (isScreenCandidate(Target::Pause))
                 target = Target::Pause;
             else if (!gPauseStateWarningLogged.exchange(true))
@@ -155,12 +163,17 @@ bool onTouch(pl::input::TouchEvent const& e) {
             // animation. Open after a short nonblocking release interval.
             const unsigned revision = ++gPressRevision;
             log().info("OptLevi UI study: {} Mods control released; scheduling native browser",
-                target == Target::Pause ? "pause" : "start");
-            std::thread([revision] {
+                target == Target::Shaders ? "pause Shaders" :
+                (target == Target::Pause ? "pause" : "start"));
+            std::thread([revision,target] {
                 std::this_thread::sleep_for(std::chrono::milliseconds(95));
                 if (gEnabled.load() && state().active.load() &&
                     !state().menuOpen.load() && gPressRevision.load() == revision)
+                {
+                    if(target == Target::Shaders)
+                        state().shaderOpenRequested.store(true);
                     openMenu();
+                }
             }).detach();
         }
         return false;
