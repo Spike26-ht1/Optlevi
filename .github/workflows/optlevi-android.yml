@@ -116,8 +116,8 @@ jobs:
               from zlib import crc32
               return struct.pack(">I", len(d)) + t + d + struct.pack(">I", crc32(t+d) & 0xffffffff)
           w = h = 200
-          scanlines = b"".join(b"\\x00" + b"\\x00\\x7f\\x00\\xff" * w for _ in range(h))
-          data = b"\\x89PNG\\r\\n\\x1a\\n"
+          scanlines = b"".join(b"\x00" + b"\x00\x7f\x00\xff" * w for _ in range(h))
+          data = b"\x89PNG\r\n\x1a\n"
           data += chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 6, 0, 0, 0))
           data += chunk(b"IDAT", zlib.compress(scanlines))
           data += chunk(b"IEND", b"")
