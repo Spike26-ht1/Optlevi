@@ -29,7 +29,9 @@ assert row[0]["value"] == {"optlevi_mods@pause.optlevi_pause_mods_panel": {}}
 
 mods = pause["optlevi_pause_mods_button@common_buttons.light_text_button"]
 assert mods["$pressed_button_name"] == "button.optlevi_open_pause_menu"
-assert mods["$button_text"] == "optlevi.menu.button"
+assert mods["$button_text"] == "optlevi.menu.short_button"
+assert mods["size"] == [22, 24]
+assert pause["optlevi_pause_mods_panel"]["size"] == [24, 26]
 assert 0 < mods["$pressed_alpha"] < 1
 
 shaders = pause["optlevi_shaders_button@pause.pause_button_template"]
@@ -56,7 +58,8 @@ def hit(x, y, prefix="", w=1536, h=709):
 
 assert hit(436, 526), "Working main-menu Mods area moved"
 assert not hit(436, 526, "Pause"), "Pause area overlaps start area"
-assert hit(450, 610, "Pause"), "Pause Mods button expected next to book"
+assert hit(341, 610, "Pause"), "Compact pause Mods button expected beside the book"
+assert not hit(450, 610, "Pause"), "Pause hit area must not cover adjacent help button"
 assert not hit(450, 610), "Start area would intercept pause region"
 assert not hit(1250, 610, "Pause"), "Dressing Room must remain independent"
 
@@ -66,6 +69,7 @@ assert "isScreenCandidate(target)" in native and "openMenu();" in native
 for name in ("en_US.lang","pt_BR.lang"):
     text = (ROOT / "resources/levi_api/texts" / name).read_text()
     assert "optlevi.menu.button=Mods" in text
+    assert "optlevi.menu.short_button=M" in text
     assert "optlevi.shaders.button=Shaders" in text
 
 archive = ROOT / "build/OptLevi-LeviAPI-0.2.0.mcpack"

@@ -7,6 +7,8 @@
 
 #include <atomic>
 #include <cmath>
+#include <chrono>
+#include <thread>
 
 namespace modmenu::android::gameui {
 namespace {
@@ -24,10 +26,10 @@ constexpr float kMinY = 0.700f;
 constexpr float kMaxY = 0.795f;
 // The second Mods button is inserted after the pause menu's open-book control.
 // These normalized bounds are experimental and will be verified on device.
-constexpr float kPauseMinX = 0.250f;
-constexpr float kPauseMaxX = 0.340f;
-constexpr float kPauseMinY = 0.806f;
-constexpr float kPauseMaxY = 0.934f;
+constexpr float kPauseMinX = 0.197f;
+constexpr float kPauseMaxX = 0.250f;
+constexpr float kPauseMinY = 0.794f;
+constexpr float kPauseMaxY = 0.938f;
 constexpr int kDown = 0;
 constexpr int kUp = 1;
 constexpr int kMove = 2;
@@ -41,6 +43,7 @@ enum class Target : int { None, Start, Pause };
 std::atomic<Target> gCapturedTarget{Target::None};
 // Development-only screen-state study counter (no coordinates or player data).
 std::atomic<bool> gPauseStateWarningLogged{false};
+std::atomic<unsigned> gPressRevision{0};
 
 bool getWindowSize(float& width, float& height) {
     JNIEnv* env = jni::env();
@@ -129,27 +132,38 @@ bool onTouch(pl::input::TouchEvent const& e) {
         if (target != Target::None) {
             gCapturedTarget.store(target);
             gCapturedPointer.store(e.pointerId);
-            return true;
+            // Let Minecraft process ACTION_DOWN so the vanilla button draws
+            // its pressed face, rather than stealing the animation.
+            return false;
         }
         return false;
     }
     if (e.pointerId != gCapturedPointer.load()) return false;
 
-    if (e.action == kMove) return true;
+    if (e.action == kMove) return false;
     if (e.action == kCancel) {
         gCapturedPointer.store(-1);
         gCapturedTarget.store(Target::None);
-        return true;
+        ++gPressRevision;
+        return false;
     }
     if (e.action == kUp || e.action == kPointerUp) {
         gCapturedPointer.store(-1);
         const Target target = gCapturedTarget.exchange(Target::None);
         if (target != Target::None && inModsButton(target, e.x, e.y) && isScreenCandidate(target)) {
-            log().info("OptLevi UI study: {} Mods control activated; opening native browser",
+            // ACTION_UP also goes to Minecraft to finish the vanilla press
+            // animation. Open after a short nonblocking release interval.
+            const unsigned revision = ++gPressRevision;
+            log().info("OptLevi UI study: {} Mods control released; scheduling native browser",
                 target == Target::Pause ? "pause" : "start");
-            openMenu();
+            std::thread([revision] {
+                std::this_thread::sleep_for(std::chrono::milliseconds(95));
+                if (gEnabled.load() && state().active.load() &&
+                    !state().menuOpen.load() && gPressRevision.load() == revision)
+                    openMenu();
+            }).detach();
         }
-        return true;
+        return false;
     }
     return false;
 }
@@ -169,6 +183,7 @@ void uninstall() {
     gEnabled.store(false);
     gCapturedPointer.store(-1);
     gCapturedTarget.store(Target::None);
+    ++gPressRevision;
 }
 
 } // namespace modmenu::android::gameui
