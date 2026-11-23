@@ -92,7 +92,7 @@ static void drawOptLeviShadersScreen(ImVec2 display) {
     float titleW=bold->CalcTextSizeA(bold->FontSize,FLT_MAX,0,title.c_str()).x;
     ofText(dl,bold,{display.x*0.5f-titleW*0.5f,top},
            title.c_str(),ofc(0xFFFFFF));
-    std::string sub="Select / GLES3 shader test";
+    std::string sub="Java final pass / GLES3 test (experimental)";
     fonts::note(sub);
     ImFont* font=fonts::body();
     float subW=font->CalcTextSizeA(font->FontSize,FLT_MAX,0,sub.c_str()).x;
@@ -222,9 +222,10 @@ static void drawOptLeviShadersScreen(ImVec2 display) {
                     optTranslateFinal(src),selected->path.filename().string()+":"+origin);
                 gOptSavedSelection=gOptShadersSelection;
                 gOptSavedEnabled=gOptPreviewEnabled;
-                gOptImportStatus="Compiling experimental world postprocess pass...";
+                gOptImportStatus="Compiling selected Java final pass (not full BSL rendering)...";
             }else
-                gOptImportStatus="Not supported for world testing: requires Java final.fsh or composite.fsh";
+                gOptImportStatus=gOptJavaSourceError.empty()?
+                    "Unsupported Java final/composite pass":gOptJavaSourceError;
         }
     }
     if(ofButton("##iris_done","Done",
@@ -236,8 +237,9 @@ static void drawOptLeviShadersScreen(ImVec2 display) {
     // It uses a synthetic input gradient, NOT the RenderDragon world image.
     if(gOptPreviewSuccess && gOptPreviewTexture &&
        gOptPreviewContext==eglGetCurrentContext()){
-        float pw=210*u,ph=118*u;
-        ImVec2 pt{display.x-pw-10*u,12*u};
+        float pw=std::min(148*u,std::max(64*u,left-30*u));
+        float ph=pw*0.5625f;
+        ImVec2 pt{std::max(8*u,left-pw-10*u),barY+line+7*u};
         dl->AddRectFilled({pt.x-4*u,pt.y-4*u},
                           {pt.x+pw+4*u,pt.y+ph+27*u},
                            ofc(0x111111,255));
@@ -250,7 +252,7 @@ static void drawOptLeviShadersScreen(ImVec2 display) {
         // Compilation errors are not discarded. Use a scrollable popup to
         // inspect the real driver log instead of pretending support.
         if(ofButton("##iris_compilelog","Compiler log",
-                    {display.x-140*u,display.y-118*u},
+                    {std::max(8*u,left-140*u),display.y-118*u},
                     {125*u,29*u},u))
             ImGui::OpenPopup("##iris_compile_details");
         if(ImGui::BeginPopup("##iris_compile_details")){
