@@ -168,7 +168,9 @@ static void drawOptLeviShadersScreen(ImVec2 display) {
     dl->PushClipRect({left,infoY},{right,infoY+55*u},true);
     ofText(dl,font,{left+5*u,infoY},label.c_str(),
            ofc(0xDDE6EC),font->FontSize*0.84f,w-10*u);
-    if(!gOptImportStatus.empty())status=gOptImportStatus;
+    // A driver failure must never be hidden behind stale import toast text.
+    if(world.failed) status=world.message;
+    else if(!gOptImportStatus.empty())status=gOptImportStatus;
     else if(!gOptShadersError.empty())status=gOptShadersError;
     ofText(dl,font,{left+5*u,infoY+22*u},status.c_str(),
            ofc(0xD7D7D7),font->FontSize*0.78f,w-10*u);
@@ -198,12 +200,15 @@ static void drawOptLeviShadersScreen(ImVec2 display) {
     float by2=display.y-35*u;
     float third=(w-2*gap)/3;
     if(ofButton("##iris_cancel","Cancel",{left,by2},{third,buttonH},u)) {
+        gOptPreviewReport.clear();
         gOptShadersSelection=gOptSavedSelection;
         gOptPreviewEnabled=gOptSavedEnabled;
         gOptImportStatus="Selection reverted (world effect unchanged)";
     }
     if(ofButton("##iris_apply","Apply",{left+third+gap,by2},
                 {third,buttonH},u)) {
+        // Show the shader compiler's real status after Apply.
+        gOptImportStatus.clear();
         if(!gOptPreviewEnabled||gOptShadersSelection.empty()) {
             modmenu::android::shaderworld::requestDisable();
             gOptSavedSelection=gOptShadersSelection;

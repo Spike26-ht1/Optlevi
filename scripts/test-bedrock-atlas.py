@@ -57,7 +57,7 @@ for expected in (
     assert expected in screen,expected
 
 base=json.loads((ROOT/"resources/levi_api/manifest.json").read_text())
-assert base["header"]["version"]==[0,11,0]
+assert base["header"]["version"]==[0,12,0]
 prep=(ROOT/"scripts/prepare-fabric-real-screen.py").read_text()
 assert "OptLeviBedrockAtlas.inc" in prep
 assert "OptLeviBedrockTexture.inc" in prep
@@ -65,4 +65,4 @@ assert "#include <GLES3/gl3.h>" in prep
 assert "#include <stb_image.h>" in prep
 print("Verified 16 exact Bedrock UI sprites in embedded 128×128 PNG atlas.")
 print("Verified GPU upload, nine-slice pixels, textured controls/panels, real mouse states.")
-print("Verified OptLevi 0.11.0 manifest and original Fabric-style ModMenu controls.")
+print("Verified OptLevi 0.12.0 manifest and original Fabric-style ModMenu controls.")

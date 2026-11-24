@@ -18,7 +18,7 @@ fabric=(R/"src/ui/OptLeviFabricScreen.inc").read_text()
 catalog=(R/"src/ui/OptLeviShaderCatalog.inc").read_text()
 manifest=json.loads((R/"resources/levi_api/manifest.json").read_text())
 
-assert manifest["header"]["version"]==[0,11,0]
+assert manifest["header"]["version"]==[0,12,0]
 assert '#include "OptLeviShaderScreen.inc"' in fabric
 assert "drawOptLeviShadersScreen(display);" in fabric
 assert "OptLeviShaderGlesTest.inc" in ui and "OptLeviShaderGlesTest.inc" in prep

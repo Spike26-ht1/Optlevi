@@ -2,6 +2,24 @@
 
 OptLevi brings a **Fabric Mod Menu-inspired native mod browser** to Minecraft Bedrock on Android, with Minecraft-style **Mods** buttons rendered by a minimal Levi API resource pack.
 
+## OptLevi 0.12.0 — safer Android shader import (ARM64)
+
+On Android, the system document picker now stages selected shader files with
+an atomic rename **before** the launcher deletes its temporary copy, then
+imports them to OptLevi's `shaderpacks/` folder on a managed native worker.
+This avoids copying large BSL/Java shader ZIPs inside the Android
+`onActivityResult` callback. The native JNI callback catches exceptions,
+prevents duplicate worker requests, preserves `.material.bin` filename suffixes,
+and updates the shader menu when an import finishes. GLES3 world shader
+compiler failures are no longer hidden by obsolete import messages.
+
+This is an **import stability release built on 0.11's BSL-oriented source
+preprocessor**, not a claim that complete BSL deferred rendering works on
+Android. The owner-provided xCrash Java tombstone is an independent launcher
+startup error (`GameActivity.initializeNativeCode` missing), which needs a
+matching launcher/preloader build and cannot yet be attributed to OptLevi.
+See [crash investigation](docs/android-import-crash-v12.md).
+
 ## OptLevi 0.11.0 — BSL Java final-pass compatibility experiment (Android ARM64)
 
 This release builds on 0.11.0 by reading the **actual Java shader program** (including
