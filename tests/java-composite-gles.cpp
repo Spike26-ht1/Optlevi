@@ -208,6 +208,37 @@ void main(){color=vec4(texture(colortex0,texcoord).rgb*0.25,1.0);}
     actual=pixel();
     require(std::abs(int(actual[0])-255)<=2&&std::abs(int(actual[1])-128)<=2&&
         std::abs(int(actual[2])-64)<=2,"Intermediate HDR data was clipped");
+    // Clear=false must keep the previous GPU output even when the writer
+    // occurs after the first read, and reset on pipeline reapplication.
+    clearScene();
+    Pass history{"composite",fragment(R"(
+uniform sampler2D colortex2;
+layout(location=0) out vec4 color;
+void main(){color=texture(colortex2,texcoord)+vec4(0.25,0.0,0.0,0.0);}
+)"),{2},false};
+    history.enabledProbe=fragment(R"(
+uniform float optHistory2;
+layout(location=0) out vec4 optEnabledOutput;
+void main(){optEnabledOutput=vec4(optHistory2);}
+)");
+    Pass historyEnd{"final",fragment(R"(
+uniform sampler2D colortex2;
+layout(location=0) out vec4 color;
+void main(){color=vec4(texture(colortex2,texcoord).rgb,1.0);}
+)"),{0},true};
+    requestPipeline({history,historyEnd},"Persistent history fixture");
+    for(int n=1;n<=3;++n){
+        clearScene();beforeSwap(32,32);
+        require(status().active&&!status().failed,"Persistent history graph failed");
+        actual=pixel();
+        require(std::abs(int(actual[0])-int(n*63.75f))<=2,"History did not survive a frame");
+    }
+    requestPipeline({history,historyEnd},"Reset history fixture");
+    clearScene();beforeSwap(32,32);actual=pixel();
+    require(std::abs(int(actual[0])-64)<=2,"History not reset on reapply");
+    requestPipeline({historyEnd},"Missing history writer fixture");
+    clearScene();beforeSwap(32,32);
+    require(!status().active&&status().failed,"Missing history input was accepted");
     // Missing geometry input must not turn into a fake color sampler.
     clearScene();
     Pass unavailable{"final",fragment(R"(

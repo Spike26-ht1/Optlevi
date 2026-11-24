@@ -187,6 +187,10 @@ void main(){
     assert(probe.find("#ifdef AUTO_EXPOSURE\n#undef OPTLEVI_MIP_INPUT_0\n#define OPTLEVI_MIP_INPUT_0 1\n#endif")!=std::string::npos);
     assert(probe.find("#define OPTLEVI_MIP_INPUT_1 1")==std::string::npos);
     assert(optBuildEnabledProbe("void main(){}","",probe,error)&&probe.empty());
+    assert(optBuildEnabledProbe("const bool colortex2Clear = false;\nconst bool gaux1Clear = false;\n","",probe,error));
+    assert(probe.find("#define OPTLEVI_HISTORY_2 1")!=std::string::npos);
+    assert(probe.find("#define OPTLEVI_HISTORY_4 1")!=std::string::npos);
+    assert(optBuildEnabledProbe("// const bool colortex3Clear = false;\n","",probe,error)&&probe.empty());
     auto numeric=optTranslateBslNumeric(
         "// BSL Shaders v10 Series\n"
         "float light=eyeBrightnessSmooth.y / 240.0;\n"

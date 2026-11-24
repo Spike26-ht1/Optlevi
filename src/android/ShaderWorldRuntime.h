@@ -29,6 +29,8 @@ struct Pass {
     std::string enabledProbe;
     // Pack-wide attachment formats, present only on the first graph pass.
     std::vector<std::pair<unsigned,std::string>> colorFormats;
+    // Clear=false history is reflected via enabledProbe; no history buffer
+    // is usable without an actual writer in the graph.
 };
 struct Status {
     bool active=false;

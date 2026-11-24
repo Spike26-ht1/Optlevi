@@ -558,7 +558,7 @@ static bool optBuildEnabledProbe(std::string const& source,std::string const& ex
     // Strip comments before collecting directives, including continuation
     // lines. No executable GLSL from a disabled program is compiled.
     std::istringstream input(source);std::string line,body;
-    bool block=false,continuation=false,hasMipmap=false;
+    bool block=false,continuation=false,hasMipmap=false,hasHistory=false;
     while(std::getline(input,line)){
         for(size_t i=0;i<line.size();++i){
             if(block){
@@ -597,6 +597,18 @@ static bool optBuildEnabledProbe(std::string const& source,std::string const& ex
                     static const char* names[]={"gcolor","gdepth","gnormal","composite"};
                     legacy=std::string("constbool")+names[n]+"MipmapEnabled=";
                 }else if(n<8)legacy="constboolgaux"+std::to_string(n-3)+"MipmapEnabled=";
+                std::string clearCanonical="constboolcolortex"+std::to_string(n)+"Clear=";
+                std::string clearLegacy=legacy;
+                if(!clearLegacy.empty())clearLegacy.replace(clearLegacy.size()-14,14,"Clear=");
+                bool keep=compact==clearCanonical+"false;"||(!clearLegacy.empty()&&compact==clearLegacy+"false;");
+                bool clear=compact==clearCanonical+"true;"||(!clearLegacy.empty()&&compact==clearLegacy+"true;");
+                if(keep||clear){
+                    hasHistory=true;
+                    std::string marker="OPTLEVI_HISTORY_"+std::to_string(n);
+                    body+="#undef "+marker+"\n";
+                    if(keep)body+="#define "+marker+" 1\n";
+                    break;
+                }
                 bool yes=compact==canonical+"true;"||(!legacy.empty()&&compact==legacy+"true;");
                 bool no=compact==canonical+"false;"||(!legacy.empty()&&compact==legacy+"false;");
                 if(yes||no){
@@ -614,13 +626,16 @@ static bool optBuildEnabledProbe(std::string const& source,std::string const& ex
         body+=line+'\n';
     }
     if(block||continuation){error="Unterminated directive in program.enabled probe";return false;}
-    if(expression.empty()&&!hasMipmap){probe.clear();return true;}
+    if(expression.empty()&&!hasMipmap&&!hasHistory){probe.clear();return true;}
     std::string declarations,additions;
     for(unsigned n=0;n<16;++n){
         auto index=std::to_string(n);
         auto guard="#ifdef OPTLEVI_MIP_INPUT_"+index+"\n";
         declarations+=guard+"uniform float optMipInput"+index+";\n#endif\n";
         additions+=guard+"value+=optMipInput"+index+";\n#endif\n";
+        guard="#ifdef OPTLEVI_HISTORY_"+index+"\n";
+        declarations+=guard+"uniform float optHistory"+index+";\n#endif\n";
+        additions+=guard+"value+=optHistory"+index+";\n#endif\n";
     }
     probe=optGlesCompatibilityHeader()+body+"\n#if "+condition+"\n"+declarations+
         "layout(location=0) out vec4 optEnabledOutput;\nvoid main(){float value=1.0;\n"+

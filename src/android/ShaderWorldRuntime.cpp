@@ -70,7 +70,7 @@ struct CompiledPass {
 std::vector<CompiledPass> pipeline;
 std::array<std::array<GLuint,2>,kBuffers> textures{};
 std::array<unsigned,kBuffers> front{};
-std::array<bool,kBuffers> needed{},mipNeeded{};
+std::array<bool,kBuffers> needed{},mipNeeded{},historyNeeded{};
 std::array<std::array<bool,2>,kBuffers> mipValid{};
 GLuint triangleVao=0,passFbo=0,outputTex=0;
 int textureWidth=0,textureHeight=0;
@@ -88,7 +88,7 @@ void abandonContext() {
     context=eglGetCurrentContext();
     pipeline.clear();
     packGpu.clear();packGpuBytes=0;frameCounter=0;
-    textures={};front={};needed={};mipNeeded={};mipValid={};colorFormats={};triangleVao=passFbo=outputTex=0;
+    textures={};front={};needed={};mipNeeded={};historyNeeded={};mipValid={};colorFormats={};triangleVao=passFbo=outputTex=0;
     textureWidth=textureHeight=0;
     renderedFrame=false;
     requestedActive=false;
@@ -100,7 +100,7 @@ void discardGpu() {
     for(auto& p:packGpu)if(p.texture)glDeleteTextures(1,&p.texture);
     packGpu.clear();packGpuBytes=0;frameCounter=0;
     for(auto& pair:textures) glDeleteTextures(2,pair.data());
-    textures={};front={};needed={};mipNeeded={};mipValid={};colorFormats={};
+    textures={};front={};needed={};mipNeeded={};historyNeeded={};mipValid={};colorFormats={};
     if(outputTex){glDeleteTextures(1,&outputTex);outputTex=0;}
     if(passFbo){glDeleteFramebuffers(1,&passFbo);passFbo=0;}
     if(triangleVao){glDeleteVertexArrays(1,&triangleVao);triangleVao=0;}
@@ -138,8 +138,8 @@ GLuint compile(GLenum kind,std::string const& source,std::string& error) {
 }
 
 
-bool evaluateEnabled(Pass const& pass,bool& enabled,std::uint32_t& mipmapInputs,std::string& error){
-    enabled=true;mipmapInputs=0;
+bool evaluateEnabled(Pass const& pass,bool& enabled,std::uint32_t& mipmapInputs,std::uint32_t& historyInputs,std::string& error){
+    enabled=true;mipmapInputs=0;historyInputs=0;
     if(pass.enabledProbe.empty())return true;
     static char const* vertex=R"(#version 300 es
 void main(){gl_Position=vec4(0.0,0.0,0.0,1.0);}
@@ -159,6 +159,8 @@ void main(){gl_Position=vec4(0.0,0.0,0.0,1.0);}
     if(yes)for(unsigned n=0;n<kBuffers;++n){
         auto name="optMipInput"+std::to_string(n);
         if(glGetUniformLocation(program,name.c_str())>=0)mipmapInputs|=std::uint32_t(1)<<n;
+        name="optHistory"+std::to_string(n);
+        if(glGetUniformLocation(program,name.c_str())>=0)historyInputs|=std::uint32_t(1)<<n;
     }
     glDeleteProgram(program);
     if(yes==no){error="Ambiguous program.enabled probe";return false;}
@@ -329,16 +331,29 @@ bool compilePipeline(std::vector<Pass> const& passes,std::string& error) {
         if(entry.first>=kBuffers){error="Invalid colortex format index";return false;}
         colorFormats[entry.first]=resolveColorFormat(entry.second);
     }
-    std::array<bool,kBuffers> available{};
+    // Collect metadata from all active programs before validating graph
+    // dependencies: temporal resources can be read before their first writer.
+    struct Metadata { bool enabled=true; std::uint32_t mip=0,history=0; };
+    std::vector<Metadata> metadata(passes.size());
+    std::array<bool,kBuffers> available{},produced{};
     available[0]=true;needed[0]=true;
+    for(size_t i=0;i<passes.size();++i){
+        auto& m=metadata[i];
+        if(!evaluateEnabled(passes[i],m.enabled,m.mip,m.history,error)){
+            error=passes[i].name+" program metadata: "+error;return false;
+        }
+        if(m.enabled)for(unsigned n=0;n<kBuffers;++n)
+            if(m.history&(std::uint32_t(1)<<n)){
+                // colortex0 is replaced by a new real scene every frame.
+                if(n==0){error="Persistent colortex0 conflicts with captured scene";return false;}
+                historyNeeded[n]=true;available[n]=true;needed[n]=true;
+            }
+    }
     for(size_t i=0;i<passes.size();++i) {
         auto const& pass=passes[i];
-        bool enabled=true;
-        std::uint32_t mipmapInputs=0;
-        if(!evaluateEnabled(pass,enabled,mipmapInputs,error)){
-            error=pass.name+" program.enabled: "+error;return false;
-        }
-        if(!enabled){
+        auto const& m=metadata[i];
+        std::uint32_t mipmapInputs=m.mip;
+        if(!m.enabled){
             if(pass.finalPass){error="Final pass cannot be disabled";return false;}
             continue;
         }
@@ -367,8 +382,11 @@ bool compilePipeline(std::vector<Pass> const& passes,std::string& error) {
         for(auto const& binding:p.samplers)
             if(binding.packTexture<0&&(mipmapInputs&(std::uint32_t(1)<<binding.buffer)))
                 mipNeeded[unsigned(binding.buffer)]=true;
-        if(!p.finalPass)for(auto t:p.targets){available[t]=true;needed[t]=true;}
+        if(!p.finalPass)for(auto t:p.targets){available[t]=true;needed[t]=true;produced[t]=true;}
         pipeline.push_back(std::move(p));
+    }
+    for(unsigned i=0;i<kBuffers;++i)if(historyNeeded[i]&&!produced[i]){
+        error="Persistent colortex"+std::to_string(i)+" has no active producer";return false;
     }
     for(unsigned i=0;i<kBuffers;++i)if(needed[i]&&!colorFormats[i].bytes){
         error="Unsupported color attachment format for colortex"+std::to_string(i);return false;
@@ -459,7 +477,7 @@ bool ensureTargets(int width,int height,std::string& error) {
     if(width==textureWidth&&height==textureHeight&&outputTex)return true;
     for(auto& pair:textures){glDeleteTextures(2,pair.data());pair={};}
     if(outputTex){glDeleteTextures(1,&outputTex);outputTex=0;}
-    textureWidth=textureHeight=0;mipValid={};
+    textureWidth=textureHeight=0;mipValid={};front={};frameCounter=0;
     if(width<=0||height<=0||width>4096||height>4096){error="Unsupported viewport size";return false;}
     std::uint64_t basePixels=std::uint64_t(width)*height,chainPixels=basePixels;
     for(int w=width,h=height;w>1||h>1;){
@@ -479,6 +497,30 @@ bool ensureTargets(int width,int height,std::string& error) {
         }
     }
     if(!allocateTexture(outputTex,width,height,FormatInfo{})){error="Cannot allocate final color target";return false;}
+    // Defined initial history only; subsequent frames read the actual
+    // previous shader output. Do not initialize nonexistent geometry.
+    glBindFramebuffer(GL_FRAMEBUFFER,passFbo);
+    GLint maxDraw=0,maxColor=0;
+    glGetIntegerv(GL_MAX_DRAW_BUFFERS,&maxDraw);
+    glGetIntegerv(GL_MAX_COLOR_ATTACHMENTS,&maxColor);
+    for(int n=0;n<std::min({maxDraw,maxColor,int(kBuffers)});++n)
+        glFramebufferTexture2D(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0+n,GL_TEXTURE_2D,0,0);
+    const GLenum draw=GL_COLOR_ATTACHMENT0;
+    glDrawBuffers(1,&draw);glReadBuffer(draw);
+    glDisable(GL_SCISSOR_TEST);glColorMask(GL_TRUE,GL_TRUE,GL_TRUE,GL_TRUE);
+    const GLfloat zero[4]={0,0,0,0};
+    for(unsigned i=0;i<kBuffers;++i)if(historyNeeded[i]){
+        for(GLuint t:textures[i]){
+            glFramebufferTexture2D(GL_FRAMEBUFFER,draw,GL_TEXTURE_2D,t,0);
+            if(glCheckFramebufferStatus(GL_FRAMEBUFFER)!=GL_FRAMEBUFFER_COMPLETE){
+                error="Cannot initialize history attachment colortex"+std::to_string(i);return false;
+            }
+            glClearBufferfv(GL_COLOR,0,zero);
+        }
+    }
+    glFramebufferTexture2D(GL_FRAMEBUFFER,draw,GL_TEXTURE_2D,0,0);
+    glBindFramebuffer(GL_FRAMEBUFFER,0);glReadBuffer(GL_BACK);
+    if(glGetError()!=GL_NO_ERROR){error="Cannot initialize history buffers";return false;}
     textureWidth=width;textureHeight=height;
     return true;
 }
@@ -520,7 +562,8 @@ bool renderPipeline(int width,int height,std::string& error) {
     glBindFramebuffer(GL_FRAMEBUFFER,0);
     glReadBuffer(GL_BACK);
     if(!ensureTargets(width,height,error))return false;
-    front.fill(0);mipValid[0][0]=false;
+    for(unsigned i=0;i<kBuffers;++i)if(!historyNeeded[i])front[i]=0;
+    mipValid[0][0]=false;
     glActiveTexture(GL_TEXTURE0);
     glBindSampler(0,0);
     glBindTexture(GL_TEXTURE_2D,textures[0][0]);
