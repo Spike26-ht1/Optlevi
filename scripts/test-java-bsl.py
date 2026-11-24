@@ -187,6 +187,16 @@ void main(){
     assert(probe.find("#ifdef AUTO_EXPOSURE\n#undef OPTLEVI_MIP_INPUT_0\n#define OPTLEVI_MIP_INPUT_0 1\n#endif")!=std::string::npos);
     assert(probe.find("#define OPTLEVI_MIP_INPUT_1 1")==std::string::npos);
     assert(optBuildEnabledProbe("void main(){}","",probe,error)&&probe.empty());
+    auto numeric=optTranslateBslNumeric(
+        "// BSL Shaders v10 Series\n"
+        "float light=eyeBrightnessSmooth.y / 240.0;\n"
+        "if(testCoord.y > 0 && testCoord.y < 1.0){}\n"
+        "float value=1.0 / samples;\n");
+    assert(numeric.find("float(eyeBrightnessSmooth.y) / 240.0")!=std::string::npos);
+    assert(numeric.find("testCoord.y > 0.0 && testCoord.y < 1.0")!=std::string::npos);
+    assert(numeric.find("1.0.0")==std::string::npos);
+    assert(numeric.find("1.0 / float(samples)")!=std::string::npos);
+    assert(optTranslateBslNumeric("1.0 / samples")=="1.0 / samples");
     std::cout << "Original vertex, global initializers and conditional route translation: OK\n";
 }
 ''')

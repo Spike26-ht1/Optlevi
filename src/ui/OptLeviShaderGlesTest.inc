@@ -268,6 +268,55 @@ static std::string optTranslateGlobalInitializers(std::string const& source){
     return body+"\nvoid main(){\n"+calls+"optLeviGlobalMain();\n}\n";
 }
 
+// Narrow compatibility profile for BSL's v10 desktop GLSL. GLES requires
+// explicit int-to-float conversion where desktop GLSL allows it. These
+// rules preserve the integer uniforms, loop counters and preprocessor
+// settings; they only change the known mixed-type arithmetic sites.
+// Unknown packs and unmatched expressions are left to the compiler.
+static std::string optTranslateBslNumeric(std::string source){
+    if(source.find("BSL Shaders v10 Series")==std::string::npos)return source;
+    static const std::pair<char const*,char const*> rules[]={
+        {"eyeBrightnessSmooth.y / 240.0","float(eyeBrightnessSmooth.y) / 240.0"},
+        {"isEyeInWater == 1.0","float(isEyeInWater) == 1.0"},
+        {"frameCounter * 0.618","float(frameCounter) * 0.618"},
+        {"exp2(i + dither)","exp2(float(i) + dither)"},
+        {"0.0512 / shadowMapResolution","0.0512 / float(shadowMapResolution)"},
+        {"noVignetteColor * RETRO_FILTER_DEPTH","noVignetteColor * float(RETRO_FILTER_DEPTH)"},
+        {"/ RETRO_FILTER_DEPTH","/ float(RETRO_FILTER_DEPTH)"},
+        {"testCoord.x > -2","testCoord.x > -2.0"},
+        {"testCoord.x < 3","testCoord.x < 3.0"},
+        {"testCoord.y > 0","testCoord.y > 0.0"},
+        {"testCoord.y < 1","testCoord.y < 1.0"},
+        {"1.0 - isEyeInWater","1.0 - float(isEyeInWater)"},
+        {"worldPos.y + cameraPosition.y - FOG_HEIGHT_Y","worldPos.y + cameraPosition.y - float(FOG_HEIGHT_Y)"},
+        {"CLOUD_DENSITY * 0.125","float(CLOUD_DENSITY) * 0.125"},
+        {"1.0 / samples","1.0 / float(samples)"},
+        {"* CLOUD_DENSITY * 0.5","* float(CLOUD_DENSITY) * 0.5"},
+        {"currentStep * CLOUD_THICKNESS","currentStep * float(CLOUD_THICKNESS)"},
+        {"float cloudThickness = CLOUD_THICKNESS","float cloudThickness = float(CLOUD_THICKNESS)"},
+        {"furthestPlane < 0","furthestPlane < 0.0"},
+        {"min(planeDifference / sampleLength, maxSamples) + 1","min(planeDifference / sampleLength, float(maxSamples)) + 1.0"},
+        {"(moonNormalX * moonNormalX + moonNormalY * moonNormalY) > 1","(moonNormalX * moonNormalX + moonNormalY * moonNormalY) > 1.0"},
+    };
+    auto token=[](char c){return (c>='a'&&c<='z')||(c>='A'&&c<='Z')||
+        (c>='0'&&c<='9')||c=='_'||c=='.';};
+    for(auto const& rule:rules){
+        std::string from=rule.first,to=rule.second;
+        size_t at=0;
+        while((at=source.find(from,at))!=std::string::npos){
+            size_t end=at+from.size();
+            // Do not turn an already-correct 0.0 into 0.0.0, or match
+            // an identifier prefix, a longer numeric literal, or a swizzle.
+            if((token(from.front())&&at&&token(source[at-1]))||
+               (token(from.back())&&end<source.size()&&token(source[end]))){
+                at=end;continue;
+            }
+            source.replace(at,from.size(),to);at+=to.size();
+        }
+    }
+    return source;
+}
+
 static std::string optTranslateFinal(std::string source,bool originalVertex=false) {
     // Translate desktop GLSL 120 directives to GLES3 without claiming full Iris.
     std::istringstream lines(source);
@@ -295,7 +344,7 @@ static std::string optTranslateFinal(std::string source,bool originalVertex=fals
     return optGlesCompatibilityHeader()+
         "layout(location=0) out vec4 optFragColor;\n"+
         (originalVertex?"in vec4 optLegacyTexCoord;\n":"")+
-        optTranslateGlobalInitializers(source);
+        optTranslateGlobalInitializers(optTranslateBslNumeric(std::move(source)));
 }
 
 // RenderDragonShaderLoader's input mapping catalog distinguishes pipeline
@@ -416,7 +465,7 @@ vec4 optFullscreenPosition(){
     return vec4(corners[gl_VertexID],0.0,1.0);
 }
 vec4 optFullscreenTransform(){return optScreenProjection*optFullscreenPosition();}
-)GLSL")+optTranslateGlobalInitializers(clean);
+)GLSL")+optTranslateGlobalInitializers(optTranslateBslNumeric(std::move(clean)));
 }
 
 // Preserve the original conditional branches around routing comments. Turn
