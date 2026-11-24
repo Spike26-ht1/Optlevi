@@ -143,6 +143,25 @@ void main(){color=texture(noisetex,texcoord);color.a=float(frameCounter==0);}
     actual=pixel();
     require(std::abs(int(actual[0])-17)<=2&&std::abs(int(actual[1])-99)<=2&&
             std::abs(int(actual[2])-201)<=2&&actual[3]==255,"Pack texture data incorrect");
+    // Disabled option passes must not compile broken GLSL or create inputs.
+    clearScene();
+    Pass disabled{"composite", "intentionally invalid GLSL",{3},false};
+    disabled.enabledProbe=fragment(R"(
+layout(location=0) out vec4 optDisabledOutput;
+void main(){optDisabledOutput=vec4(0.0);}
+)");
+    requestPipeline({disabled,end},"Disabled option fixture");
+    beforeSwap(32,32);
+    require(status().active&&!status().failed,"Disabled pass should be skipped");
+    actual=pixel();
+    require(std::abs(int(actual[0])-51)<=2,"Disabled pass modified scene");
+    disabled.enabledProbe=fragment(R"(
+layout(location=0) out vec4 optEnabledOutput;
+void main(){optEnabledOutput=vec4(1.0);}
+)");
+    requestPipeline({disabled,end},"Enabled option fixture");
+    beforeSwap(32,32);
+    require(!status().active&&status().failed,"Enabled broken pass should reject graph");
     // Missing geometry input must not turn into a fake color sampler.
     clearScene();
     Pass unavailable{"final",fragment(R"(

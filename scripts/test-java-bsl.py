@@ -177,6 +177,12 @@ void main(){
     assert(fragment.find("optRouteTarget1")!=std::string::npos);
     auto vertex=optTranslateFullscreenVertex("#version 120\nvarying vec2 uv;\nvoid main(){uv=gl_MultiTexCoord0.xy;gl_Position=ftransform();}\n");
     assert(vertex.find("optFullscreenPosition().xy")!=std::string::npos);
+    std::string probe;
+    assert(optBuildEnabledProbe("#define TAA\n/* #define RETRO_FILTER */\n// #define DOF\n", "TAA && !RETRO_FILTER",probe,error));
+    assert(probe.find("defined(TAA)")!=std::string::npos);
+    assert(probe.find("#define RETRO_FILTER")==std::string::npos);
+    assert(probe.find("#define DOF")==std::string::npos);
+    assert(!optBuildEnabledProbe("","TAA; bad",probe,error));
     std::cout << "Original vertex, global initializers and conditional route translation: OK\n";
 }
 ''')

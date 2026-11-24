@@ -110,6 +110,30 @@ GLuint compile(GLenum kind,std::string const& source,std::string& error) {
     return obj;
 }
 
+
+bool evaluateEnabled(Pass const& pass,bool& enabled,std::string& error){
+    enabled=true;
+    if(pass.enabledProbe.empty())return true;
+    static char const* vertex=R"(#version 300 es
+void main(){gl_Position=vec4(0.0,0.0,0.0,1.0);}
+)";
+    GLuint vs=compile(GL_VERTEX_SHADER,vertex,error);
+    if(!vs)return false;
+    GLuint fs=compile(GL_FRAGMENT_SHADER,pass.enabledProbe,error);
+    if(!fs){glDeleteShader(vs);return false;}
+    GLuint program=glCreateProgram();
+    if(!program){glDeleteShader(vs);glDeleteShader(fs);error="Cannot allocate enabled probe";return false;}
+    glAttachShader(program,vs);glAttachShader(program,fs);glLinkProgram(program);
+    glDeleteShader(vs);glDeleteShader(fs);
+    GLint linked=0;glGetProgramiv(program,GL_LINK_STATUS,&linked);
+    if(!linked){error=shaderLog(program,true);glDeleteProgram(program);return false;}
+    bool yes=glGetFragDataLocation(program,"optEnabledOutput")==0;
+    bool no=glGetFragDataLocation(program,"optDisabledOutput")==0;
+    glDeleteProgram(program);
+    if(yes==no){error="Ambiguous program.enabled probe";return false;}
+    enabled=yes;return true;
+}
+
 int bufferIndex(std::string const& name) {
     if(name=="gcolor"||name=="texture"||name=="tex")return 0;
     if(name=="gdepth")return 1;
@@ -274,6 +298,14 @@ bool compilePipeline(std::vector<Pass> const& passes,std::string& error) {
     available[0]=true;needed[0]=true;
     for(size_t i=0;i<passes.size();++i) {
         auto const& pass=passes[i];
+        bool enabled=true;
+        if(!evaluateEnabled(pass,enabled,error)){
+            error=pass.name+" program.enabled: "+error;return false;
+        }
+        if(!enabled){
+            if(pass.finalPass){error="Final pass cannot be disabled";return false;}
+            continue;
+        }
         if(pass.finalPass!=(i+1==passes.size())||pass.targets.empty()||
            pass.targets.size()>size_t(std::min(maxDraw,maxColor))||
            (pass.finalPass&&pass.targets.size()!=1)){
@@ -494,7 +526,7 @@ void requestPipeline(std::vector<Pass> passes,std::string label) {
     bool badImages=false;
     for(size_t i=0;i<passes.size();++i){
         auto const& p=passes[i];
-        total+=p.fragment.size()+p.vertex.size();
+        total+=p.fragment.size()+p.vertex.size()+p.enabledProbe.size();
         if(i!=0&&!p.packTextures.empty())badImages=true;
         if(p.packTextures.size()>8)badImages=true;
         for(auto const& image:p.packTextures){

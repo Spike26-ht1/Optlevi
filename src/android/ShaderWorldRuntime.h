@@ -23,6 +23,9 @@ struct Pass {
     bool routedOutputs=false;
     // Shared pack-level composite textures are attached to the first pass only.
     std::vector<PackTexture> packTextures;
+    // Optional GLSL preprocessor-only program.enabled probe. Disabled passes
+    // must not compile, allocate targets, or satisfy later dependencies.
+    std::string enabledProbe;
 };
 struct Status {
     bool active=false;

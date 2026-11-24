@@ -477,6 +477,72 @@ static bool optTranslateRoutedComposite(std::string source,bool originalVertex,
     return true;
 }
 
+
+// Use the driver preprocessor to resolve shader option flags in the same
+// expanded fragment source and Java profile. Only boolean option expressions
+// are supported; fail closed on other property expression syntax.
+static bool optBuildEnabledProbe(std::string const& source,std::string const& expression,
+                                 std::string& probe,std::string& error){
+    std::string condition;
+    auto alpha=[](char c){return (c>='a'&&c<='z')||(c>='A'&&c<='Z')||c=='_';};
+    auto digit=[](char c){return c>='0'&&c<='9';};
+    for(size_t i=0;i<expression.size();){
+        char c=expression[i];
+        if(c==' '||c=='\t'||c=='\r'){++i;continue;}
+        if(alpha(c)){
+            size_t begin=i++;
+            while(i<expression.size()&&(alpha(expression[i])||digit(expression[i])))++i;
+            auto name=expression.substr(begin,i-begin);
+            if(name=="true")condition+=" 1 ";
+            else if(name=="false")condition+=" 0 ";
+            else condition+=" defined("+name+") ";
+        }else if(c=='!'||c=='('||c==')'||c=='0'||c=='1'){
+            condition+=' ';condition+=c;condition+=' ';++i;
+        }else if((c=='&'||c=='|')&&i+1<expression.size()&&expression[i+1]==c){
+            condition+=' ';condition+=expression.substr(i,2);condition+=' ';i+=2;
+        }else{error="Unsupported program.enabled expression: "+expression;return false;}
+    }
+    if(condition.empty()||condition.size()>4096){error="Empty or oversized program.enabled expression";return false;}
+    // Strip comments before collecting directives, including continuation
+    // lines. No executable GLSL from a disabled program is compiled.
+    std::istringstream input(source);std::string line,body;
+    bool block=false,continuation=false;
+    while(std::getline(input,line)){
+        for(size_t i=0;i<line.size();++i){
+            if(block){
+                if(i+1<line.size()&&line[i]=='*'&&line[i+1]=='/'){
+                    line[i]=line[i+1]=' ';++i;block=false;
+                }else line[i]=' ';
+            }else if(i+1<line.size()&&line[i]=='/'&&line[i+1]=='*'){
+                line[i]=line[i+1]=' ';++i;block=true;
+            }else if(i+1<line.size()&&line[i]=='/'&&line[i+1]=='/'){
+                line.resize(i);break;
+            }
+        }
+        auto first=line.find_first_not_of(" \t\r");
+        bool include=continuation;
+        if(!continuation&&first!=std::string::npos&&line[first]=='#'){
+            auto start=line.find_first_not_of(" \t",first+1);
+            if(start!=std::string::npos){
+                size_t end=start;
+                while(end<line.size()&&alpha(line[end]))++end;
+                auto word=line.substr(start,end-start);
+                include=word=="define"||word=="undef"||word=="if"||word=="ifdef"||
+                    word=="ifndef"||word=="elif"||word=="else"||word=="endif"||word=="error";
+            }
+        }
+        if(!include){continuation=false;continue;}
+        auto last=line.find_last_not_of(" \t\r");
+        continuation=last!=std::string::npos&&line[last]=='\\';
+        body+=line+'\n';
+    }
+    if(block||continuation){error="Unterminated directive in program.enabled probe";return false;}
+    probe=optGlesCompatibilityHeader()+body+"\n#if "+condition+
+        "\nlayout(location=0) out vec4 optEnabledOutput;\nvoid main(){optEnabledOutput=vec4(1.0);}\n"
+        "#else\nlayout(location=0) out vec4 optDisabledOutput;\nvoid main(){optDisabledOutput=vec4(0.0);}\n#endif\n";
+    return true;
+}
+
 // Decode only explicit pack-owned PNG resources. ZIP member reads are
 // separately bounded from shader source reads; decoded dimensions are
 // checked before allocation. No placeholder noise/geometry image is made.
@@ -560,13 +626,23 @@ static bool optBuildJavaPipeline(
     // Buffer flip overrides, program scales and per-buffer dimensions require
     // distinct semantics. Reject those rather than presenting an invalid graph.
     std::string properties;
+    std::vector<std::pair<std::string,std::string>> enabledRules;
     if(optReadJavaMember(pack,"shaders/shaders.properties",properties)){
         std::istringstream input(properties);std::string line;
         while(std::getline(input,line)){
             auto at=line.find_first_not_of(" \t\r");
             if(at==std::string::npos||line[at]=='#')continue;
+            auto eq=line.find('=',at);
+            if(eq!=std::string::npos){
+                auto last=line.find_last_not_of(" \t\r",eq-1);
+                auto key=line.substr(at,last-at+1);
+                if(key.rfind("program.",0)==0&&optEnds(key,".enabled")){
+                    enabledRules.emplace_back(key,line.substr(eq+1));
+                    continue;
+                }
+            }
             for(auto const* prefix:{"flip.","size.buffer.","scale.composite",
-                                    "blend.composite","program.composite"}){
+                                    "blend.composite","program.composite","program.world0.composite"}){
                 if(line.compare(at,std::strlen(prefix),prefix)==0){
                     error="Unsupported Java pipeline property: "+line.substr(at,120);
                     return false;
@@ -584,6 +660,19 @@ static bool optBuildJavaPipeline(
         std::string expanded;std::set<std::string> stack;size_t bytes=0;
         if(!optExpandJavaMember(pack,member,expanded,stack,bytes,0)){
             error=gOptJavaSourceError;return false;
+        }
+        std::string expression,probe;
+        bool hasRule=false;
+        // Dimension-specific properties override root defaults.
+        for(auto const& rule:enabledRules)
+            if(rule.first=="program."+name+".enabled"){expression=rule.second;hasRule=true;}
+        for(auto const& rule:enabledRules)
+            if(rule.first=="program.world0/"+name+".enabled"){expression=rule.second;hasRule=true;}
+        if(hasRule){
+            if(finalPass){error="Conditional final pass is not supported";return false;}
+            if(!optBuildEnabledProbe(expanded,expression,probe,error)){
+                error=member+": "+error;return false;
+            }
         }
         // Static fallback target for final/diagnostic passes. Composite
         // targets are reflected after the driver evaluates conditional GLSL.
@@ -605,11 +694,12 @@ static bool optBuildJavaPipeline(
         else if(!optTranslateRoutedComposite(std::move(expanded),!vertex.empty(),translated,error)){
             error=member+": "+error;return false;
         }
-        total+=translated.size()+vertex.size();
+        total+=translated.size()+vertex.size()+probe.size();
         if(total>4*1024*1024 || passes.size()>=24){
             error="Java composite graph exceeds source/pass budget";return false;
         }
         passes.push_back(Pass{member,std::move(translated),std::move(targets),finalPass,std::move(vertex),!finalPass});
+        passes.back().enabledProbe=std::move(probe);
         return true;
     };
     // Ordered composite and composite1...composite22, then final. Deferred,
