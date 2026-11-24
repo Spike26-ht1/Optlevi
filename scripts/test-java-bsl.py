@@ -137,7 +137,7 @@ with TemporaryDirectory() as d:
     tmp = Path(d)
     code = (ROOT / "src/ui/OptLeviShaderGlesTest.inc").read_text()
     begin = code.index("static void optReplaceAll(")
-    end = code.index("static bool optBuildJavaPipeline(")
+    end = code.index("static bool optLoadCompositeTextures(")
     (tmp / "translate.inc").write_text(code[begin:end])
     (tmp / "translate.cpp").write_text(r'''
 #include <algorithm>
