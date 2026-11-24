@@ -197,6 +197,11 @@ void main(){
     assert(numeric.find("1.0.0")==std::string::npos);
     assert(numeric.find("1.0 / float(samples)")!=std::string::npos);
     assert(optTranslateBslNumeric("1.0 / samples")=="1.0 / samples");
+    std::vector<std::pair<unsigned,std::string>> formats;
+    assert(optReadColorFormats("/*\nconst int colortex0Format = R11F_G11F_B10F; // HDR\nconst int gaux3Format = RGBA16;\n*/\n// const int colortex1Format = R8;\n",formats,error));
+    assert(formats.size()==2&&formats[0].first==0&&formats[0].second=="R11F_G11F_B10F");
+    assert(formats[1].first==6&&formats[1].second=="RGBA16");
+    assert(!optReadColorFormats("const int colortex0Format = RGBA8;\n",formats,error));
     std::cout << "Original vertex, global initializers and conditional route translation: OK\n";
 }
 ''')

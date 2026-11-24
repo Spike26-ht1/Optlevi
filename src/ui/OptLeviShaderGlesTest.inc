@@ -629,6 +629,55 @@ static bool optBuildEnabledProbe(std::string const& source,std::string const& ex
     return true;
 }
 
+// Attachment format directives are metadata, including the conventional
+// block-comment form used by BSL. Preserve the declared precision rather
+// than silently reducing all intermediate images to RGBA8.
+static bool optReadColorFormats(std::string const& source,
+                                std::vector<std::pair<unsigned,std::string>>& formats,
+                                std::string& error){
+    std::istringstream input(source);
+    std::string line;
+    while(std::getline(input,line)){
+        auto comment=line.find("//");
+        if(comment!=std::string::npos)line.resize(comment);
+        std::string compact;
+        for(char c:line)if(c!=' '&&c!='\t'&&c!='\r')compact+=c;
+        if(compact.rfind("constint",0)!=0)continue;
+        auto eq=compact.find("Format=",8);
+        if(eq==std::string::npos||compact.empty()||compact.back()!=';')continue;
+        auto name=compact.substr(8,eq-8);
+        auto format=compact.substr(eq+7,compact.size()-eq-8);
+        int index=-1;
+        if(name.rfind("colortex",0)==0&&name.size()>8&&name.size()<=10){
+            unsigned n=0;bool valid=true;
+            for(size_t i=8;i<name.size();++i){
+                if(name[i]<'0'||name[i]>'9'){valid=false;break;}
+                n=n*10+unsigned(name[i]-'0');
+            }
+            if(valid&&n<16)index=int(n);
+        }else{
+            static char const* aliases[]={"gcolor","gdepth","gnormal","composite",
+                "gaux1","gaux2","gaux3","gaux4"};
+            for(unsigned i=0;i<8;++i)if(name==aliases[i])index=int(i);
+        }
+        // A declaration of an unused extra attachment is harmless. Actual
+        // references beyond the backend limit still reject at reflection.
+        if(index<0)continue;
+        bool valid=!format.empty()&&format.size()<=32;
+        for(char c:format)if(!((c>='A'&&c<='Z')||(c>='0'&&c<='9')||c=='_'))valid=false;
+        if(!valid){error="Malformed attachment format: "+name;return false;}
+        bool duplicate=false;
+        for(auto const& old:formats)if(old.first==unsigned(index)){
+            if(old.second!=format){
+                error="Conflicting attachment formats for colortex"+std::to_string(index);return false;
+            }
+            duplicate=true;break;
+        }
+        if(!duplicate)formats.emplace_back(unsigned(index),std::move(format));
+    }
+    return true;
+}
+
 // Decode only explicit pack-owned PNG resources. ZIP member reads are
 // separately bounded from shader source reads; decoded dimensions are
 // checked before allocation. No placeholder noise/geometry image is made.
@@ -737,6 +786,7 @@ static bool optBuildJavaPipeline(
         }
     }
     size_t total=0;
+    std::vector<std::pair<unsigned,std::string>> colorFormats;
     auto append=[&](std::string const& name,bool finalPass)->bool {
         std::string member,raw;
         if(!resolve(name,member,raw)){
@@ -747,6 +797,7 @@ static bool optBuildJavaPipeline(
         if(!optExpandJavaMember(pack,member,expanded,stack,bytes,0)){
             error=gOptJavaSourceError;return false;
         }
+        if(!optReadColorFormats(expanded,colorFormats,error)){error=member+": "+error;return false;}
         std::string expression,probe;
         bool hasRule=false;
         // Dimension-specific properties override root defaults.
@@ -774,6 +825,7 @@ static bool optBuildJavaPipeline(
             if(!optExpandJavaMember(pack,vertexMember,vertexExpanded,vertexStack,vertexBytes,0)){
                 error=gOptJavaSourceError;return false;
             }
+            if(!optReadColorFormats(vertexExpanded,colorFormats,error)){error=vertexMember+": "+error;return false;}
             vertex=optTranslateFullscreenVertex(std::move(vertexExpanded));
         }
         std::string translated;
@@ -795,6 +847,7 @@ static bool optBuildJavaPipeline(
     for(unsigned i=1;i<=22;++i)
         if(!append("composite"+std::to_string(i),false))return false;
     if(!append("final",true))return false;
+    passes.front().colorFormats=std::move(colorFormats);
     if(!optLoadCompositeTextures(pack,properties,passes.front().packTextures,error)){
         passes.clear();return false;
     }

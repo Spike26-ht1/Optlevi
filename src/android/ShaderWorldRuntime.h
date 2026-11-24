@@ -2,6 +2,7 @@
 #include <string>
 #include <cstdint>
 #include <vector>
+#include <utility>
 
 namespace modmenu::android::shaderworld {
 // Ordered fullscreen pass graph. Only buffers actually produced by a pass
@@ -26,6 +27,8 @@ struct Pass {
     // Optional GLSL preprocessor-only program.enabled probe. Disabled passes
     // must not compile, allocate targets, or satisfy later dependencies.
     std::string enabledProbe;
+    // Pack-wide attachment formats, present only on the first graph pass.
+    std::vector<std::pair<unsigned,std::string>> colorFormats;
 };
 struct Status {
     bool active=false;

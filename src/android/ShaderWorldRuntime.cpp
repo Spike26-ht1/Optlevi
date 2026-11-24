@@ -26,6 +26,31 @@ bool failed=false;
 EGLContext context=EGL_NO_CONTEXT;
 constexpr unsigned kBuffers=16;
 constexpr unsigned kMaxPasses=24;
+struct FormatInfo {
+    GLint internal=GL_RGBA8;
+    GLenum channels=GL_RGBA,type=GL_UNSIGNED_BYTE;
+    unsigned bytes=4;
+};
+std::array<FormatInfo,kBuffers> colorFormats{};
+FormatInfo resolveColorFormat(std::string const& name){
+    // Memory accounting conservatively rounds RGB storage to four channels.
+    if(name=="RGBA"||name=="RGBA8")return {};
+    if(name=="RGB"||name=="RGB8")return {GL_RGB8,GL_RGB,GL_UNSIGNED_BYTE,4};
+    if(name=="R8")return {GL_R8,GL_RED,GL_UNSIGNED_BYTE,1};
+    if(name=="RG8")return {GL_RG8,GL_RG,GL_UNSIGNED_BYTE,2};
+    if(name=="RGB10_A2")return {GL_RGB10_A2,GL_RGBA,GL_UNSIGNED_INT_2_10_10_10_REV,4};
+    if(name=="R11F_G11F_B10F")return {GL_R11F_G11F_B10F,GL_RGB,GL_UNSIGNED_INT_10F_11F_11F_REV,4};
+    // GL_RGBA16_EXT (EXT_texture_norm16); actual driver allocation and
+    // framebuffer validation must succeed, otherwise reject the graph.
+    if(name=="RGBA16")return {0x805B,GL_RGBA,GL_UNSIGNED_SHORT,8};
+    if(name=="RGB16F")return {GL_RGB16F,GL_RGB,GL_HALF_FLOAT,8};
+    if(name=="RGBA16F")return {GL_RGBA16F,GL_RGBA,GL_HALF_FLOAT,8};
+    if(name=="R16F")return {GL_R16F,GL_RED,GL_HALF_FLOAT,2};
+    if(name=="RG16F")return {GL_RG16F,GL_RG,GL_HALF_FLOAT,4};
+    if(name=="RGBA32F")return {GL_RGBA32F,GL_RGBA,GL_FLOAT,16};
+    return {0,0,0,0};
+}
+
 constexpr std::uint64_t kMemoryLimit=128ull*1024*1024;
 constexpr std::uint64_t kPackTextureLimit=16ull*1024*1024;
 struct Binding { GLint location; int buffer; int packTexture; unsigned unit; };
@@ -63,7 +88,7 @@ void abandonContext() {
     context=eglGetCurrentContext();
     pipeline.clear();
     packGpu.clear();packGpuBytes=0;frameCounter=0;
-    textures={};front={};needed={};mipNeeded={};mipValid={};triangleVao=passFbo=outputTex=0;
+    textures={};front={};needed={};mipNeeded={};mipValid={};colorFormats={};triangleVao=passFbo=outputTex=0;
     textureWidth=textureHeight=0;
     renderedFrame=false;
     requestedActive=false;
@@ -75,7 +100,7 @@ void discardGpu() {
     for(auto& p:packGpu)if(p.texture)glDeleteTextures(1,&p.texture);
     packGpu.clear();packGpuBytes=0;frameCounter=0;
     for(auto& pair:textures) glDeleteTextures(2,pair.data());
-    textures={};front={};needed={};mipNeeded={};mipValid={};
+    textures={};front={};needed={};mipNeeded={};mipValid={};colorFormats={};
     if(outputTex){glDeleteTextures(1,&outputTex);outputTex=0;}
     if(passFbo){glDeleteFramebuffers(1,&passFbo);passFbo=0;}
     if(triangleVao){glDeleteVertexArrays(1,&triangleVao);triangleVao=0;}
@@ -300,6 +325,10 @@ bool compilePipeline(std::vector<Pass> const& passes,std::string& error) {
         error="Insufficient GLES3 render targets or fragment texture units";return false;
     }
     if(!uploadPackTextures(passes.front().packTextures,error))return false;
+    for(auto const& entry:passes.front().colorFormats){
+        if(entry.first>=kBuffers){error="Invalid colortex format index";return false;}
+        colorFormats[entry.first]=resolveColorFormat(entry.second);
+    }
     std::array<bool,kBuffers> available{};
     available[0]=true;needed[0]=true;
     for(size_t i=0;i<passes.size();++i) {
@@ -340,6 +369,9 @@ bool compilePipeline(std::vector<Pass> const& passes,std::string& error) {
                 mipNeeded[unsigned(binding.buffer)]=true;
         if(!p.finalPass)for(auto t:p.targets){available[t]=true;needed[t]=true;}
         pipeline.push_back(std::move(p));
+    }
+    for(unsigned i=0;i<kBuffers;++i)if(needed[i]&&!colorFormats[i].bytes){
+        error="Unsupported color attachment format for colortex"+std::to_string(i);return false;
     }
     glGenVertexArrays(1,&triangleVao);
     glGenFramebuffers(1,&passFbo);
@@ -411,7 +443,7 @@ struct SavedState {
     }
 };
 
-bool allocateTexture(GLuint& texture,int w,int h) {
+bool allocateTexture(GLuint& texture,int w,int h,FormatInfo const& format) {
     glGenTextures(1,&texture);
     if(!texture)return false;
     glBindTexture(GL_TEXTURE_2D,texture);
@@ -419,32 +451,34 @@ bool allocateTexture(GLuint& texture,int w,int h) {
     glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,GL_CLAMP_TO_EDGE);
-    glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA8,w,h,0,GL_RGBA,GL_UNSIGNED_BYTE,nullptr);
+    glTexImage2D(GL_TEXTURE_2D,0,format.internal,w,h,0,format.channels,format.type,nullptr);
     return glGetError()==GL_NO_ERROR;
 }
 
-bool ensureTargets(int width,int height) {
+bool ensureTargets(int width,int height,std::string& error) {
     if(width==textureWidth&&height==textureHeight&&outputTex)return true;
     for(auto& pair:textures){glDeleteTextures(2,pair.data());pair={};}
     if(outputTex){glDeleteTextures(1,&outputTex);outputTex=0;}
     textureWidth=textureHeight=0;mipValid={};
-    if(width<=0||height<=0||width>4096||height>4096)return false;
-    std::uint64_t baseBytes=std::uint64_t(width)*height*4,chainBytes=baseBytes;
+    if(width<=0||height<=0||width>4096||height>4096){error="Unsupported viewport size";return false;}
+    std::uint64_t basePixels=std::uint64_t(width)*height,chainPixels=basePixels;
     for(int w=width,h=height;w>1||h>1;){
         w=std::max(1,w/2);h=std::max(1,h/2);
-        chainBytes+=std::uint64_t(w)*h*4;
+        chainPixels+=std::uint64_t(w)*h;
     }
-    std::uint64_t bytes=baseBytes+packGpuBytes;
+    std::uint64_t bytes=basePixels*4+packGpuBytes;
     for(unsigned i=0;i<kBuffers;++i)if(needed[i])
-        bytes+=2*(mipNeeded[i]?chainBytes:baseBytes);
-    if(bytes>kMemoryLimit)return false;
+        bytes+=2*(mipNeeded[i]?chainPixels:basePixels)*colorFormats[i].bytes;
+    if(bytes>kMemoryLimit){error="Cannot allocate independent GLES3 targets within 128 MiB budget";return false;}
     glActiveTexture(GL_TEXTURE0);
     glBindBuffer(GL_PIXEL_UNPACK_BUFFER,0);
     glPixelStorei(GL_UNPACK_ALIGNMENT,1);
     for(unsigned i=0;i<kBuffers;++i)if(needed[i]){
-        for(auto& t:textures[i])if(!allocateTexture(t,width,height))return false;
+        for(auto& t:textures[i])if(!allocateTexture(t,width,height,colorFormats[i])){
+            error="Driver cannot allocate declared color format for colortex"+std::to_string(i);return false;
+        }
     }
-    if(!allocateTexture(outputTex,width,height))return false;
+    if(!allocateTexture(outputTex,width,height,FormatInfo{})){error="Cannot allocate final color target";return false;}
     textureWidth=width;textureHeight=height;
     return true;
 }
@@ -485,9 +519,7 @@ bool renderPipeline(int width,int height,std::string& error) {
     // Never render a rejected/partially compiled shader directly to the game.
     glBindFramebuffer(GL_FRAMEBUFFER,0);
     glReadBuffer(GL_BACK);
-    if(!ensureTargets(width,height)){
-        error="Cannot allocate independent GLES3 targets within 128 MiB budget";return false;
-    }
+    if(!ensureTargets(width,height,error))return false;
     front.fill(0);mipValid[0][0]=false;
     glActiveTexture(GL_TEXTURE0);
     glBindSampler(0,0);
@@ -554,7 +586,14 @@ void requestPipeline(std::vector<Pass> passes,std::string label) {
     for(size_t i=0;i<passes.size();++i){
         auto const& p=passes[i];
         total+=p.fragment.size()+p.vertex.size()+p.enabledProbe.size();
-        if(i!=0&&!p.packTextures.empty())badImages=true;
+        if(i!=0&&(!p.packTextures.empty()||!p.colorFormats.empty()))badImages=true;
+        if(p.colorFormats.size()>kBuffers)badImages=true;
+        std::array<bool,kBuffers> formatSeen{};
+        for(auto const& entry:p.colorFormats){
+            if(entry.first>=kBuffers||entry.second.empty()||entry.second.size()>32){badImages=true;continue;}
+            if(formatSeen[entry.first])badImages=true;
+            formatSeen[entry.first]=true;
+        }
         if(p.packTextures.size()>8)badImages=true;
         for(auto const& image:p.packTextures){
             if(image.rgba.size()>kPackTextureLimit-images){badImages=true;break;}

@@ -189,6 +189,25 @@ void main(){optEnabledOutput=vec4(optMipInput0);}
     beforeSwap(32,32);
     actual=pixel();
     require(std::abs(int(actual[0])-204)<=2&&std::abs(int(actual[2])-51)<=2,"Mip chain remained stale after new frame");
+    // BSL's HDR scene attachment must retain values above 1.0 until
+    // the final tone map. RGBA8 would clamp those values and fail readback.
+    clearScene();
+    Pass hdr{"composite",fragment(R"(
+layout(location=0) out vec4 color;
+void main(){color=vec4(4.0,2.0,1.0,1.0);}
+)"),{0},false};
+    hdr.colorFormats.push_back({0,"R11F_G11F_B10F"});
+    Pass hdrEnd{"final",fragment(R"(
+uniform sampler2D colortex0;
+layout(location=0) out vec4 color;
+void main(){color=vec4(texture(colortex0,texcoord).rgb*0.25,1.0);}
+)"),{0},true};
+    requestPipeline({hdr,hdrEnd},"HDR attachment fixture");
+    beforeSwap(32,32);
+    require(status().active&&!status().failed,"HDR attachment failed");
+    actual=pixel();
+    require(std::abs(int(actual[0])-255)<=2&&std::abs(int(actual[1])-128)<=2&&
+        std::abs(int(actual[2])-64)<=2,"Intermediate HDR data was clipped");
     // Missing geometry input must not turn into a fake color sampler.
     clearScene();
     Pass unavailable{"final",fragment(R"(
