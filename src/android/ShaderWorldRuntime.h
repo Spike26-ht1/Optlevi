@@ -12,6 +12,8 @@ struct Pass {
     bool finalPass=false;
     // Translated original fullscreen vertex stage; empty for diagnostic passes.
     std::string vertex;
+    // Resolve the active conditional DRAWBUFFERS mapping from linked outputs.
+    bool routedOutputs=false;
 };
 struct Status {
     bool active=false;

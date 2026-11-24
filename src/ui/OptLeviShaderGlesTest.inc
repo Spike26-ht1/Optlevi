@@ -186,18 +186,22 @@ static bool optParseCompositeTargets(std::string const& source,
         while(std::getline(in,item,',')){
             auto first=item.find_first_not_of(" \t");
             auto last=item.find_last_not_of(" \t");
-            if(first==std::string::npos || last!=first ||
-               item[first]<'0'||item[first]>'7'){
-                error="Only explicit colortex0..7 render targets are supported";return false;
+            if(first==std::string::npos || last-first>1){
+                error="Only explicit colortex0..15 render targets are supported";return false;
             }
-            auto target=unsigned(item[first]-'0');
+            unsigned target=0;
+            for(size_t i=first;i<=last;++i){
+                if(item[i]<'0'||item[i]>'9'){error="Invalid render target";return false;}
+                target=target*10+unsigned(item[i]-'0');
+            }
+            if(target>=16){error="Only colortex0..15 render targets are supported";return false;}
             if(!used.insert(target).second){error="Repeated render target";return false;}
             targets.push_back(target);
         }
     } else {
         for(char ch:token){
             if(ch==' '||ch=='\t')continue;
-            if(ch<'0'||ch>'7'){error="Unsupported DRAWBUFFERS target";return false;}
+            if(ch<'0'||ch>'9'){error="Unsupported DRAWBUFFERS target";return false;}
             auto target=unsigned(ch-'0');
             if(!used.insert(target).second){error="Repeated render target";return false;}
             targets.push_back(target);
@@ -276,6 +280,64 @@ vec4 optFullscreenTransform(){return optScreenProjection*optFullscreenPosition()
 )GLSL")+clean;
 }
 
+// Preserve the original conditional branches around routing comments. Turn
+// each route into a macro assignment and emit only the selected output
+// declaration after the pack's source has been preprocessed by the GLES driver.
+static bool optTranslateRoutedComposite(std::string source,bool originalVertex,
+                                        std::string& translated,std::string& error){
+    std::vector<std::vector<unsigned>> routes{{0}};
+    std::istringstream lines(source);
+    std::string line,body="#define OPTLEVI_DRAW_ROUTE 0\n";
+    size_t outputs=1;
+    while(std::getline(lines,line)){
+        auto first=line.find_first_not_of(" \t\r");
+        auto last=line.find_last_not_of(" \t\r");
+        bool route=false;
+        if(first!=std::string::npos&&line.compare(first,2,"/*")==0&&last>first+2&&
+           line.compare(last-1,2,"*/")==0){
+            auto start=line.find_first_not_of(" \t",first+2);
+            route=start!=std::string::npos&&
+                  (line.compare(start,12,"DRAWBUFFERS:")==0||
+                   line.compare(start,14,"RENDERTARGETS:")==0);
+        }
+        if(route){
+            std::vector<unsigned> targets;
+            if(!optParseCompositeTargets(line,targets,error))return false;
+            if(routes.size()>=64){error="Too many conditional render-target mappings";return false;}
+            outputs=std::max(outputs,targets.size());
+            body+="#undef OPTLEVI_DRAW_ROUTE\n#define OPTLEVI_DRAW_ROUTE "+
+                  std::to_string(routes.size())+"\n";
+            routes.push_back(std::move(targets));
+        }else{
+            body+=line;body+='\n';
+        }
+    }
+    // The pack writes temporary globals, not fixed hardware outputs. The
+    // wrapper copies them into the active, explicitly named output locations.
+    translated=optTranslateComposite(std::move(body),outputs,originalVertex);
+    optReplaceIdentifier(translated,"main","optLeviShaderMain");
+    auto temp=[](size_t i){return std::string("optFragColor")+(i?std::to_string(i):"");};
+    for(size_t i=0;i<outputs;++i){
+        auto name=temp(i);
+        optReplaceAll(translated,"layout(location="+std::to_string(i)+") out vec4 "+name+";",
+                      "vec4 "+name+";");
+    }
+    translated+='\n';
+    for(size_t i=0;i<routes.size();++i){
+        translated+=(i?"#elif ":"#if ");
+        translated+="OPTLEVI_DRAW_ROUTE == "+std::to_string(i)+"\n";
+        for(size_t slot=0;slot<routes[i].size();++slot)
+            translated+="layout(location="+std::to_string(slot)+") out vec4 optRouteTarget"+
+                        std::to_string(routes[i][slot])+";\n";
+        translated+="void main(){optLeviShaderMain();\n";
+        for(size_t slot=0;slot<routes[i].size();++slot)
+            translated+="optRouteTarget"+std::to_string(routes[i][slot])+"="+temp(slot)+";\n";
+        translated+="}\n";
+    }
+    translated+="#endif\n";
+    return true;
+}
+
 static bool optBuildJavaPipeline(
     OptPackInfo const& pack,
     std::vector<modmenu::android::shaderworld::Pass>& passes,
@@ -326,11 +388,9 @@ static bool optBuildJavaPipeline(
         if(!optExpandJavaMember(pack,member,expanded,stack,bytes,0)){
             error=gOptJavaSourceError;return false;
         }
-        std::vector<unsigned> targets;
-        if(finalPass)targets={0};
-        else if(!optParseCompositeTargets(expanded,targets,error)){
-            error=member+": "+error;return false;
-        }
+        // Static fallback target for final/diagnostic passes. Composite
+        // targets are reflected after the driver evaluates conditional GLSL.
+        std::vector<unsigned> targets{0};
         // Resolve the vertex companion from the SAME dimension/program as
         // the fragment. Its include tree is independent, as in Java.
         std::string vertexMember=member.substr(0,member.size()-4)+".vsh";
@@ -343,12 +403,16 @@ static bool optBuildJavaPipeline(
             }
             vertex=optTranslateFullscreenVertex(std::move(vertexExpanded));
         }
-        auto translated=optTranslateComposite(std::move(expanded),targets.size(),!vertex.empty());
+        std::string translated;
+        if(finalPass)translated=optTranslateComposite(std::move(expanded),1,!vertex.empty());
+        else if(!optTranslateRoutedComposite(std::move(expanded),!vertex.empty(),translated,error)){
+            error=member+": "+error;return false;
+        }
         total+=translated.size()+vertex.size();
         if(total>4*1024*1024 || passes.size()>=24){
             error="Java composite graph exceeds source/pass budget";return false;
         }
-        passes.push_back(Pass{member,std::move(translated),std::move(targets),finalPass,std::move(vertex)});
+        passes.push_back(Pass{member,std::move(translated),std::move(targets),finalPass,std::move(vertex),!finalPass});
         return true;
     };
     // Ordered composite and composite1...composite22, then final. Deferred,

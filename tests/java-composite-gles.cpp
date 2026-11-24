@@ -103,6 +103,30 @@ void main(){
     actual=pixel();
     require(std::abs(int(actual[0])-191)<=2&&std::abs(int(actual[1])-102)<=2&&
             std::abs(int(actual[2])-64)<=2,"Original vertex varying was not executed");
+    // An active route can write a higher-index buffer. Subsequent passes
+    // must validate and sample the actual driver-selected output, not route 0.
+    clearScene();
+    Pass routed{"composite",fragment(R"(
+#define USE_ALT
+#ifdef USE_ALT
+layout(location=0) out vec4 optRouteTarget9;
+void main(){optRouteTarget9=vec4(0.5,0.25,0.75,1.0);}
+#else
+layout(location=0) out vec4 optRouteTarget0;
+void main(){optRouteTarget0=vec4(1.0);}
+#endif
+)"),{0},false,"",true};
+    Pass routedEnd{"final",fragment(R"(
+uniform sampler2D colortex9;
+layout(location=0) out vec4 color;
+void main(){color=texture(colortex9,texcoord);}
+)"),{0},true};
+    requestPipeline({routed,routedEnd},"Conditional route fixture");
+    beforeSwap(32,32);
+    require(status().active&&!status().failed,"Conditional target was not resolved");
+    actual=pixel();
+    require(std::abs(int(actual[0])-128)<=2&&std::abs(int(actual[1])-64)<=2&&
+            std::abs(int(actual[2])-191)<=2,"Conditional target data incorrect");
     // Missing geometry input must not turn into a fake color sampler.
     clearScene();
     Pass unavailable{"final",fragment(R"(

@@ -24,7 +24,7 @@ bool failed=false;
 
 // GPU state is touched exclusively from the selected game's EGL swap thread.
 EGLContext context=EGL_NO_CONTEXT;
-constexpr unsigned kBuffers=8;
+constexpr unsigned kBuffers=16;
 constexpr unsigned kMaxPasses=24;
 constexpr std::uint64_t kMemoryLimit=128ull*1024*1024;
 struct Binding { GLint location; int buffer; };
@@ -104,8 +104,19 @@ GLuint compile(GLenum kind,std::string const& source,std::string& error) {
 
 int bufferIndex(std::string const& name) {
     if(name=="gcolor"||name=="texture"||name=="tex")return 0;
-    if(name.size()==9&&name.compare(0,8,"colortex")==0&&
-       name[8]>='0'&&name[8]<'0'+int(kBuffers))return name[8]-'0';
+    if(name=="gdepth")return 1;
+    if(name=="gnormal")return 2;
+    if(name=="composite")return 3;
+    if(name.size()==5&&name.compare(0,4,"gaux")==0&&name[4]>='1'&&name[4]<='4')
+        return name[4]-'1'+4;
+    if(name.size()>8&&name.size()<=10&&name.compare(0,8,"colortex")==0){
+        unsigned n=0;
+        for(size_t i=8;i<name.size();++i){
+            if(name[i]<'0'||name[i]>'9')return -1;
+            n=n*10+unsigned(name[i]-'0');
+        }
+        if(n<kBuffers)return int(n);
+    }
     return -1;
 }
 bool compileProgram(Pass const& pass,std::array<bool,kBuffers> const& available,
@@ -168,9 +179,30 @@ void main() {
             return fail("Unsupported world shader uniform: "+uniform+" in "+pass.name);
         }
     }
+    result.targets=pass.targets;
+    if(pass.routedOutputs){
+        // Names encode the chosen colortex. The driver has already evaluated
+        // the original preprocessor conditions; no guessed first directive.
+        std::array<int,kBuffers> byLocation{};
+        byLocation.fill(-1);
+        unsigned count=0;
+        for(unsigned t=0;t<kBuffers;++t){
+            std::string name="optRouteTarget"+std::to_string(t);
+            GLint loc=glGetFragDataLocation(linked,name.c_str());
+            if(loc<0)continue;
+            if(loc>=int(kBuffers)||byLocation[unsigned(loc)]!=-1)
+                return fail("Invalid linked conditional output location");
+            byLocation[unsigned(loc)]=int(t);++count;
+        }
+        if(count==0)return fail("No linked conditional render targets");
+        result.targets.clear();
+        for(unsigned i=0;i<count;++i){
+            if(byLocation[i]<0)return fail("Noncontiguous linked render targets");
+            result.targets.push_back(unsigned(byLocation[i]));
+        }
+    }
     result.program=linked;
     result.name=pass.name;
-    result.targets=pass.targets;
     result.finalPass=pass.finalPass;
     result.customVertex=!pass.vertex.empty();
     return true;
@@ -207,8 +239,13 @@ bool compilePipeline(std::vector<Pass> const& passes,std::string& error) {
         if(!compileProgram(pass,available,p,error)){
             error=pass.name+": "+error;return false;
         }
+        if(p.targets.empty()||p.targets.size()>size_t(std::min(maxDraw,maxColor))||
+           (p.finalPass&&p.targets.size()!=1)){
+            glDeleteProgram(p.program);
+            error="Active output mapping exceeds driver limits in "+pass.name;return false;
+        }
+        if(!p.finalPass)for(auto t:p.targets){available[t]=true;needed[t]=true;}
         pipeline.push_back(std::move(p));
-        if(!pass.finalPass)for(auto t:pass.targets){available[t]=true;needed[t]=true;}
     }
     glGenVertexArrays(1,&triangleVao);
     glGenFramebuffers(1,&passFbo);
