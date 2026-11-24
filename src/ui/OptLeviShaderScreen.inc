@@ -2,7 +2,6 @@
 // single-pass world postprocess. Full Java/Iris multi-pass rendering is not supported.
 #include "OptLeviShaderCatalog.inc"
 #include "OptLeviShaderGlesTest.inc"
-#include "ShaderRenderBridge.h"
 
 static bool gOptShadersVisible=false;
 static bool gOptShadersScanned=false;
