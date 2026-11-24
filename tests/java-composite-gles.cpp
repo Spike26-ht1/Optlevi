@@ -360,6 +360,29 @@ void main(){color=vec4(gbufferProjection[0][0],cameraPosition.x,float(eyeBrightn
         std::abs(int(actual[2])-191)<=2,"World uniform values not transferred");
     clearScene();beforeSwap(32,32);
     require(!status().active&&status().failed,"Stale world uniforms were reused");
+    // A selected Java pack survives a menu/world transition without Apply
+    // being pressed again; the missing-resource signature is not retried
+    // every frame, and the returning world supplies fresh actual values.
+    auto waitingMessage=status().message;
+    clearScene();beforeSwap(32,32);
+    require(!status().active&&status().message==waitingMessage,"Waiting graph changed without new resources");
+    require(captureProgramUniforms(nativeProgram,{{"nativeMatrix","gbufferProjection",GL_FLOAT_MAT4},
+        {"nativeCamera","cameraPosition",GL_FLOAT_VEC3},{"nativeLight","eyeBrightnessSmooth",GL_INT_VEC2}},captureError),
+        "Returning world uniform capture failed");
+    clearScene();beforeSwap(32,32);
+    require(status().active&&!status().failed,"Selected graph did not resume when world returned");
+    actual=pixel();
+    require(std::abs(int(actual[0])-64)<=2&&std::abs(int(actual[1])-128)<=2&&
+        std::abs(int(actual[2])-191)<=2,"Resumed graph did not bind fresh data");
+    requestPipeline({worldEnd},"Apply from main menu fixture");
+    clearScene();beforeSwap(32,32);
+    require(!status().active&&status().message.find("Waiting for verified world resources")!=std::string::npos,
+        "Main menu apply should wait");
+    require(captureProgramUniforms(nativeProgram,{{"nativeMatrix","gbufferProjection",GL_FLOAT_MAT4},
+        {"nativeCamera","cameraPosition",GL_FLOAT_VEC3},{"nativeLight","eyeBrightnessSmooth",GL_INT_VEC2}},captureError),
+        "Entering world uniform capture failed");
+    clearScene();beforeSwap(32,32);
+    require(status().active&&!status().failed,"Main menu selection did not activate in world");
     glUseProgram(0);glDeleteProgram(nativeProgram);
     // Native G-buffer snapshots must contain the actual selected MRT
     // attachment, not the final color, and must expire after the frame.

@@ -110,6 +110,29 @@ void syncDepthContext(){
 struct ConsumeDepthFrame {
     ~ConsumeDepthFrame(){for(auto& d:depthFrame.images)d.fresh=false;for(auto& d:depthFrame.colors)d.fresh=false;depthFrame.uniforms.clear();}
 };
+std::string resourceSignature(){
+    // Ignore values and object names: world data changes every frame.
+    // Recompile only when the actual set/type/shape of available inputs changes.
+    std::string signature;
+    auto append=[&](char kind,unsigned index,int width,int height,unsigned format){
+        signature+=kind;signature+=std::to_string(index)+":"+
+            std::to_string(width)+":"+std::to_string(height)+":"+std::to_string(format)+";";
+    };
+    for(unsigned i=0;i<depthFrame.images.size();++i){
+        auto const& d=depthFrame.images[i];
+        if(d.fresh)append('d',i,d.width,d.height,d.format);
+    }
+    for(unsigned i=0;i<depthFrame.colors.size();++i){
+        auto const& d=depthFrame.colors[i];
+        if(d.fresh)append('c',i,d.width,d.height,unsigned(d.format.internal));
+    }
+    std::vector<std::string> uniforms;
+    for(auto const& v:depthFrame.uniforms)uniforms.push_back(v.name+":"+std::to_string(v.glType));
+    std::sort(uniforms.begin(),uniforms.end());
+    for(auto const& u:uniforms)signature+="u"+u+";";
+    return signature;
+}
+
 int depthIndex(std::string const& name){
     if(name=="depthtex0")return 0;
     if(name=="depthtex1")return 1;
@@ -178,6 +201,12 @@ GLuint triangleVao=0,passFbo=0,outputTex=0,shadowCompareSampler=0;
 int textureWidth=0,textureHeight=0;
 std::string activeLabel;
 bool renderedFrame=false;
+// Render-thread-owned selected source; retain it across temporary absence
+// of native world resources, but never render with stale attachments.
+std::vector<Pass> selectedSource;
+std::string selectedLabel,lastResourceSignature;
+bool waitingForResources=false,attemptedResources=false;
+EGLSurface pipelineSurface=EGL_NO_SURFACE;
 
 void statusMessage(bool ok,std::string message) {
     std::lock_guard lock(mu);
@@ -375,9 +404,8 @@ void main() {
             // Actual viewport, timing and pack-declared frame modulo values.
         }else if(arraySize==1&&uniformComponents(type)){
             auto const* value=findWorldUniform(uniform);
-            if(!value||value->glType!=type){
-                reportMissing(uniform+" (world uniform)");continue;
-            }
+            if(!value){reportMissing(uniform+" (world uniform)");continue;}
+            if(value->glType!=type){reportMissing(uniform+" (world uniform type mismatch)");continue;}
             GLint location=glGetUniformLocation(linked,name);
             if(location<0){reportMissing(uniform+" (uniform block unsupported)");continue;}
             result.worldUniforms.push_back({uniform,type,location});
@@ -1116,11 +1144,16 @@ bool captureShadowDepth(unsigned index,unsigned framebuffer,unsigned internalFor
 void beforeSwap(int width,int height) {
     EGLContext now=eglGetCurrentContext();
     if(now==EGL_NO_CONTEXT)return;
+    auto surface=eglGetCurrentSurface(EGL_DRAW);
     syncDepthContext();
     ConsumeDepthFrame consumeDepth;
-    if(context!=now) {
-        abandonContext();
-        statusMessage(false,"Graphics context changed. Apply shader again.");
+    if(context!=now||pipelineSurface!=surface){
+        if(context!=now)abandonContext();else discardGpu();
+        pipelineSurface=surface;
+        if(!selectedSource.empty()){
+            waitingForResources=true;attemptedResources=false;
+            statusMessage(false,"Graphics surface changed; waiting for current-frame resources");
+        }
     }
     int action=0;
     std::vector<Pass> passes;
@@ -1130,28 +1163,67 @@ void beforeSwap(int width,int height) {
         action=std::exchange(pendingAction,0);
         if(action==1){passes=std::move(pendingPasses);label=std::move(pendingLabel);}
     }
-    if(action==2){discardGpu();for(auto& d:depthFrame.images)releaseDepth(d);for(auto& d:depthFrame.colors)releaseColor(d);return;}
-    if(action==1){
-        SavedState saved;
+    if(action==2){
         discardGpu();
-        std::string error;
-        bool ok=compilePipeline(passes,error);
-        saved.restore();
-        if(!ok){
-            discardGpu();statusMessage(false,"Java pipeline rejected: "+error);return;
+        for(auto& d:depthFrame.images)releaseDepth(d);
+        for(auto& d:depthFrame.colors)releaseColor(d);
+        selectedSource.clear();selectedLabel.clear();lastResourceSignature.clear();
+        waitingForResources=false;attemptedResources=false;
+        return;
+    }
+    if(action==1){
+        selectedSource=std::move(passes);selectedLabel=std::move(label);
+        waitingForResources=true;attemptedResources=false;
+    }
+    if(waitingForResources&&!selectedSource.empty()){
+        auto signature=resourceSignature();
+        if(!attemptedResources||signature!=lastResourceSignature){
+            attemptedResources=true;lastResourceSignature=std::move(signature);
+            SavedState saved;
+            discardGpu();
+            std::string error;
+            bool ok=compilePipeline(selectedSource,error);
+            saved.restore();
+            if(!ok){
+                discardGpu();
+                bool transient=error.find("Missing real input ")!=std::string::npos&&
+                    error.find("(unsupported type)")==std::string::npos&&
+                    error.find("(uniform block unsupported)")==std::string::npos&&
+                    error.find("(world uniform type mismatch)")==std::string::npos;
+                if(transient){
+                    statusMessage(false,"Waiting for verified world resources: "+error);
+                }else{
+                    selectedSource.clear();waitingForResources=false;
+                    statusMessage(false,"Java pipeline rejected: "+error);
+                }
+                return;
+            }
+            waitingForResources=false;
+            activeLabel=selectedLabel;
+            requestedActive=true;
+            renderedFrame=false;
+            statusMessage(true,"Compiled Java composite graph; awaiting rendered frame");
         }
-        activeLabel=std::move(label);
-        requestedActive=true;
-        renderedFrame=false;
-        statusMessage(true,"Compiled Java composite graph; awaiting rendered frame");
     }
     if(requestedActive.load()&&!pipeline.empty()){
         SavedState saved;
         std::string error;
         bool ok=renderPipeline(width,height,error);
         saved.restore();
-        if(!ok){discardGpu();statusMessage(false,error+"; vanilla restored");}
-        else if(!renderedFrame){
+        if(!ok){
+            discardGpu();
+            bool transient=error.rfind("Missing current-frame ",0)==0||
+                error.rfind("Missing or mismatched current-frame ",0)==0||
+                error.rfind("Missing or mismatched native scene ",0)==0;
+            if(transient&&!selectedSource.empty()){
+                waitingForResources=true;attemptedResources=true;
+                lastResourceSignature=resourceSignature();
+                statusMessage(false,"Waiting for verified world resources: "+error+"; vanilla restored");
+            }else{
+                selectedSource.clear();waitingForResources=false;
+                statusMessage(false,error+"; vanilla restored");
+            }
+        }else if(!renderedFrame){
             renderedFrame=true;
             statusMessage(true,"Java composite world graph rendered: "+activeLabel+
                          " ("+std::to_string(pipeline.size())+" passes)");
