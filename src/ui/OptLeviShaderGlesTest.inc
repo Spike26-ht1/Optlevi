@@ -226,6 +226,7 @@ static bool optBuildJavaPipeline(
     std::vector<modmenu::android::shaderworld::Pass>& passes,
     std::string& error) {
     using modmenu::android::shaderworld::Pass;
+    OptJavaArchiveScope archiveScope;
     passes.clear();
     gOptJavaSourceError.clear();
     // An Iris shader can include arbitrary geometry stages. We implement
