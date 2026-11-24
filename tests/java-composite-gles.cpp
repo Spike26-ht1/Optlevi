@@ -278,6 +278,44 @@ void main(){color=vec4(texture(depthtex0,texcoord).r,
     require(!status().active&&status().failed,"Stale depth was reused");
     actual=pixel();require(std::abs(int(actual[0])-51)<=2,"Stale depth modified vanilla scene");
     glDeleteFramebuffers(1,&source);glDeleteRenderbuffers(1,&depth);
+    // Separate light-space depth snapshots and hardware comparison.
+    GLuint shadowFbo=0,shadowDepth=0,shadowColor=0;
+    glGenFramebuffers(1,&shadowFbo);glBindFramebuffer(GL_FRAMEBUFFER,shadowFbo);
+    glGenRenderbuffers(1,&shadowDepth);glBindRenderbuffer(GL_RENDERBUFFER,shadowDepth);
+    glRenderbufferStorage(GL_RENDERBUFFER,GL_DEPTH_COMPONENT24,16,16);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER,GL_DEPTH_ATTACHMENT,GL_RENDERBUFFER,shadowDepth);
+    glGenTextures(1,&shadowColor);glBindTexture(GL_TEXTURE_2D,shadowColor);
+    glTexStorage2D(GL_TEXTURE_2D,1,GL_RGBA8,16,16);
+    glFramebufferTexture2D(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_TEXTURE_2D,shadowColor,0);
+    const GLenum shadowDraw=GL_COLOR_ATTACHMENT0;
+    glDrawBuffers(1,&shadowDraw);glReadBuffer(shadowDraw);
+    require(glCheckFramebufferStatus(GL_FRAMEBUFFER)==GL_FRAMEBUFFER_COMPLETE,"Shadow fixture incomplete");
+    glClearDepthf(0.25f);glClear(GL_DEPTH_BUFFER_BIT);
+    require(captureShadowDepth(1,shadowFbo,GL_DEPTH_COMPONENT24,16,16,captureError),"Opaque shadow capture failed");
+    glClearDepthf(0.75f);glClear(GL_DEPTH_BUFFER_BIT);
+    require(captureShadowDepth(0,shadowFbo,GL_DEPTH_COMPONENT24,16,16,captureError),"Complete shadow capture failed");
+    const GLfloat shadowTint[4]={0.2f,0.6f,0.4f,1.0f};
+    glClearBufferfv(GL_COLOR,0,shadowTint);
+    require(captureShadowColor(0,shadowFbo,0,"RGBA8",16,16,captureError),"Shadow color capture failed");
+    glBindFramebuffer(GL_FRAMEBUFFER,0);
+    Pass shadowEnd{"final",fragment(R"(
+precision highp sampler2DShadow;
+uniform sampler2DShadow shadowtex0;
+uniform sampler2DShadow shadowtex1;
+uniform sampler2D shadowcolor0;
+layout(location=0) out vec4 color;
+void main(){color=vec4(texture(shadowtex0,vec3(texcoord,0.5)),
+                      texture(shadowtex1,vec3(texcoord,0.5)),
+                      texture(shadowcolor0,texcoord).g,1.0);}
+)"),{0},true};
+    requestPipeline({shadowEnd},"Real light-space depth fixture");
+    clearScene();beforeSwap(32,32);
+    require(status().active&&!status().failed,"Shadow comparison graph rejected");
+    actual=pixel();
+    require(actual[0]>=253&&actual[1]<=2&&std::abs(int(actual[2])-153)<=2,"Shadow comparison/color result incorrect");
+    clearScene();beforeSwap(32,32);
+    require(!status().active&&status().failed,"Stale shadow resources reused");
+    glDeleteFramebuffers(1,&shadowFbo);glDeleteRenderbuffers(1,&shadowDepth);glDeleteTextures(1,&shadowColor);
     // Typed actual world uniforms: source values are reflected from a linked
     // native fixture program, not synthesized by the Java shader runtime.
     auto buildShader=[](GLenum type,char const* code){

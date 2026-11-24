@@ -54,7 +54,7 @@ FormatInfo resolveColorFormat(std::string const& name){
 
 constexpr std::uint64_t kMemoryLimit=128ull*1024*1024;
 constexpr std::uint64_t kPackTextureLimit=16ull*1024*1024;
-struct Binding { GLint location; int buffer; int packTexture; unsigned unit; int depth=-1; };
+struct Binding { GLint location; int buffer; int packTexture; unsigned unit; int depth=-1,shadowColor=-1; bool compareDepth=false; };
 struct DepthSnapshot {
     GLuint tex=0,fbo=0;
     GLenum format=0;
@@ -74,8 +74,8 @@ struct SceneColorSnapshot {
 struct DepthFrame {
     EGLContext ctx=EGL_NO_CONTEXT;
     EGLSurface surface=EGL_NO_SURFACE;
-    std::array<DepthSnapshot,3> images{};
-    std::array<SceneColorSnapshot,kBuffers> colors{};
+    std::array<DepthSnapshot,5> images{}; // scene 0..2, shadow 3..4
+    std::array<SceneColorSnapshot,kBuffers+2> colors{}; // scene and shadow
     std::vector<WorldUniform> uniforms;
 };
 thread_local DepthFrame depthFrame;
@@ -113,6 +113,8 @@ int depthIndex(std::string const& name){
     if(name=="depthtex0")return 0;
     if(name=="depthtex1")return 1;
     if(name=="depthtex2")return 2;
+    if(name=="shadowtex0")return 3;
+    if(name=="shadowtex1")return 4;
     return -1;
 }
 int uniformComponents(unsigned type){
@@ -171,7 +173,7 @@ std::array<std::array<GLuint,2>,kBuffers> textures{};
 std::array<unsigned,kBuffers> front{};
 std::array<bool,kBuffers> needed{},mipNeeded{},historyNeeded{},sceneNeeded{};
 std::array<std::array<bool,2>,kBuffers> mipValid{};
-GLuint triangleVao=0,passFbo=0,outputTex=0;
+GLuint triangleVao=0,passFbo=0,outputTex=0,shadowCompareSampler=0;
 int textureWidth=0,textureHeight=0;
 std::string activeLabel;
 bool renderedFrame=false;
@@ -187,7 +189,7 @@ void abandonContext() {
     context=eglGetCurrentContext();
     pipeline.clear();
     packGpu.clear();packGpuBytes=0;frameCounter=0;
-    textures={};front={};needed={};mipNeeded={};historyNeeded={};sceneNeeded={};mipValid={};colorFormats={};triangleVao=passFbo=outputTex=0;
+    textures={};front={};needed={};mipNeeded={};historyNeeded={};sceneNeeded={};mipValid={};colorFormats={};triangleVao=passFbo=outputTex=shadowCompareSampler=0;
     textureWidth=textureHeight=0;colorTargetBytes=0;
     renderedFrame=false;
     requestedActive=false;
@@ -203,6 +205,7 @@ void discardGpu() {
     if(outputTex){glDeleteTextures(1,&outputTex);outputTex=0;}
     if(passFbo){glDeleteFramebuffers(1,&passFbo);passFbo=0;}
     if(triangleVao){glDeleteVertexArrays(1,&triangleVao);triangleVao=0;}
+    if(shadowCompareSampler){glDeleteSamplers(1,&shadowCompareSampler);shadowCompareSampler=0;}
     textureWidth=textureHeight=0;colorTargetBytes=0;
     renderedFrame=false;
     requestedActive=false;
@@ -337,14 +340,23 @@ void main() {
         for(size_t k=0;k<packGpu.size();++k)
             if(packGpu[k].sampler==uniform){packIndex=int(k);break;}
         int depth=depthIndex(uniform);
-        if(type==GL_SAMPLER_2D&&depth>=0&&arraySize==1){
+        int shadowColor=uniform=="shadowcolor0"?int(kBuffers):uniform=="shadowcolor1"?int(kBuffers+1):-1;
+        if(depth>=0&&arraySize==1&&(type==GL_SAMPLER_2D||(type==GL_SAMPLER_2D_SHADOW&&depth>=3))){
             if(!depthFrame.images[unsigned(depth)].fresh){
                 reportMissing(uniform+" (depth phase)");continue;
             }
             if(result.samplers.size()>=kBuffers)
                 return fail("Too many active texture samplers in "+pass.name);
             result.samplers.push_back({glGetUniformLocation(linked,name),-1,-1,
-                                        unsigned(result.samplers.size()),depth});
+                                        unsigned(result.samplers.size()),depth,-1,type==GL_SAMPLER_2D_SHADOW});
+        }else if(type==GL_SAMPLER_2D&&shadowColor>=0&&arraySize==1){
+            if(!depthFrame.colors[unsigned(shadowColor)].fresh){
+                reportMissing(uniform+" (shadow color)");continue;
+            }
+            if(result.samplers.size()>=kBuffers)
+                return fail("Too many active texture samplers in "+pass.name);
+            result.samplers.push_back({glGetUniformLocation(linked,name),-1,-1,
+                                         unsigned(result.samplers.size()),-1,shadowColor});
         }else if(type==GL_SAMPLER_2D&&(index>=0||packIndex>=0)&&arraySize==1){
             if(packIndex<0&&!available[unsigned(index)]){
                 reportMissing(uniform+" (geometry buffer)");continue;
@@ -505,7 +517,7 @@ bool compilePipeline(std::vector<Pass> const& passes,std::string& error) {
             error="Active output mapping exceeds driver limits in "+pass.name;return false;
         }
         p.mipmapInputs=mipmapInputs;
-        for(auto const& binding:p.samplers)if(binding.depth<0&&binding.packTexture<0){
+        for(auto const& binding:p.samplers)if(binding.depth<0&&binding.shadowColor<0&&binding.packTexture<0){
             unsigned n=unsigned(binding.buffer);
             if(mipmapInputs&(std::uint32_t(1)<<n))mipNeeded[n]=true;
             if(!produced[n]&&!historyNeeded[n]&&depthFrame.colors[n].fresh){
@@ -523,6 +535,19 @@ bool compilePipeline(std::vector<Pass> const& passes,std::string& error) {
     }
     for(unsigned i=0;i<kBuffers;++i)if(needed[i]&&!colorFormats[i].bytes){
         error="Unsupported color attachment format for colortex"+std::to_string(i);return false;
+    }
+    bool compare=false;
+    for(auto const& p:pipeline)for(auto const& b:p.samplers)compare|=b.compareDepth;
+    if(compare){
+        glGenSamplers(1,&shadowCompareSampler);
+        if(!shadowCompareSampler){error="Cannot allocate shadow comparison sampler";return false;}
+        glSamplerParameteri(shadowCompareSampler,GL_TEXTURE_COMPARE_MODE,GL_COMPARE_REF_TO_TEXTURE);
+        glSamplerParameteri(shadowCompareSampler,GL_TEXTURE_COMPARE_FUNC,GL_LEQUAL);
+        glSamplerParameteri(shadowCompareSampler,GL_TEXTURE_MIN_FILTER,GL_NEAREST);
+        glSamplerParameteri(shadowCompareSampler,GL_TEXTURE_MAG_FILTER,GL_NEAREST);
+        glSamplerParameteri(shadowCompareSampler,GL_TEXTURE_WRAP_S,GL_CLAMP_TO_EDGE);
+        glSamplerParameteri(shadowCompareSampler,GL_TEXTURE_WRAP_T,GL_CLAMP_TO_EDGE);
+        if(glGetError()!=GL_NO_ERROR){error="Cannot configure shadow comparison sampler";return false;}
     }
     glGenVertexArrays(1,&triangleVao);
     glGenFramebuffers(1,&passFbo);
@@ -663,12 +688,13 @@ void setUniforms(CompiledPass const& pass,int width,int height,float time,float 
     for(auto const& b:pass.samplers){
         unsigned unit=b.unit;
         glActiveTexture(GL_TEXTURE0+unit);
-        glBindSampler(unit,0);
+        glBindSampler(unit,b.compareDepth?shadowCompareSampler:0);
         GLuint texture=b.depth>=0?depthFrame.images[unsigned(b.depth)].tex:
+                      b.shadowColor>=0?depthFrame.colors[unsigned(b.shadowColor)].tex:
                       b.packTexture>=0?packGpu[unsigned(b.packTexture)].texture:
                       textures[unsigned(b.buffer)][front[unsigned(b.buffer)]];
         glBindTexture(GL_TEXTURE_2D,texture);
-        if(b.depth<0&&b.packTexture<0){
+        if(b.depth<0&&b.shadowColor<0&&b.packTexture<0){
             unsigned index=unsigned(b.buffer),side=front[index];
             bool mip=(pass.mipmapInputs&(std::uint32_t(1)<<index))!=0;
             if(mip&&!mipValid[index][side]){
@@ -694,11 +720,18 @@ void setUniforms(CompiledPass const& pass,int width,int height,float time,float 
 }
 
 bool renderPipeline(int width,int height,std::string& error) {
-    for(auto const& pass:pipeline)for(auto const& binding:pass.samplers)if(binding.depth>=0){
-        auto const& d=depthFrame.images[unsigned(binding.depth)];
-        if(!d.fresh||d.width!=width||d.height!=height){
-            error="Missing or mismatched current-frame depthtex"+std::to_string(binding.depth)+" in "+pass.name;
-            return false;
+    for(auto const& pass:pipeline)for(auto const& binding:pass.samplers){
+        if(binding.depth>=0){
+            auto const& d=depthFrame.images[unsigned(binding.depth)];
+            bool scene=binding.depth<3;
+            if(!d.fresh||(scene&&(d.width!=width||d.height!=height))){
+                auto name=scene?"depthtex"+std::to_string(binding.depth):
+                    "shadowtex"+std::to_string(binding.depth-3);
+                error="Missing or mismatched current-frame "+name+" in "+pass.name;return false;
+            }
+        }
+        if(binding.shadowColor>=0&&!depthFrame.colors[unsigned(binding.shadowColor)].fresh){
+            error="Missing current-frame shadowcolor"+std::to_string(binding.shadowColor-int(kBuffers))+" in "+pass.name;return false;
         }
     }
     for(unsigned i=0;i<kBuffers;++i)if(sceneNeeded[i]){
@@ -856,11 +889,11 @@ Status status() {
     return {requestedActive.load(),failed,lastStatus};
 }
 
-bool captureSceneColor(unsigned colortex,unsigned framebuffer,unsigned attachment,
+static bool captureColorAttachment(unsigned colortex,unsigned framebuffer,unsigned attachment,
                        std::string const& format,int width,int height,std::string& error){
     if(eglGetCurrentContext()==EGL_NO_CONTEXT){error="No EGL render context";return false;}
     syncDepthContext();
-    if(colortex>=kBuffers){error="Invalid scene color index";return false;}
+    if(colortex>=depthFrame.colors.size()){error="Invalid color snapshot index";return false;}
     auto& d=depthFrame.colors[colortex];d.fresh=false;
     FormatInfo fmt=resolveColorFormat(format);
     if(!fmt.bytes||width<=0||height<=0||width>4096||height>4096){
@@ -923,6 +956,17 @@ bool captureSceneColor(unsigned colortex,unsigned framebuffer,unsigned attachmen
     d.fresh=true;return finish(true,"");
 }
 
+bool captureSceneColor(unsigned colortex,unsigned framebuffer,unsigned attachment,
+                       std::string const& format,int width,int height,std::string& error){
+    if(colortex>=kBuffers){error="Invalid scene color index";return false;}
+    return captureColorAttachment(colortex,framebuffer,attachment,format,width,height,error);
+}
+bool captureShadowColor(unsigned index,unsigned framebuffer,unsigned attachment,
+                       std::string const& format,int width,int height,std::string& error){
+    if(index>=2){error="Invalid shadow color index";return false;}
+    return captureColorAttachment(kBuffers+index,framebuffer,attachment,format,width,height,error);
+}
+
 bool publishWorldUniforms(std::vector<WorldUniform> const& values,std::string& error){
     if(eglGetCurrentContext()==EGL_NO_CONTEXT){error="No EGL render context";return false;}
     syncDepthContext();
@@ -980,12 +1024,11 @@ bool captureProgramUniforms(unsigned program,std::vector<UniformMapping> const& 
     return publishWorldUniforms(values,error);
 }
 
-bool captureSceneDepth(DepthPhase phase,unsigned framebuffer,unsigned internalFormat,
+static bool captureDepthAttachment(unsigned n,unsigned framebuffer,unsigned internalFormat,
                        int width,int height,std::string& error){
     if(eglGetCurrentContext()==EGL_NO_CONTEXT){error="No EGL render context";return false;}
     syncDepthContext();
-    unsigned n=unsigned(phase);
-    if(n>=depthFrame.images.size()){error="Unknown depth phase";return false;}
+    if(n>=depthFrame.images.size()){error="Unknown depth snapshot";return false;}
     auto& d=depthFrame.images[n];d.fresh=false;
     GLenum fmt=GLenum(internalFormat);
     bool stencil=fmt==GL_DEPTH24_STENCIL8||fmt==GL_DEPTH32F_STENCIL8;
@@ -1051,6 +1094,18 @@ bool captureSceneDepth(DepthPhase phase,unsigned framebuffer,unsigned internalFo
     if(glGetError()!=GL_NO_ERROR)return finish(false,"Real scene depth copy failed");
     d.fresh=true;
     return finish(true,"");
+}
+
+bool captureSceneDepth(DepthPhase phase,unsigned framebuffer,unsigned internalFormat,
+                       int width,int height,std::string& error){
+    unsigned n=unsigned(phase);
+    if(n>=3){error="Unknown depth phase";return false;}
+    return captureDepthAttachment(n,framebuffer,internalFormat,width,height,error);
+}
+bool captureShadowDepth(unsigned index,unsigned framebuffer,unsigned internalFormat,
+                        int width,int height,std::string& error){
+    if(index>=2){error="Invalid shadow depth index";return false;}
+    return captureDepthAttachment(3+index,framebuffer,internalFormat,width,height,error);
 }
 
 void beforeSwap(int width,int height) {

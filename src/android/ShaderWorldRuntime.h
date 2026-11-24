@@ -52,6 +52,11 @@ bool captureSceneDepth(DepthPhase phase,unsigned framebuffer,unsigned internalFo
 // an arbitrary native color attachment is not automatically a G-buffer.
 bool captureSceneColor(unsigned colortex,unsigned framebuffer,unsigned attachment,
                        std::string const& format,int width,int height,std::string& error);
+// Independent light-space resources; the adapter must render actual shadows.
+bool captureShadowDepth(unsigned index,unsigned framebuffer,unsigned internalFormat,
+                        int width,int height,std::string& error);
+bool captureShadowColor(unsigned index,unsigned framebuffer,unsigned attachment,
+                        std::string const& format,int width,int height,std::string& error);
 // Typed data from a verified world-rendering phase. Matrices are column
 // major and must already use the Java shader's coordinate convention.
 struct WorldUniform {
