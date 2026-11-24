@@ -40,11 +40,13 @@ struct CompiledPass {
     std::vector<Binding> samplers;
     bool finalPass=false;
     bool customVertex=false;
+    std::uint32_t mipmapInputs=0;
 };
 std::vector<CompiledPass> pipeline;
 std::array<std::array<GLuint,2>,kBuffers> textures{};
 std::array<unsigned,kBuffers> front{};
-std::array<bool,kBuffers> needed{};
+std::array<bool,kBuffers> needed{},mipNeeded{};
+std::array<std::array<bool,2>,kBuffers> mipValid{};
 GLuint triangleVao=0,passFbo=0,outputTex=0;
 int textureWidth=0,textureHeight=0;
 std::string activeLabel;
@@ -61,7 +63,7 @@ void abandonContext() {
     context=eglGetCurrentContext();
     pipeline.clear();
     packGpu.clear();packGpuBytes=0;frameCounter=0;
-    textures={};front={};needed={};triangleVao=passFbo=outputTex=0;
+    textures={};front={};needed={};mipNeeded={};mipValid={};triangleVao=passFbo=outputTex=0;
     textureWidth=textureHeight=0;
     renderedFrame=false;
     requestedActive=false;
@@ -73,7 +75,7 @@ void discardGpu() {
     for(auto& p:packGpu)if(p.texture)glDeleteTextures(1,&p.texture);
     packGpu.clear();packGpuBytes=0;frameCounter=0;
     for(auto& pair:textures) glDeleteTextures(2,pair.data());
-    textures={};front={};needed={};
+    textures={};front={};needed={};mipNeeded={};mipValid={};
     if(outputTex){glDeleteTextures(1,&outputTex);outputTex=0;}
     if(passFbo){glDeleteFramebuffers(1,&passFbo);passFbo=0;}
     if(triangleVao){glDeleteVertexArrays(1,&triangleVao);triangleVao=0;}
@@ -111,8 +113,8 @@ GLuint compile(GLenum kind,std::string const& source,std::string& error) {
 }
 
 
-bool evaluateEnabled(Pass const& pass,bool& enabled,std::string& error){
-    enabled=true;
+bool evaluateEnabled(Pass const& pass,bool& enabled,std::uint32_t& mipmapInputs,std::string& error){
+    enabled=true;mipmapInputs=0;
     if(pass.enabledProbe.empty())return true;
     static char const* vertex=R"(#version 300 es
 void main(){gl_Position=vec4(0.0,0.0,0.0,1.0);}
@@ -129,6 +131,10 @@ void main(){gl_Position=vec4(0.0,0.0,0.0,1.0);}
     if(!linked){error=shaderLog(program,true);glDeleteProgram(program);return false;}
     bool yes=glGetFragDataLocation(program,"optEnabledOutput")==0;
     bool no=glGetFragDataLocation(program,"optDisabledOutput")==0;
+    if(yes)for(unsigned n=0;n<kBuffers;++n){
+        auto name="optMipInput"+std::to_string(n);
+        if(glGetUniformLocation(program,name.c_str())>=0)mipmapInputs|=std::uint32_t(1)<<n;
+    }
     glDeleteProgram(program);
     if(yes==no){error="Ambiguous program.enabled probe";return false;}
     enabled=yes;return true;
@@ -299,7 +305,8 @@ bool compilePipeline(std::vector<Pass> const& passes,std::string& error) {
     for(size_t i=0;i<passes.size();++i) {
         auto const& pass=passes[i];
         bool enabled=true;
-        if(!evaluateEnabled(pass,enabled,error)){
+        std::uint32_t mipmapInputs=0;
+        if(!evaluateEnabled(pass,enabled,mipmapInputs,error)){
             error=pass.name+" program.enabled: "+error;return false;
         }
         if(!enabled){
@@ -327,6 +334,10 @@ bool compilePipeline(std::vector<Pass> const& passes,std::string& error) {
             glDeleteProgram(p.program);
             error="Active output mapping exceeds driver limits in "+pass.name;return false;
         }
+        p.mipmapInputs=mipmapInputs;
+        for(auto const& binding:p.samplers)
+            if(binding.packTexture<0&&(mipmapInputs&(std::uint32_t(1)<<binding.buffer)))
+                mipNeeded[unsigned(binding.buffer)]=true;
         if(!p.finalPass)for(auto t:p.targets){available[t]=true;needed[t]=true;}
         pipeline.push_back(std::move(p));
     }
@@ -416,10 +427,17 @@ bool ensureTargets(int width,int height) {
     if(width==textureWidth&&height==textureHeight&&outputTex)return true;
     for(auto& pair:textures){glDeleteTextures(2,pair.data());pair={};}
     if(outputTex){glDeleteTextures(1,&outputTex);outputTex=0;}
-    textureWidth=textureHeight=0;
+    textureWidth=textureHeight=0;mipValid={};
     if(width<=0||height<=0||width>4096||height>4096)return false;
-    unsigned n=1+2*unsigned(std::count(needed.begin(),needed.end(),true));
-    if(std::uint64_t(width)*height*4*n+packGpuBytes>kMemoryLimit)return false;
+    std::uint64_t baseBytes=std::uint64_t(width)*height*4,chainBytes=baseBytes;
+    for(int w=width,h=height;w>1||h>1;){
+        w=std::max(1,w/2);h=std::max(1,h/2);
+        chainBytes+=std::uint64_t(w)*h*4;
+    }
+    std::uint64_t bytes=baseBytes+packGpuBytes;
+    for(unsigned i=0;i<kBuffers;++i)if(needed[i])
+        bytes+=2*(mipNeeded[i]?chainBytes:baseBytes);
+    if(bytes>kMemoryLimit)return false;
     glActiveTexture(GL_TEXTURE0);
     glBindBuffer(GL_PIXEL_UNPACK_BUFFER,0);
     glPixelStorei(GL_UNPACK_ALIGNMENT,1);
@@ -440,6 +458,15 @@ void setUniforms(CompiledPass const& pass,int width,int height,float time,float 
         GLuint texture=b.packTexture>=0?packGpu[unsigned(b.packTexture)].texture:
                       textures[unsigned(b.buffer)][front[unsigned(b.buffer)]];
         glBindTexture(GL_TEXTURE_2D,texture);
+        if(b.packTexture<0){
+            unsigned index=unsigned(b.buffer),side=front[index];
+            bool mip=(pass.mipmapInputs&(std::uint32_t(1)<<index))!=0;
+            if(mip&&!mipValid[index][side]){
+                glGenerateMipmap(GL_TEXTURE_2D);
+                mipValid[index][side]=true;
+            }
+            glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,mip?GL_LINEAR_MIPMAP_LINEAR:GL_LINEAR);
+        }
         if(b.location>=0)glUniform1i(b.location,int(unit));
     }
     auto set=[&](char const* name,float value){
@@ -461,7 +488,7 @@ bool renderPipeline(int width,int height,std::string& error) {
     if(!ensureTargets(width,height)){
         error="Cannot allocate independent GLES3 targets within 128 MiB budget";return false;
     }
-    front.fill(0);
+    front.fill(0);mipValid[0][0]=false;
     glActiveTexture(GL_TEXTURE0);
     glBindSampler(0,0);
     glBindTexture(GL_TEXTURE_2D,textures[0][0]);
@@ -507,7 +534,7 @@ bool renderPipeline(int width,int height,std::string& error) {
         if(pass.customVertex)glDrawArrays(GL_TRIANGLES,0,6);
         else glDrawArrays(GL_TRIANGLES,0,3);
         if(glGetError()!=GL_NO_ERROR){error=pass.name+": GLES3 pass execution failed";return false;}
-        if(!pass.finalPass)for(auto t:pass.targets)front[t]=1-front[t];
+        if(!pass.finalPass)for(auto t:pass.targets){front[t]=1-front[t];mipValid[t][front[t]]=false;}
     }
     // Only publish the output after the final pass succeeds.
     glBindFramebuffer(GL_READ_FRAMEBUFFER,passFbo);

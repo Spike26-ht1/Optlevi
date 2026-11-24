@@ -162,6 +162,33 @@ void main(){optEnabledOutput=vec4(1.0);}
     requestPipeline({disabled,end},"Enabled option fixture");
     beforeSwap(32,32);
     require(!status().active&&status().failed,"Enabled broken pass should reject graph");
+    // Pass-local mipmaps must reflect metadata, generate from the real
+    // ping-pong output, and be refreshed on a subsequent frame.
+    clearScene();
+    Pass mipSource{"composite",fragment(R"(
+uniform sampler2D colortex0;
+layout(location=0) out vec4 color;
+void main(){color=texture(colortex0,texcoord);}
+)"),{0},false};
+    Pass mipEnd{"final",fragment(R"(
+uniform sampler2D colortex0;
+layout(location=0) out vec4 color;
+void main(){color=textureLod(colortex0,vec2(0.5),5.0);}
+)"),{0},true};
+    mipEnd.enabledProbe=fragment(R"(
+uniform float optMipInput0;
+layout(location=0) out vec4 optEnabledOutput;
+void main(){optEnabledOutput=vec4(optMipInput0);}
+)");
+    requestPipeline({mipSource,mipEnd},"Real mipmap fixture");
+    beforeSwap(32,32);
+    require(status().active&&!status().failed,"Mipmapped pass failed");
+    actual=pixel();
+    require(std::abs(int(actual[0])-51)<=2&&std::abs(int(actual[2])-153)<=2,"Mip chain did not contain scene data");
+    glClearColor(0.8f,0.1f,0.2f,1.0f);glClear(GL_COLOR_BUFFER_BIT);
+    beforeSwap(32,32);
+    actual=pixel();
+    require(std::abs(int(actual[0])-204)<=2&&std::abs(int(actual[2])-51)<=2,"Mip chain remained stale after new frame");
     // Missing geometry input must not turn into a fake color sampler.
     clearScene();
     Pass unavailable{"final",fragment(R"(

@@ -183,6 +183,10 @@ void main(){
     assert(probe.find("#define RETRO_FILTER")==std::string::npos);
     assert(probe.find("#define DOF")==std::string::npos);
     assert(!optBuildEnabledProbe("","TAA; bad",probe,error));
+    assert(optBuildEnabledProbe("#ifdef AUTO_EXPOSURE\nconst bool colortex0MipmapEnabled = true;\n#endif\n/* const bool colortex1MipmapEnabled = true; */\n","",probe,error));
+    assert(probe.find("#ifdef AUTO_EXPOSURE\n#undef OPTLEVI_MIP_INPUT_0\n#define OPTLEVI_MIP_INPUT_0 1\n#endif")!=std::string::npos);
+    assert(probe.find("#define OPTLEVI_MIP_INPUT_1 1")==std::string::npos);
+    assert(optBuildEnabledProbe("void main(){}","",probe,error)&&probe.empty());
     std::cout << "Original vertex, global initializers and conditional route translation: OK\n";
 }
 ''')

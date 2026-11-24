@@ -484,6 +484,9 @@ static bool optTranslateRoutedComposite(std::string source,bool originalVertex,
 static bool optBuildEnabledProbe(std::string const& source,std::string const& expression,
                                  std::string& probe,std::string& error){
     std::string condition;
+    // An absent property enables the pass; mipmap directives may still
+    // require metadata reflection even without a program.enabled rule.
+    if(expression.empty())condition="1";
     auto alpha=[](char c){return (c>='a'&&c<='z')||(c>='A'&&c<='Z')||c=='_';};
     auto digit=[](char c){return c>='0'&&c<='9';};
     for(size_t i=0;i<expression.size();){
@@ -506,7 +509,7 @@ static bool optBuildEnabledProbe(std::string const& source,std::string const& ex
     // Strip comments before collecting directives, including continuation
     // lines. No executable GLSL from a disabled program is compiled.
     std::istringstream input(source);std::string line,body;
-    bool block=false,continuation=false;
+    bool block=false,continuation=false,hasMipmap=false;
     while(std::getline(input,line)){
         for(size_t i=0;i<line.size();++i){
             if(block){
@@ -531,14 +534,48 @@ static bool optBuildEnabledProbe(std::string const& source,std::string const& ex
                     word=="ifndef"||word=="elif"||word=="else"||word=="endif"||word=="error";
             }
         }
-        if(!include){continuation=false;continue;}
+        if(!include){
+            continuation=false;
+            // Iris/OptiFine pass-local constants control mip generation.
+            // Turn declarations into metadata macros in the same conditional
+            // branches; never activate constants hidden in comments.
+            std::string compact;
+            for(char c:line)if(c!=' '&&c!='\t'&&c!='\r')compact+=c;
+            for(unsigned n=0;n<16;++n){
+                std::string canonical="constboolcolortex"+std::to_string(n)+"MipmapEnabled=";
+                std::string legacy;
+                if(n<4){
+                    static const char* names[]={"gcolor","gdepth","gnormal","composite"};
+                    legacy=std::string("constbool")+names[n]+"MipmapEnabled=";
+                }else if(n<8)legacy="constboolgaux"+std::to_string(n-3)+"MipmapEnabled=";
+                bool yes=compact==canonical+"true;"||(!legacy.empty()&&compact==legacy+"true;");
+                bool no=compact==canonical+"false;"||(!legacy.empty()&&compact==legacy+"false;");
+                if(yes||no){
+                    hasMipmap=true;
+                    std::string marker="OPTLEVI_MIP_INPUT_"+std::to_string(n);
+                    body+="#undef "+marker+"\n";
+                    if(yes)body+="#define "+marker+" 1\n";
+                    break;
+                }
+            }
+            continue;
+        }
         auto last=line.find_last_not_of(" \t\r");
         continuation=last!=std::string::npos&&line[last]=='\\';
         body+=line+'\n';
     }
     if(block||continuation){error="Unterminated directive in program.enabled probe";return false;}
-    probe=optGlesCompatibilityHeader()+body+"\n#if "+condition+
-        "\nlayout(location=0) out vec4 optEnabledOutput;\nvoid main(){optEnabledOutput=vec4(1.0);}\n"
+    if(expression.empty()&&!hasMipmap){probe.clear();return true;}
+    std::string declarations,additions;
+    for(unsigned n=0;n<16;++n){
+        auto index=std::to_string(n);
+        auto guard="#ifdef OPTLEVI_MIP_INPUT_"+index+"\n";
+        declarations+=guard+"uniform float optMipInput"+index+";\n#endif\n";
+        additions+=guard+"value+=optMipInput"+index+";\n#endif\n";
+    }
+    probe=optGlesCompatibilityHeader()+body+"\n#if "+condition+"\n"+declarations+
+        "layout(location=0) out vec4 optEnabledOutput;\nvoid main(){float value=1.0;\n"+
+        additions+"optEnabledOutput=vec4(value);}\n"
         "#else\nlayout(location=0) out vec4 optDisabledOutput;\nvoid main(){optDisabledOutput=vec4(0.0);}\n#endif\n";
     return true;
 }
@@ -668,11 +705,12 @@ static bool optBuildJavaPipeline(
             if(rule.first=="program."+name+".enabled"){expression=rule.second;hasRule=true;}
         for(auto const& rule:enabledRules)
             if(rule.first=="program.world0/"+name+".enabled"){expression=rule.second;hasRule=true;}
-        if(hasRule){
-            if(finalPass){error="Conditional final pass is not supported";return false;}
-            if(!optBuildEnabledProbe(expanded,expression,probe,error)){
-                error=member+": "+error;return false;
-            }
+        if(hasRule&&finalPass){error="Conditional final pass is not supported";return false;}
+        if(hasRule&&expression.find_first_not_of(" \t\r")==std::string::npos){
+            error=member+": empty program.enabled expression";return false;
+        }
+        if(!optBuildEnabledProbe(expanded,expression,probe,error)){
+            error=member+": "+error;return false;
         }
         // Static fallback target for final/diagnostic passes. Composite
         // targets are reflected after the driver evaluates conditional GLSL.
