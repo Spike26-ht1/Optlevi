@@ -13,7 +13,7 @@ ui=(R/"src/ui/OptLeviShaderScreen.inc").read_text()
 prep=(R/"scripts/prepare-java-world-test.py").read_text()
 fabricprep=(R/"scripts/prepare-fabric-real-screen.py").read_text()
 version=json.loads((R/"resources/levi_api/manifest.json").read_text())
-assert version["header"]["version"]==[0,12,0]
+assert version["header"]["version"]==[0,13,0]
 for symbol in (
  "void requestEnable(std::string translatedFragment",
  "void requestDisable()",
@@ -34,18 +34,22 @@ for symbol in (
  "glColorMask(colorMask[0]",
  "glDisable(GL_SCISSOR_TEST)",
  "glDisable(GL_DEPTH_TEST)",
- "sourceTex",
+ "textures",
+ "compilePipeline",
+ "glDrawBuffers",
+ "glBlitFramebuffer",
+ "Missing real input",
+ "textures[t][1-front[t]]",
+ "front[t]=1-front[t]",
  "requestedActive=false",
  "ShaderWorldRuntime.h",
 ):
     assert symbol in (runtime+api),symbol
 for symbol in (
-    "shaderworld::requestEnable",
+    "shaderworld::requestPipeline",
     "shaderworld::requestDisable",
-    "optReadJavaShader(*selected,src,origin)",
-    "optTranslateFinal(src)",
+    "optBuildJavaPipeline(*selected,passes,error)",
     "Experimental world postprocess disabled",
-    "Compiling selected Java final pass",
 ):
     assert symbol in ui,symbol
 for symbol in (
@@ -57,7 +61,7 @@ for symbol in (
     assert symbol in prep,symbol
 assert 'ShaderWorldRuntime.h' in fabricprep
 assert "glBindFramebuffer(GL_FRAMEBUFFER,0)" in runtime
-assert "for(char const* name" in runtime
+assert "for(auto const& pass:pipeline)" in runtime
 assert "requestEnable" in api and "requestDisable" in api
-print("OptLevi 0.10: opt-in Java final-pass GPU postprocessor and GL-state restore checks OK")
+print("OptLevi 0.13: ordered multi-target composite pipeline and GL-state restore checks OK")
 print("No complete Iris/OptiFine pass pipeline is claimed by this test.")
