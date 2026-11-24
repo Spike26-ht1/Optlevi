@@ -18,7 +18,7 @@ fabric=(R/"src/ui/OptLeviFabricScreen.inc").read_text()
 catalog=(R/"src/ui/OptLeviShaderCatalog.inc").read_text()
 manifest=json.loads((R/"resources/levi_api/manifest.json").read_text())
 
-assert manifest["header"]["version"]==[0,12,0]
+assert manifest["header"]["version"]==[0,13,0]
 assert '#include "OptLeviShaderScreen.inc"' in fabric
 assert "drawOptLeviShadersScreen(display);" in fabric
 assert "OptLeviShaderGlesTest.inc" in ui and "OptLeviShaderGlesTest.inc" in prep
@@ -54,9 +54,9 @@ assert "glViewport(savedViewport[0]" in gl
 assert 'optReadZipShader' in gl
 assert 'optTranslateFinal' in gl
 assert "Full Java shader loader" not in ui
-assert "shaderworld::requestEnable(" in ui
+assert "shaderworld::requestPipeline(" in ui
 assert "shaderworld::requestDisable()" in ui
 assert 'optEnds(name,".zip")' in catalog and "optInspectZip" in catalog
 assert "reloadMaterial(" not in ui and "glDrawArrays" not in ui
-print("OptLevi 0.9: Android system picker, safe import, Iris UI and real GLES shader preview connected.")
+print("OptLevi 0.13: Android system picker, safe import, Iris UI and real GLES shader preview connected.")
 print("Important: this proves code wiring only; world shader integration remains separate.")
