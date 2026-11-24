@@ -21,6 +21,7 @@ std::string pendingLabel;
 std::string lastStatus="No world shader active";
 int pendingAction=0; // 0 none, 1 enable, 2 disable
 std::atomic<bool> requestedActive{false};
+std::atomic<bool> wantsNativeCapture{false};
 bool failed=false;
 
 // GPU state is touched exclusively from the selected game's EGL swap thread.
@@ -862,11 +863,12 @@ void requestPipeline(std::vector<Pass> passes,std::string label) {
     }
     std::lock_guard lock(mu);
     if(passes.empty()||passes.size()>kMaxPasses||total>4*1024*1024||badImages){
-        pendingAction=2;requestedActive=false;
+        pendingAction=2;requestedActive=false;wantsNativeCapture=false;
         pendingPasses.clear();
         failed=true;lastStatus="Java composite graph exceeds pass/source budget";
         return;
     }
+    wantsNativeCapture=true;
     pendingPasses=std::move(passes);
     pendingLabel=std::move(label);
     pendingAction=1;lastStatus="Compiling ordered Java composite graph";
@@ -878,11 +880,14 @@ void requestEnable(std::string fragment,std::string label) {
 }
 
 void requestDisable() {
+    wantsNativeCapture=false;
     requestedActive=false;
     std::lock_guard lock(mu);
     pendingAction=2;pendingPasses.clear();
     lastStatus="World postprocess disabled";failed=false;
 }
+
+bool captureRequested(){return wantsNativeCapture.load(std::memory_order_relaxed);}
 
 Status status() {
     std::lock_guard lock(mu);

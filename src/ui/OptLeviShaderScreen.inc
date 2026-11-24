@@ -2,6 +2,7 @@
 // single-pass world postprocess. Full Java/Iris multi-pass rendering is not supported.
 #include "OptLeviShaderCatalog.inc"
 #include "OptLeviShaderGlesTest.inc"
+#include "ShaderRenderBridge.h"
 
 static bool gOptShadersVisible=false;
 static bool gOptShadersScanned=false;
@@ -269,6 +270,9 @@ static void drawOptLeviShadersScreen(ImVec2 display) {
             ImGui::Separator();
             ImGui::TextWrapped("%s",gOptPreviewReport.c_str());
             ImGui::TextWrapped("World: %s",world.message.c_str());
+            ImGui::Separator();
+            auto nativeReport=modmenu::android::shaderbridge::report();
+            ImGui::TextWrapped("%s",nativeReport.c_str());
             ImGui::EndPopup();
         }
     }

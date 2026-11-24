@@ -42,6 +42,9 @@ void requestPipeline(std::vector<Pass> passes,std::string label);
 void requestEnable(std::string translatedFragment,std::string sourceLabel);
 void requestDisable();
 Status status();
+// Remains true for a selected pack awaiting native resources, even if its
+// first compilation was rejected. False when Off or Disable is selected.
+bool captureRequested();
 // Called on the game render thread by a phase-aware renderer adapter, with
 // a completed, single-sample depth attachment. Never infer phases at swap.
 enum class DepthPhase : unsigned { Complete=0, BeforeTranslucent=1, BeforeHand=2 };
