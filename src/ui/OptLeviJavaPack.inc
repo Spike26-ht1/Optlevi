@@ -3,6 +3,22 @@
 
 static constexpr size_t kOptJavaExpandedLimit = 512 * 1024;
 
+// One bounded archive read per pack graph expansion. Cache is scoped to the
+// synchronous source loader; no retained ZIP bytes after an Apply or preview.
+struct OptJavaArchiveCache {
+    std::filesystem::path path;
+    std::string data;
+    bool ready=false;
+};
+static thread_local OptJavaArchiveCache* gOptJavaArchiveCache=nullptr;
+struct OptJavaArchiveScope {
+    OptJavaArchiveCache cache;
+    OptJavaArchiveCache* previous;
+    OptJavaArchiveScope():previous(gOptJavaArchiveCache){gOptJavaArchiveCache=&cache;}
+    ~OptJavaArchiveScope(){gOptJavaArchiveCache=previous;}
+};
+
+
 static bool optReadJavaMember(OptPackInfo const& pack,
                               std::string const& member,
                               std::string& result) {
@@ -21,8 +37,16 @@ static bool optReadJavaMember(OptPackInfo const& pack,
     }
     auto extension=optLower(pack.path.filename().string());
     if (!optEnds(extension,".zip") && !optEnds(extension,".mcpack")) return false;
-    std::string zip;
-    if (!optReadBounded(pack.path,zip,kMaxZipBytes) || zip.size()<22) return false;
+    std::string localZip;
+    auto* cached=gOptJavaArchiveCache;
+    if(cached && (!cached->ready||cached->path!=pack.path)){
+        cached->path=pack.path;
+        cached->ready=optReadBounded(pack.path,cached->data,kMaxZipBytes);
+        if(!cached->ready)cached->data.clear();
+    }
+    if(!cached && !optReadBounded(pack.path,localZip,kMaxZipBytes))return false;
+    std::string const& zip=cached?cached->data:localZip;
+    if(zip.size()<22)return false;
     auto const* p=reinterpret_cast<unsigned char const*>(zip.data());
     size_t const size=zip.size();
     size_t eocd=size;
@@ -160,6 +184,7 @@ static bool optExpandJavaMember(OptPackInfo const& pack,
 static bool optReadJavaFinalPass(OptPackInfo const& pack,
                                   std::string& source,
                                   std::string& origin) {
+    OptJavaArchiveScope archiveScope;
     gOptJavaSourceError.clear();
     // Prefer the Overworld program; don't accidentally compile Nether first
     // just because it occurs earlier in a ZIP central directory.
