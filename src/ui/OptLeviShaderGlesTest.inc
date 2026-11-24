@@ -156,6 +156,142 @@ static std::string optTranslateFinal(std::string source) {
         "layout(location=0) out vec4 optFragColor;\n") + source;
 }
 
+// RenderDragonShaderLoader's input mapping catalog distinguishes pipeline
+// roles (colortexN) from actual native attachments. A Java pass is not
+// permitted to invent scene attachments; the runtime checks reflected samplers
+// against the buffers produced by earlier passes.
+// Source order and target location follow Iris composite/DRAWBUFFERS rules.
+static bool optParseCompositeTargets(std::string const& source,
+                                     std::vector<unsigned>& targets,
+                                     std::string& error) {
+    // Only recognized comment directives are used. GLSL preprocessor-dependent
+    // directives are not silently guessed.
+    auto rt=source.find("RENDERTARGETS:");
+    auto db=source.find("DRAWBUFFERS:");
+    if(rt!=std::string::npos && db!=std::string::npos){
+        error="Both RENDERTARGETS and DRAWBUFFERS are present";return false;
+    }
+    size_t pos=rt!=std::string::npos?rt:db;
+    targets.clear();
+    if(pos==std::string::npos){targets.push_back(0);return true;}
+    bool modern=rt!=std::string::npos;
+    pos+=modern?14:12;
+    auto end=source.find_first_of("\r\n*",pos);
+    if(end==std::string::npos)end=source.size();
+    auto token=source.substr(pos,end-pos);
+    std::set<unsigned> used;
+    if(modern){
+        std::istringstream in(token);std::string item;
+        while(std::getline(in,item,',')){
+            auto first=item.find_first_not_of(" \t");
+            auto last=item.find_last_not_of(" \t");
+            if(first==std::string::npos || last!=first ||
+               item[first]<'0'||item[first]>'7'){
+                error="Only explicit colortex0..7 render targets are supported";return false;
+            }
+            auto target=unsigned(item[first]-'0');
+            if(!used.insert(target).second){error="Repeated render target";return false;}
+            targets.push_back(target);
+        }
+    } else {
+        for(char ch:token){
+            if(ch==' '||ch=='\t')continue;
+            if(ch<'0'||ch>'7'){error="Unsupported DRAWBUFFERS target";return false;}
+            auto target=unsigned(ch-'0');
+            if(!used.insert(target).second){error="Repeated render target";return false;}
+            targets.push_back(target);
+        }
+    }
+    if(targets.empty()){error="Empty render target directive";return false;}
+    return true;
+}
+
+static std::string optTranslateComposite(std::string source,size_t outputs) {
+    // optTranslateFinal handles legacy desktop syntax and removes #version.
+    // Introduce separate fragment outputs for locations 1..N, not aliases.
+    source=optTranslateFinal(std::move(source));
+    std::string extra;
+    for(size_t i=1;i<outputs;++i){
+        auto name="optFragColor"+std::to_string(i);
+        optReplaceAll(source,"gl_FragData["+std::to_string(i)+"]",name);
+        extra+="layout(location="+std::to_string(i)+") out vec4 "+name+";\n";
+    }
+    auto at=source.find("layout(location=0)");
+    if(at!=std::string::npos)source.insert(at,extra);
+    return source;
+}
+
+static bool optBuildJavaPipeline(
+    OptPackInfo const& pack,
+    std::vector<modmenu::android::shaderworld::Pass>& passes,
+    std::string& error) {
+    using modmenu::android::shaderworld::Pass;
+    passes.clear();
+    gOptJavaSourceError.clear();
+    // An Iris shader can include arbitrary geometry stages. We implement
+    // the post-render composite subset only. Do not claim a G-buffer
+    // pipeline merely because some post passes happen to compile.
+    // Prefer dimension-specific programs, then the root program.
+    // Do not select Nether or End while using the Overworld adapter.
+    auto resolve=[&](std::string const& name,std::string& member,std::string& raw){
+        for(auto const& prefix:{std::string("shaders/world0/"),std::string("shaders/")}){
+            auto candidate=prefix+name+".fsh";
+            if(optReadJavaMember(pack,candidate,raw)){
+                member=std::move(candidate);return true;
+            }
+        }
+        return false;
+    };
+    // Buffer flip overrides, program scales and per-buffer dimensions require
+    // distinct semantics. Reject those rather than presenting an invalid graph.
+    std::string properties;
+    if(optReadJavaMember(pack,"shaders/shaders.properties",properties)){
+        std::istringstream input(properties);std::string line;
+        while(std::getline(input,line)){
+            auto at=line.find_first_not_of(" \t\r");
+            if(at==std::string::npos||line[at]=='#')continue;
+            for(auto const* prefix:{"flip.","size.buffer.","scale.composite",
+                                    "blend.composite","program.composite"}){
+                if(line.compare(at,std::strlen(prefix),prefix)==0){
+                    error="Unsupported Java pipeline property: "+line.substr(at,120);
+                    return false;
+                }
+            }
+        }
+    }
+    size_t total=0;
+    auto append=[&](std::string const& name,bool finalPass)->bool {
+        std::string member,raw;
+        if(!resolve(name,member,raw)){
+            if(finalPass){error="Missing Overworld final.fsh";return false;}
+            return true;
+        }
+        std::string expanded;std::set<std::string> stack;size_t bytes=0;
+        if(!optExpandJavaMember(pack,member,expanded,stack,bytes,0)){
+            error=gOptJavaSourceError;return false;
+        }
+        std::vector<unsigned> targets;
+        if(finalPass)targets={0};
+        else if(!optParseCompositeTargets(expanded,targets,error)){
+            error=member+": "+error;return false;
+        }
+        auto translated=optTranslateComposite(std::move(expanded),targets.size());
+        total+=translated.size();
+        if(total>4*1024*1024 || passes.size()>=24){
+            error="Java composite graph exceeds source/pass budget";return false;
+        }
+        passes.push_back(Pass{member,std::move(translated),std::move(targets),finalPass});
+        return true;
+    };
+    // Ordered composite and composite1...composite22, then final. Deferred,
+    // shadow and geometry are not appended to the wrong render phase.
+    if(!append("composite",false))return false;
+    for(unsigned i=1;i<=22;++i)
+        if(!append("composite"+std::to_string(i),false))return false;
+    if(!append("final",true))return false;
+    return !passes.empty();
+}
+
 static GLuint optCompile(GLenum kind,std::string const& code,std::string& report) {
     GLuint shader=glCreateShader(kind);
     if(!shader){report+="glCreateShader failed\n";return 0;}
