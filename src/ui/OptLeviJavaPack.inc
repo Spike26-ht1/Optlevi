@@ -21,7 +21,7 @@ struct OptJavaArchiveScope {
 
 static bool optReadJavaMember(OptPackInfo const& pack,
                               std::string const& member,
-                              std::string& result) {
+                              std::string& result,size_t memberLimit=kMaxShaderBytes) {
     if (member.rfind("shaders/", 0) != 0 ||
         member.find("..") != std::string::npos ||
         member.find('\\') != std::string::npos) return false;
@@ -33,7 +33,7 @@ static bool optReadJavaMember(OptPackInfo const& pack,
             walk/=component;
             if (std::filesystem::is_symlink(walk,ec) || ec) return false;
         }
-        return optReadBounded(walk,result,kMaxShaderBytes);
+        return optReadBounded(walk,result,memberLimit);
     }
     auto extension=optLower(pack.path.filename().string());
     if (!optEnds(extension,".zip") && !optEnds(extension,".mcpack")) return false;
@@ -81,8 +81,8 @@ static bool optReadJavaMember(OptPackInfo const& pack,
             unsigned const method=optLE16(p+cd+10);
             unsigned const flags=optLE16(p+cd+8);
             std::uint32_t const expectedCrc=optLE32(p+cd+16);
-            if(unpacked==0 || unpacked>kMaxShaderBytes ||
-               packed>kMaxShaderBytes || (flags&1) ||
+            if(unpacked==0 || unpacked>memberLimit ||
+               packed>memberLimit || (flags&1) ||
                (method!=0 && method!=8) ||
                local>size || size-local<30 ||
                optLE32(p+local)!=0x04034b50u)return false;

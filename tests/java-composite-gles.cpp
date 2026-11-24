@@ -127,6 +127,22 @@ void main(){color=texture(colortex9,texcoord);}
     actual=pixel();
     require(std::abs(int(actual[0])-128)<=2&&std::abs(int(actual[1])-64)<=2&&
             std::abs(int(actual[2])-191)<=2,"Conditional target data incorrect");
+    // Pack-owned noise image has a real GPU upload and its own sampler
+    // unit. It must not consume or impersonate a scene color buffer.
+    clearScene();
+    Pass noise{"final",fragment(R"(
+uniform sampler2D noisetex;
+uniform int frameCounter;
+layout(location=0) out vec4 color;
+void main(){color=texture(noisetex,texcoord);color.a=float(frameCounter==0);}
+)"),{0},true};
+    noise.packTextures.push_back({"noisetex",1,1,true,{17,99,201,255}});
+    requestPipeline({noise},"Pack PNG texture fixture");
+    beforeSwap(32,32);
+    require(status().active&&!status().failed,"Pack texture was not bound");
+    actual=pixel();
+    require(std::abs(int(actual[0])-17)<=2&&std::abs(int(actual[1])-99)<=2&&
+            std::abs(int(actual[2])-201)<=2&&actual[3]==255,"Pack texture data incorrect");
     // Missing geometry input must not turn into a fake color sampler.
     clearScene();
     Pass unavailable{"final",fragment(R"(

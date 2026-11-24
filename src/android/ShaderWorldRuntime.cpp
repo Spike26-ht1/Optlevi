@@ -27,7 +27,12 @@ EGLContext context=EGL_NO_CONTEXT;
 constexpr unsigned kBuffers=16;
 constexpr unsigned kMaxPasses=24;
 constexpr std::uint64_t kMemoryLimit=128ull*1024*1024;
-struct Binding { GLint location; int buffer; };
+constexpr std::uint64_t kPackTextureLimit=16ull*1024*1024;
+struct Binding { GLint location; int buffer; int packTexture; unsigned unit; };
+struct GpuPackTexture { std::string sampler; GLuint texture=0; };
+std::vector<GpuPackTexture> packGpu;
+std::uint64_t packGpuBytes=0;
+unsigned frameCounter=0;
 struct CompiledPass {
     GLuint program=0;
     std::string name;
@@ -55,6 +60,7 @@ void abandonContext() {
     // Names from the previous EGL context are invalid in this one.
     context=eglGetCurrentContext();
     pipeline.clear();
+    packGpu.clear();packGpuBytes=0;frameCounter=0;
     textures={};front={};needed={};triangleVao=passFbo=outputTex=0;
     textureWidth=textureHeight=0;
     renderedFrame=false;
@@ -64,6 +70,8 @@ void abandonContext() {
 void discardGpu() {
     for(auto& p:pipeline) if(p.program)glDeleteProgram(p.program);
     pipeline.clear();
+    for(auto& p:packGpu)if(p.texture)glDeleteTextures(1,&p.texture);
+    packGpu.clear();packGpuBytes=0;frameCounter=0;
     for(auto& pair:textures) glDeleteTextures(2,pair.data());
     textures={};front={};needed={};
     if(outputTex){glDeleteTextures(1,&outputTex);outputTex=0;}
@@ -165,11 +173,19 @@ void main() {
         glGetActiveUniform(linked,GLuint(i),sizeof(name),&len,&arraySize,&type,name);
         std::string uniform(name,size_t(std::max(0,int(len))));
         int index=bufferIndex(uniform);
-        if(type==GL_SAMPLER_2D&&index>=0&&arraySize==1){
-            if(!available[unsigned(index)])
+        int packIndex=-1;
+        for(size_t k=0;k<packGpu.size();++k)
+            if(packGpu[k].sampler==uniform){packIndex=int(k);break;}
+        if(type==GL_SAMPLER_2D&&(index>=0||packIndex>=0)&&arraySize==1){
+            if(packIndex<0&&!available[unsigned(index)])
                 return fail("Missing real input "+uniform+" in "+pass.name+
                   " (requires a RenderDragon scene/geometry pass)");
-            result.samplers.push_back({glGetUniformLocation(linked,name),index});
+            if(result.samplers.size()>=kBuffers)
+                return fail("Too many active texture samplers in "+pass.name);
+            result.samplers.push_back({glGetUniformLocation(linked,name),index,packIndex,
+                                       unsigned(result.samplers.size())});
+        }else if(type==GL_INT&&arraySize==1&&uniform=="frameCounter"){
+            // Actual rendered frame counter, not an invented world tick.
         }else if(type==GL_FLOAT&&arraySize==1&&
                  (uniform=="viewWidth"||uniform=="viewHeight"||
                   uniform=="aspectRatio"||uniform=="frameTimeCounter"||
@@ -208,6 +224,40 @@ void main() {
     return true;
 }
 
+bool uploadPackTextures(std::vector<PackTexture> const& inputs,std::string& error){
+    if(inputs.size()>8){error="Too many pack textures";return false;}
+    glActiveTexture(GL_TEXTURE0);
+    glBindBuffer(GL_PIXEL_UNPACK_BUFFER,0);
+    glPixelStorei(GL_UNPACK_ALIGNMENT,1);
+    glPixelStorei(GL_UNPACK_ROW_LENGTH,0);
+    glPixelStorei(GL_UNPACK_SKIP_ROWS,0);
+    glPixelStorei(GL_UNPACK_SKIP_PIXELS,0);
+    for(auto const& image:inputs){
+        if(image.width<=0||image.height<=0||image.width>2048||image.height>2048||
+           image.rgba.size()!=std::uint64_t(image.width)*image.height*4||
+           packGpuBytes+image.rgba.size()>kPackTextureLimit){
+            error="Invalid or oversized pack texture "+image.sampler;return false;
+        }
+        for(auto const& old:packGpu)if(old.sampler==image.sampler){
+            error="Duplicate pack texture "+image.sampler;return false;
+        }
+        packGpu.push_back({image.sampler,0});
+        auto& tex=packGpu.back().texture;
+        glGenTextures(1,&tex);
+        if(!tex){error="Cannot allocate pack texture";return false;}
+        glBindTexture(GL_TEXTURE_2D,tex);
+        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,image.nearest?GL_NEAREST:GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,image.nearest?GL_NEAREST:GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,GL_REPEAT);
+        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,GL_REPEAT);
+        glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA8,image.width,image.height,0,GL_RGBA,
+                     GL_UNSIGNED_BYTE,image.rgba.data());
+        if(glGetError()!=GL_NO_ERROR){error="Cannot upload pack texture "+image.sampler;return false;}
+        packGpuBytes+=image.rgba.size();
+    }
+    return true;
+}
+
 bool compilePipeline(std::vector<Pass> const& passes,std::string& error) {
     if(passes.empty()||passes.size()>kMaxPasses||!passes.back().finalPass){
         error="Invalid composite pipeline: missing final pass or too many passes";return false;
@@ -219,6 +269,7 @@ bool compilePipeline(std::vector<Pass> const& passes,std::string& error) {
     if(maxDraw<1||maxColor<1||maxUnits<int(kBuffers)){
         error="Insufficient GLES3 render targets or fragment texture units";return false;
     }
+    if(!uploadPackTextures(passes.front().packTextures,error))return false;
     std::array<bool,kBuffers> available{};
     available[0]=true;needed[0]=true;
     for(size_t i=0;i<passes.size();++i) {
@@ -257,7 +308,7 @@ struct SavedState {
     GLint activeTex=GL_TEXTURE0,readBuffer=GL_BACK;
     std::array<GLint,kBuffers> tex{},sampler{};
     GLint viewport[4]{};
-    GLint unpackPbo=0,unpackAlign=4;
+    GLint unpackPbo=0,unpackAlign=4,unpackRow=0,unpackSkipRows=0,unpackSkipPixels=0;
     GLboolean blend=false,depth=false,scissor=false,stencil=false,cull=false,discard=false;
     GLboolean depthMask=GL_TRUE,colorMask[4]{};
     SavedState() {
@@ -276,6 +327,9 @@ struct SavedState {
         glGetIntegerv(GL_VIEWPORT,viewport);
         glGetIntegerv(GL_PIXEL_UNPACK_BUFFER_BINDING,&unpackPbo);
         glGetIntegerv(GL_UNPACK_ALIGNMENT,&unpackAlign);
+        glGetIntegerv(GL_UNPACK_ROW_LENGTH,&unpackRow);
+        glGetIntegerv(GL_UNPACK_SKIP_ROWS,&unpackSkipRows);
+        glGetIntegerv(GL_UNPACK_SKIP_PIXELS,&unpackSkipPixels);
         blend=glIsEnabled(GL_BLEND);
         depth=glIsEnabled(GL_DEPTH_TEST);
         scissor=glIsEnabled(GL_SCISSOR_TEST);
@@ -302,6 +356,9 @@ struct SavedState {
         glColorMask(colorMask[0],colorMask[1],colorMask[2],colorMask[3]);
         glBindBuffer(GL_PIXEL_UNPACK_BUFFER,GLuint(unpackPbo));
         glPixelStorei(GL_UNPACK_ALIGNMENT,unpackAlign);
+        glPixelStorei(GL_UNPACK_ROW_LENGTH,unpackRow);
+        glPixelStorei(GL_UNPACK_SKIP_ROWS,unpackSkipRows);
+        glPixelStorei(GL_UNPACK_SKIP_PIXELS,unpackSkipPixels);
         for(unsigned i=0;i<kBuffers;++i){
             glActiveTexture(GL_TEXTURE0+i);
             glBindTexture(GL_TEXTURE_2D,GLuint(tex[i]));
@@ -330,7 +387,7 @@ bool ensureTargets(int width,int height) {
     textureWidth=textureHeight=0;
     if(width<=0||height<=0||width>4096||height>4096)return false;
     unsigned n=1+2*unsigned(std::count(needed.begin(),needed.end(),true));
-    if(std::uint64_t(width)*height*4*n>kMemoryLimit)return false;
+    if(std::uint64_t(width)*height*4*n+packGpuBytes>kMemoryLimit)return false;
     glActiveTexture(GL_TEXTURE0);
     glBindBuffer(GL_PIXEL_UNPACK_BUFFER,0);
     glPixelStorei(GL_UNPACK_ALIGNMENT,1);
@@ -345,10 +402,12 @@ bool ensureTargets(int width,int height) {
 void setUniforms(CompiledPass const& pass,int width,int height,float time,float dt) {
     glUseProgram(pass.program);
     for(auto const& b:pass.samplers){
-        unsigned unit=unsigned(b.buffer);
+        unsigned unit=b.unit;
         glActiveTexture(GL_TEXTURE0+unit);
         glBindSampler(unit,0);
-        glBindTexture(GL_TEXTURE_2D,textures[unit][front[unit]]);
+        GLuint texture=b.packTexture>=0?packGpu[unsigned(b.packTexture)].texture:
+                      textures[unsigned(b.buffer)][front[unsigned(b.buffer)]];
+        glBindTexture(GL_TEXTURE_2D,texture);
         if(b.location>=0)glUniform1i(b.location,int(unit));
     }
     auto set=[&](char const* name,float value){
@@ -358,6 +417,8 @@ void setUniforms(CompiledPass const& pass,int width,int height,float time,float 
     set("viewWidth",float(width));set("viewHeight",float(height));
     set("aspectRatio",float(width)/float(height));set("frameTimeCounter",time);
     set("frameTime",dt);
+    GLint frameLoc=glGetUniformLocation(pass.program,"frameCounter");
+    if(frameLoc>=0)glUniform1i(frameLoc,int(frameCounter));
 }
 
 bool renderPipeline(int width,int height,std::string& error) {
@@ -422,16 +483,27 @@ bool renderPipeline(int width,int height,std::string& error) {
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER,0);
     glBlitFramebuffer(0,0,width,height,0,0,width,height,GL_COLOR_BUFFER_BIT,GL_NEAREST);
     if(glGetError()!=GL_NO_ERROR){error="Cannot present Java composite output";return false;}
+    frameCounter=(frameCounter+1)%720720;
     return true;
 }
 
 } // namespace
 
 void requestPipeline(std::vector<Pass> passes,std::string label) {
-    size_t total=0;
-    for(auto const& p:passes)total+=p.fragment.size()+p.vertex.size();
+    size_t total=0,images=0;
+    bool badImages=false;
+    for(size_t i=0;i<passes.size();++i){
+        auto const& p=passes[i];
+        total+=p.fragment.size()+p.vertex.size();
+        if(i!=0&&!p.packTextures.empty())badImages=true;
+        if(p.packTextures.size()>8)badImages=true;
+        for(auto const& image:p.packTextures){
+            if(image.rgba.size()>kPackTextureLimit-images){badImages=true;break;}
+            images+=image.rgba.size();
+        }
+    }
     std::lock_guard lock(mu);
-    if(passes.empty()||passes.size()>kMaxPasses||total>4*1024*1024){
+    if(passes.empty()||passes.size()>kMaxPasses||total>4*1024*1024||badImages){
         pendingAction=2;requestedActive=false;
         pendingPasses.clear();
         failed=true;lastStatus="Java composite graph exceeds pass/source budget";

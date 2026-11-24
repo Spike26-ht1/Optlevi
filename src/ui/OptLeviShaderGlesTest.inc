@@ -477,6 +477,64 @@ static bool optTranslateRoutedComposite(std::string source,bool originalVertex,
     return true;
 }
 
+// Decode only explicit pack-owned PNG resources. ZIP member reads are
+// separately bounded from shader source reads; decoded dimensions are
+// checked before allocation. No placeholder noise/geometry image is made.
+static bool optLoadCompositeTextures(
+    OptPackInfo const& pack,std::string const& properties,
+    std::vector<modmenu::android::shaderworld::PackTexture>& images,
+    std::string& error){
+    std::istringstream input(properties);
+    std::string line;
+    std::set<std::string> used;
+    size_t total=0;
+    auto trim=[](std::string const& s){
+        auto first=s.find_first_not_of(" \t\r");
+        if(first==std::string::npos)return std::string{};
+        return s.substr(first,s.find_last_not_of(" \t\r")-first+1);
+    };
+    while(std::getline(input,line)){
+        auto eq=line.find('=');
+        if(eq==std::string::npos)continue;
+        auto key=trim(line.substr(0,eq));
+        std::string sampler;
+        bool noise=key=="texture.noise";
+        if(noise)sampler="noisetex";
+        else if(key.rfind("texture.composite.",0)==0)
+            sampler=key.substr(std::string("texture.composite.").size());
+        else continue;
+        auto path=trim(line.substr(eq+1));
+        bool valid=!sampler.empty()&&sampler.size()<64;
+        for(char c:sampler)if(!((c>='a'&&c<='z')||(c>='A'&&c<='Z')||
+                                  (c>='0'&&c<='9')||c=='_'))valid=false;
+        if(!valid||!used.insert(sampler).second||images.size()>=8||
+           path.empty()||path[0]=='/'||!optEnds(optLower(path),".png")){
+            error="Unsupported composite texture property: "+key;return false;
+        }
+        std::string bytes;
+        if(!optReadJavaMember(pack,"shaders/"+path,bytes,4*1024*1024)){
+            error="Cannot read pack texture: "+path;return false;
+        }
+        auto* raw=reinterpret_cast<unsigned char const*>(bytes.data());
+        int width=0,height=0,channels=0;
+        if(!stbi_info_from_memory(raw,int(bytes.size()),&width,&height,&channels)||
+           width<=0||height<=0||width>2048||height>2048||
+           std::uint64_t(width)*height*4+total>16ull*1024*1024){
+            error="Invalid or oversized pack PNG: "+path;return false;
+        }
+        auto* pixels=stbi_load_from_memory(raw,int(bytes.size()),&width,&height,&channels,4);
+        if(!pixels){error="Cannot decode pack PNG: "+path;return false;}
+        size_t size=size_t(width)*height*4;
+        modmenu::android::shaderworld::PackTexture image;
+        image.sampler=std::move(sampler);image.width=width;image.height=height;
+        image.nearest=noise;
+        image.rgba.assign(pixels,pixels+size);
+        stbi_image_free(pixels);
+        total+=size;images.push_back(std::move(image));
+    }
+    return true;
+}
+
 static bool optBuildJavaPipeline(
     OptPackInfo const& pack,
     std::vector<modmenu::android::shaderworld::Pass>& passes,
@@ -560,6 +618,9 @@ static bool optBuildJavaPipeline(
     for(unsigned i=1;i<=22;++i)
         if(!append("composite"+std::to_string(i),false))return false;
     if(!append("final",true))return false;
+    if(!optLoadCompositeTextures(pack,properties,passes.front().packTextures,error)){
+        passes.clear();return false;
+    }
     return !passes.empty();
 }
 
