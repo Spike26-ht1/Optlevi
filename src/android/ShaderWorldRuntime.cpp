@@ -62,12 +62,20 @@ struct DepthSnapshot {
     std::uint64_t bytes=0;
     bool fresh=false;
 };
+struct SceneColorSnapshot {
+    GLuint tex=0,fbo=0;
+    FormatInfo format{};
+    int width=0,height=0;
+    std::uint64_t bytes=0;
+    bool fresh=false;
+};
 // Only the game EGL thread owns these snapshots. Context or surface changes
 // invalidate them. They are never sampled as color buffers.
 struct DepthFrame {
     EGLContext ctx=EGL_NO_CONTEXT;
     EGLSurface surface=EGL_NO_SURFACE;
     std::array<DepthSnapshot,3> images{};
+    std::array<SceneColorSnapshot,kBuffers> colors{};
     std::vector<WorldUniform> uniforms;
 };
 thread_local DepthFrame depthFrame;
@@ -75,9 +83,15 @@ std::uint64_t colorTargetBytes=0;
 std::uint64_t depthBytes(){
     std::uint64_t bytes=0;
     for(auto const& d:depthFrame.images)bytes+=d.bytes;
+    for(auto const& d:depthFrame.colors)bytes+=d.bytes;
     return bytes;
 }
 void releaseDepth(DepthSnapshot& d){
+    if(d.tex)glDeleteTextures(1,&d.tex);
+    if(d.fbo)glDeleteFramebuffers(1,&d.fbo);
+    d={};
+}
+void releaseColor(SceneColorSnapshot& d){
     if(d.tex)glDeleteTextures(1,&d.tex);
     if(d.fbo)glDeleteFramebuffers(1,&d.fbo);
     d={};
@@ -88,11 +102,12 @@ void syncDepthContext(){
     if(depthFrame.ctx==ctx&&depthFrame.surface==surface)return;
     if(ctx!=EGL_NO_CONTEXT&&ctx==depthFrame.ctx){
         for(auto& d:depthFrame.images)releaseDepth(d);
+        for(auto& d:depthFrame.colors)releaseColor(d);
     }
     depthFrame={};depthFrame.ctx=ctx;depthFrame.surface=surface;
 }
 struct ConsumeDepthFrame {
-    ~ConsumeDepthFrame(){for(auto& d:depthFrame.images)d.fresh=false;depthFrame.uniforms.clear();}
+    ~ConsumeDepthFrame(){for(auto& d:depthFrame.images)d.fresh=false;for(auto& d:depthFrame.colors)d.fresh=false;depthFrame.uniforms.clear();}
 };
 int depthIndex(std::string const& name){
     if(name=="depthtex0")return 0;
@@ -154,7 +169,7 @@ struct CompiledPass {
 std::vector<CompiledPass> pipeline;
 std::array<std::array<GLuint,2>,kBuffers> textures{};
 std::array<unsigned,kBuffers> front{};
-std::array<bool,kBuffers> needed{},mipNeeded{},historyNeeded{};
+std::array<bool,kBuffers> needed{},mipNeeded{},historyNeeded{},sceneNeeded{};
 std::array<std::array<bool,2>,kBuffers> mipValid{};
 GLuint triangleVao=0,passFbo=0,outputTex=0;
 int textureWidth=0,textureHeight=0;
@@ -172,7 +187,7 @@ void abandonContext() {
     context=eglGetCurrentContext();
     pipeline.clear();
     packGpu.clear();packGpuBytes=0;frameCounter=0;
-    textures={};front={};needed={};mipNeeded={};historyNeeded={};mipValid={};colorFormats={};triangleVao=passFbo=outputTex=0;
+    textures={};front={};needed={};mipNeeded={};historyNeeded={};sceneNeeded={};mipValid={};colorFormats={};triangleVao=passFbo=outputTex=0;
     textureWidth=textureHeight=0;colorTargetBytes=0;
     renderedFrame=false;
     requestedActive=false;
@@ -184,7 +199,7 @@ void discardGpu() {
     for(auto& p:packGpu)if(p.texture)glDeleteTextures(1,&p.texture);
     packGpu.clear();packGpuBytes=0;frameCounter=0;
     for(auto& pair:textures) glDeleteTextures(2,pair.data());
-    textures={};front={};needed={};mipNeeded={};historyNeeded={};mipValid={};colorFormats={};
+    textures={};front={};needed={};mipNeeded={};historyNeeded={};sceneNeeded={};mipValid={};colorFormats={};
     if(outputTex){glDeleteTextures(1,&outputTex);outputTex=0;}
     if(passFbo){glDeleteFramebuffers(1,&passFbo);passFbo=0;}
     if(triangleVao){glDeleteVertexArrays(1,&triangleVao);triangleVao=0;}
@@ -446,6 +461,8 @@ bool compilePipeline(std::vector<Pass> const& passes,std::string& error) {
     std::vector<Metadata> metadata(passes.size());
     std::array<bool,kBuffers> available{},produced{};
     available[0]=true;needed[0]=true;
+    for(unsigned n=0;n<kBuffers;++n)if(depthFrame.colors[n].fresh)available[n]=true;
+    sceneNeeded[0]=depthFrame.colors[0].fresh;
     for(size_t i=0;i<passes.size();++i){
         auto& m=metadata[i];
         if(!evaluateEnabled(passes[i],m.enabled,m.mip,m.history,error)){
@@ -488,11 +505,18 @@ bool compilePipeline(std::vector<Pass> const& passes,std::string& error) {
             error="Active output mapping exceeds driver limits in "+pass.name;return false;
         }
         p.mipmapInputs=mipmapInputs;
-        for(auto const& binding:p.samplers)
-            if(binding.depth<0&&binding.packTexture<0&&(mipmapInputs&(std::uint32_t(1)<<binding.buffer)))
-                mipNeeded[unsigned(binding.buffer)]=true;
+        for(auto const& binding:p.samplers)if(binding.depth<0&&binding.packTexture<0){
+            unsigned n=unsigned(binding.buffer);
+            if(mipmapInputs&(std::uint32_t(1)<<n))mipNeeded[n]=true;
+            if(!produced[n]&&!historyNeeded[n]&&depthFrame.colors[n].fresh){
+                sceneNeeded[n]=true;needed[n]=true;
+            }
+        }
         if(!p.finalPass)for(auto t:p.targets){available[t]=true;needed[t]=true;produced[t]=true;}
         pipeline.push_back(std::move(p));
+    }
+    for(unsigned i=0;i<kBuffers;++i)if(historyNeeded[i]&&depthFrame.colors[i].fresh){
+        error="Native scene input and persistent history conflict at colortex"+std::to_string(i);return false;
     }
     for(unsigned i=0;i<kBuffers;++i)if(historyNeeded[i]&&!produced[i]){
         error="Persistent colortex"+std::to_string(i)+" has no active producer";return false;
@@ -677,6 +701,13 @@ bool renderPipeline(int width,int height,std::string& error) {
             return false;
         }
     }
+    for(unsigned i=0;i<kBuffers;++i)if(sceneNeeded[i]){
+        auto const& d=depthFrame.colors[i];
+        if(!d.fresh||d.width!=width||d.height!=height||
+           d.format.internal!=colorFormats[i].internal){
+            error="Missing or mismatched native scene colortex"+std::to_string(i);return false;
+        }
+    }
     for(auto const& pass:pipeline)for(auto const& binding:pass.worldUniforms){
         auto const* value=findWorldUniform(binding.name);
         if(!value||value->glType!=binding.type){
@@ -693,9 +724,35 @@ bool renderPipeline(int width,int height,std::string& error) {
     mipValid[0][0]=false;
     glActiveTexture(GL_TEXTURE0);
     glBindSampler(0,0);
-    glBindTexture(GL_TEXTURE_2D,textures[0][0]);
-    glCopyTexSubImage2D(GL_TEXTURE_2D,0,0,0,0,0,width,height);
-    if(glGetError()!=GL_NO_ERROR){error="Cannot capture actual Bedrock backbuffer";return false;}
+    if(!sceneNeeded[0]){
+        glBindTexture(GL_TEXTURE_2D,textures[0][0]);
+        glCopyTexSubImage2D(GL_TEXTURE_2D,0,0,0,0,0,width,height);
+        if(glGetError()!=GL_NO_ERROR){error="Cannot capture actual Bedrock backbuffer";return false;}
+    }
+    // Copy captured native G-buffer inputs before running Java passes.
+    // Their format and dimensions must match; no color alias substitutes.
+    if(std::any_of(sceneNeeded.begin(),sceneNeeded.end(),[](bool b){return b;})){
+        glBindFramebuffer(GL_FRAMEBUFFER,passFbo);
+        GLint maxDraw=0,maxColor=0;
+        glGetIntegerv(GL_MAX_DRAW_BUFFERS,&maxDraw);
+        glGetIntegerv(GL_MAX_COLOR_ATTACHMENTS,&maxColor);
+        for(int n=0;n<std::min({maxDraw,maxColor,int(kBuffers)});++n)
+            glFramebufferTexture2D(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0+n,GL_TEXTURE_2D,0,0);
+        const GLenum draw=GL_COLOR_ATTACHMENT0;
+        glDrawBuffers(1,&draw);glReadBuffer(draw);
+        glDisable(GL_SCISSOR_TEST);
+        for(unsigned i=0;i<kBuffers;++i)if(sceneNeeded[i]){
+            glBindFramebuffer(GL_DRAW_FRAMEBUFFER,passFbo);
+            glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER,draw,GL_TEXTURE_2D,textures[i][0],0);
+            if(glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER)!=GL_FRAMEBUFFER_COMPLETE){
+                error="Incomplete native scene target colortex"+std::to_string(i);return false;
+            }
+            glBindFramebuffer(GL_READ_FRAMEBUFFER,depthFrame.colors[i].fbo);
+            glBlitFramebuffer(0,0,width,height,0,0,width,height,GL_COLOR_BUFFER_BIT,GL_NEAREST);
+            if(glGetError()!=GL_NO_ERROR){error="Cannot seed native scene colortex"+std::to_string(i);return false;}
+            mipValid[i][0]=false;
+        }
+    }
     glDisable(GL_BLEND);glDisable(GL_DEPTH_TEST);glDisable(GL_STENCIL_TEST);
     glDisable(GL_SCISSOR_TEST);glDisable(GL_CULL_FACE);glDisable(GL_RASTERIZER_DISCARD);
     glDepthMask(GL_FALSE);glColorMask(GL_TRUE,GL_TRUE,GL_TRUE,GL_TRUE);
@@ -797,6 +854,73 @@ void requestDisable() {
 Status status() {
     std::lock_guard lock(mu);
     return {requestedActive.load(),failed,lastStatus};
+}
+
+bool captureSceneColor(unsigned colortex,unsigned framebuffer,unsigned attachment,
+                       std::string const& format,int width,int height,std::string& error){
+    if(eglGetCurrentContext()==EGL_NO_CONTEXT){error="No EGL render context";return false;}
+    syncDepthContext();
+    if(colortex>=kBuffers){error="Invalid scene color index";return false;}
+    auto& d=depthFrame.colors[colortex];d.fresh=false;
+    FormatInfo fmt=resolveColorFormat(format);
+    if(!fmt.bytes||width<=0||height<=0||width>4096||height>4096){
+        error="Unsupported scene color format or dimensions";return false;
+    }
+    std::uint64_t bytes=std::uint64_t(width)*height*fmt.bytes;
+    if(colorTargetBytes+packGpuBytes+depthBytes()-d.bytes+bytes>kMemoryLimit){
+        error="Scene color exceeds GPU memory budget";return false;
+    }
+    SavedState saved;
+    GLint sourceRead=GL_NONE;
+    bool sourceBound=false;
+    auto finish=[&](bool ok,char const* message){
+        if(sourceBound){
+            glBindFramebuffer(GL_READ_FRAMEBUFFER,GLuint(framebuffer));
+            glReadBuffer(GLenum(sourceRead));
+        }
+        saved.restore();
+        if(!ok){error=message;d.fresh=false;}
+        return ok;
+    };
+    if(glGetError()!=GL_NO_ERROR)return finish(false,"Pre-existing GLES error at scene color capture");
+    GLint maxColor=0;glGetIntegerv(GL_MAX_COLOR_ATTACHMENTS,&maxColor);
+    if(framebuffer?(attachment>=unsigned(maxColor)):(attachment!=0))
+        return finish(false,"Invalid native scene attachment");
+    GLenum read=framebuffer?GL_COLOR_ATTACHMENT0+attachment:GL_BACK;
+    glBindFramebuffer(GL_FRAMEBUFFER,GLuint(framebuffer));
+    GLint samples=0;glGetIntegerv(GL_SAMPLES,&samples);
+    if(samples!=0||glCheckFramebufferStatus(GL_FRAMEBUFFER)!=GL_FRAMEBUFFER_COMPLETE)
+        return finish(false,"Scene source must be a complete single-sample framebuffer");
+    GLint red=0;
+    glGetFramebufferAttachmentParameteriv(GL_FRAMEBUFFER,read,
+        GL_FRAMEBUFFER_ATTACHMENT_RED_SIZE,&red);
+    if(red<=0||glGetError()!=GL_NO_ERROR)return finish(false,"Native color attachment not present");
+    glGetIntegerv(GL_READ_BUFFER,&sourceRead);
+    sourceBound=true;
+    if(!d.tex||d.width!=width||d.height!=height||d.format.internal!=fmt.internal){
+        releaseColor(d);
+        glActiveTexture(GL_TEXTURE0);glBindSampler(0,0);
+        glBindBuffer(GL_PIXEL_UNPACK_BUFFER,0);
+        if(!allocateTexture(d.tex,width,height,fmt)){
+            releaseColor(d);return finish(false,"Cannot allocate native scene color texture");
+        }
+        glGenFramebuffers(1,&d.fbo);
+        glBindFramebuffer(GL_FRAMEBUFFER,d.fbo);
+        glFramebufferTexture2D(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_TEXTURE_2D,d.tex,0);
+        const GLenum draw=GL_COLOR_ATTACHMENT0;glDrawBuffers(1,&draw);glReadBuffer(draw);
+        if(!d.fbo||glCheckFramebufferStatus(GL_FRAMEBUFFER)!=GL_FRAMEBUFFER_COMPLETE||
+           glGetError()!=GL_NO_ERROR){
+            releaseColor(d);return finish(false,"Cannot allocate native scene color framebuffer");
+        }
+        d.width=width;d.height=height;d.format=fmt;d.bytes=bytes;
+    }
+    glDisable(GL_SCISSOR_TEST);glDisable(GL_RASTERIZER_DISCARD);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER,GLuint(framebuffer));
+    glReadBuffer(read);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER,d.fbo);
+    glBlitFramebuffer(0,0,width,height,0,0,width,height,GL_COLOR_BUFFER_BIT,GL_NEAREST);
+    if(glGetError()!=GL_NO_ERROR)return finish(false,"Native scene color copy failed");
+    d.fresh=true;return finish(true,"");
 }
 
 bool publishWorldUniforms(std::vector<WorldUniform> const& values,std::string& error){
@@ -946,7 +1070,7 @@ void beforeSwap(int width,int height) {
         action=std::exchange(pendingAction,0);
         if(action==1){passes=std::move(pendingPasses);label=std::move(pendingLabel);}
     }
-    if(action==2){discardGpu();for(auto& d:depthFrame.images)releaseDepth(d);return;}
+    if(action==2){discardGpu();for(auto& d:depthFrame.images)releaseDepth(d);for(auto& d:depthFrame.colors)releaseColor(d);return;}
     if(action==1){
         SavedState saved;
         discardGpu();

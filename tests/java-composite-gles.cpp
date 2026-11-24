@@ -323,6 +323,43 @@ void main(){color=vec4(gbufferProjection[0][0],cameraPosition.x,float(eyeBrightn
     clearScene();beforeSwap(32,32);
     require(!status().active&&status().failed,"Stale world uniforms were reused");
     glUseProgram(0);glDeleteProgram(nativeProgram);
+    // Native G-buffer snapshots must contain the actual selected MRT
+    // attachment, not the final color, and must expire after the frame.
+    GLuint geometryFbo=0,geometryTex[2]{};
+    glGenFramebuffers(1,&geometryFbo);glBindFramebuffer(GL_FRAMEBUFFER,geometryFbo);
+    glGenTextures(2,geometryTex);
+    const GLenum attachments[2]={GL_COLOR_ATTACHMENT0,GL_COLOR_ATTACHMENT1};
+    for(int n=0;n<2;++n){
+        glBindTexture(GL_TEXTURE_2D,geometryTex[n]);
+        glTexStorage2D(GL_TEXTURE_2D,1,GL_RGBA8,32,32);
+        glFramebufferTexture2D(GL_FRAMEBUFFER,attachments[n],GL_TEXTURE_2D,geometryTex[n],0);
+    }
+    glDrawBuffers(2,attachments);glReadBuffer(GL_COLOR_ATTACHMENT0);
+    require(glCheckFramebufferStatus(GL_FRAMEBUFFER)==GL_FRAMEBUFFER_COMPLETE,"Native MRT fixture incomplete");
+    const GLfloat sceneColor[4]={0.1f,0.2f,0.3f,1.0f};
+    const GLfloat geometryColor[4]={0.7f,0.4f,0.6f,1.0f};
+    glClearBufferfv(GL_COLOR,0,sceneColor);glClearBufferfv(GL_COLOR,1,geometryColor);
+    require(captureSceneColor(0,geometryFbo,0,"RGBA8",32,32,captureError),"Native color capture failed");
+    require(captureSceneColor(1,geometryFbo,1,"RGBA8",32,32,captureError),"Native MRT capture failed");
+    GLint nativeRead=0;glGetIntegerv(GL_READ_BUFFER,&nativeRead);
+    require(nativeRead==GL_COLOR_ATTACHMENT0,"Native source read attachment changed");
+    glBindFramebuffer(GL_FRAMEBUFFER,0);
+    Pass geometryEnd{"final",fragment(R"(
+uniform sampler2D colortex0;
+uniform sampler2D colortex1;
+layout(location=0) out vec4 color;
+void main(){color=vec4(texture(colortex0,texcoord).r,texture(colortex1,texcoord).g,
+texture(colortex1,texcoord).b,1.0);}
+)"),{0},true};
+    requestPipeline({geometryEnd},"Native MRT input fixture");
+    clearScene();beforeSwap(32,32);
+    require(status().active&&!status().failed,"Native MRT graph rejected");
+    actual=pixel();
+    require(std::abs(int(actual[0])-26)<=2&&std::abs(int(actual[1])-102)<=2&&
+        std::abs(int(actual[2])-153)<=2,"Native MRT input did not match attachments");
+    clearScene();beforeSwap(32,32);
+    require(!status().active&&status().failed,"Stale native MRT data reused");
+    glDeleteFramebuffers(1,&geometryFbo);glDeleteTextures(2,geometryTex);
     // Missing geometry input must not turn into a fake color sampler.
     clearScene();
     Pass unavailable{"final",fragment(R"(

@@ -47,6 +47,11 @@ Status status();
 enum class DepthPhase : unsigned { Complete=0, BeforeTranslucent=1, BeforeHand=2 };
 bool captureSceneDepth(DepthPhase phase,unsigned framebuffer,unsigned internalFormat,
                        int width,int height,std::string& error);
+// Capture a native geometry color attachment with explicitly verified Java
+// semantics. The adapter must select the correct phase and attachment;
+// an arbitrary native color attachment is not automatically a G-buffer.
+bool captureSceneColor(unsigned colortex,unsigned framebuffer,unsigned attachment,
+                       std::string const& format,int width,int height,std::string& error);
 // Typed data from a verified world-rendering phase. Matrices are column
 // major and must already use the Java shader's coordinate convention.
 struct WorldUniform {
