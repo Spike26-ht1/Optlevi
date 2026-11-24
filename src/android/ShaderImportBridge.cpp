@@ -12,6 +12,9 @@
 #include <mutex>
 #include <string>
 #include <system_error>
+#include <chrono>
+#include <thread>
+#include <exception>
 
 namespace modmenu::android::shaderimport {
 namespace {
@@ -19,6 +22,8 @@ namespace fs = std::filesystem;
 std::atomic<bool> enabled{false};
 std::atomic<bool> registered{false};
 std::atomic<bool> pending{false};
+std::atomic<bool> working{false};
+std::thread importWorker;
 std::mutex resultMutex;
 Result lastResult;
 bool hasResult=false;
@@ -64,56 +69,130 @@ bool isZip(fs::path const& file) {
            ((sig[2]==3 && sig[3]==4)||(sig[2]==5 && sig[3]==6));
 }
 
+// The system Documents picker delivers a temporary file from
+// <launcher cache>/preloader_documents, and deletes that file as soon as
+// this JNI callback returns. A large synchronous copy here blocks the
+// Android main thread; on lower-end devices it can cause ANR/process death.
+//
+// Move the temporary file to a uniquely named staging file on the SAME
+// filesystem, then return immediately. A native worker copies it into
+// OptLevi/shaderpacks off the Android UI and game's GL render threads.
+static void importOnWorker(fs::path staging,std::string name) noexcept {
+    try {
+        std::error_code ec;
+        auto size=fs::file_size(staging,ec);
+        if(ec||size==0||size>kMaxPackSize) {
+            report(false,"Staged shader pack is unreadable or exceeds 64 MB");
+        } else {
+            auto directory=paths::selfDir()/"shaderpacks";
+            fs::create_directories(directory,ec);
+            if(ec){
+                report(false,"Cannot create shaderpacks: "+ec.message());
+            }else{
+                std::string stem=name;
+                std::string extension;
+                if(ends(name,".material.bin")) {
+                    extension=name.substr(name.size()-13);
+                    stem=name.substr(0,name.size()-13);
+                }else {
+                    auto dot=name.rfind('.');
+                    if(dot!=std::string::npos){
+                        stem=name.substr(0,dot);extension=name.substr(dot);
+                    }
+                }
+                fs::path target=directory/name;
+                for(unsigned n=1;!ec&&fs::exists(target,ec)&&n<1000;n++)
+                    target=directory/(stem+"-"+std::to_string(n)+extension);
+                if(ec||fs::exists(target,ec)){
+                    report(false,"Cannot choose unique imported filename");
+                } else {
+                    fs::copy_file(staging,target,fs::copy_options::none,ec);
+                    if(ec||fs::file_size(target,ec)!=size){
+                        std::error_code ignored;
+                        fs::remove(target,ignored);
+                        report(false,"Failed to copy shader pack to OptLevi");
+                    } else {
+                        report(true,"Imported "+target.filename().string()+
+                               " ("+std::to_string(size)+" bytes)");
+                    }
+                }
+            }
+        }
+    } catch(std::exception const& ex) {
+        report(false,std::string("Shader import exception: ")+ex.what());
+    } catch(...) {
+        report(false,"Unexpected shader import error");
+    }
+    std::error_code ignored;
+    fs::remove(staging,ignored);
+    working.store(false);
+}
+
 void JNICALL received(JNIEnv* env,jclass,jboolean success,jstring path,
                       jstring displayName,jstring error) {
-    // The Activity deletes its temporary file as soon as we return.
+    // JNI entrypoints may not propagate C++ exceptions into the JVM.
+    // Consume the pending picker flag before handling duplicate deliveries.
     if(!enabled.load()||!pending.exchange(false))return;
-    if(success!=JNI_TRUE) {
-        report(false,str(env,error).empty()?"Import cancelled":str(env,error));
-        return;
+    try {
+        if(success!=JNI_TRUE){
+            std::string message=str(env,error);
+            report(false,message.empty()?"Import cancelled":message);
+            return;
+        }
+        auto name=safeName(str(env,displayName));
+        if(name.empty()||!(ends(name,".zip")||ends(name,".mcpack")||
+                            ends(name,".material.bin"))){
+            report(false,"Choose a .zip, .mcpack or .material.bin pack");
+            return;
+        }
+        fs::path input(str(env,path));
+        std::error_code ec;
+        // Accept only the private cache file furnished by the launcher,
+        // never an arbitrary JNI path or a user-selected symlink.
+        if(input.parent_path().filename()!="preloader_documents"||
+           fs::is_symlink(input,ec)||ec||!fs::is_regular_file(input,ec)||ec){
+            report(false,"Picker did not return a safe temporary file");
+            return;
+        }
+        auto size=fs::file_size(input,ec);
+        if(ec||size==0||size>kMaxPackSize){
+            report(false,"File empty or larger than 64 MB");
+            return;
+        }
+        if((ends(name,".zip")||ends(name,".mcpack"))&&!isZip(input)){
+            report(false,"Chosen file is not a valid ZIP archive");
+            return;
+        }
+        if(working.load()){
+            report(false,"Another shader import is still in progress");
+            return;
+        }
+        // A completed worker must be joined before reassigning std::thread.
+        if(importWorker.joinable())importWorker.join();
+        auto nonce=std::chrono::steady_clock::now().time_since_epoch().count();
+        fs::path staging=input.parent_path()/
+            ("optlevi_stage_"+std::to_string(nonce)+".tmp");
+        fs::rename(input,staging,ec);
+        if(ec){
+            report(false,"Cannot stage Android picker file: "+ec.message());
+            return;
+        }
+        working.store(true);
+        try {
+            importWorker=std::thread([staging,name](){
+                importOnWorker(staging,name);
+            });
+        }catch(std::exception const& ex){
+            working.store(false);
+            std::error_code ignored;
+            fs::remove(staging,ignored);
+            report(false,std::string("Cannot start import worker: ")+ex.what());
+        }
+    } catch(std::exception const& ex) {
+        report(false,std::string("Android import callback failed: ")+ex.what());
+    } catch(...) {
+        report(false,"Unexpected error during Android file import");
     }
-    fs::path input(str(env,path));
-    std::string name=safeName(str(env,displayName));
-    if(name.empty()||!(ends(name,".zip")||ends(name,".mcpack")||
-                       ends(name,".material.bin"))) {
-        report(false,"Choose a .zip, .mcpack or .material.bin shader pack");
-        return;
-    }
-    std::error_code ec;
-    if(!fs::is_regular_file(input,ec)||ec) {
-        report(false,"Android picker did not provide a readable file");
-        return;
-    }
-    auto size=fs::file_size(input,ec);
-    if(ec||size==0||size>kMaxPackSize) {
-        report(false,"File is empty or exceeds the 64 MB import limit");
-        return;
-    }
-    if((ends(name,".zip")||ends(name,".mcpack"))&&!isZip(input)) {
-        report(false,"Selected file is not a ZIP archive");
-        return;
-    }
-    fs::path destination=paths::selfDir()/"shaderpacks";
-    fs::create_directories(destination,ec);
-    if(ec) {report(false,"Could not create shaderpacks directory: "+ec.message());return;}
-    fs::path candidate=destination/name;
-    for(int i=1;fs::exists(candidate,ec)&&i<=999;i++) {
-        auto dot=name.rfind('.');
-        std::string stem=dot==std::string::npos?name:name.substr(0,dot);
-        std::string ext=dot==std::string::npos?"":name.substr(dot);
-        candidate=destination/(stem+"-"+std::to_string(i)+ext);
-    }
-    if(ec||fs::exists(candidate,ec)) {
-        report(false,"Could not choose a safe destination name");return;
-    }
-    fs::copy_file(input,candidate,fs::copy_options::none,ec);
-    if(ec||fs::file_size(candidate,ec)!=size) {
-        fs::remove(candidate,ec);
-        report(false,"Failed to import the selected shader file");
-        return;
-    }
-    report(true,"Imported "+candidate.filename().string()+
-          " ("+std::to_string(size)+" bytes)");
 }
 
 } // namespace
@@ -147,12 +226,13 @@ void uninstall() {
     // the launcher touch/keyboard JNI functions.
     enabled.store(false);
     pending.store(false);
+    if(importWorker.joinable())importWorker.join();
 }
 
 bool available(){return enabled.load()&&registered.load();}
 
 bool openPicker() {
-    if(!available()||pending.exchange(true))return false;
+    if(!available()||working.load()||pending.exchange(true))return false;
     JNIEnv* e=jni::env();
     if(!e||e->PushLocalFrame(8)!=0){pending=false;return false;}
     jobject activity=jni::currentActivity(e);
