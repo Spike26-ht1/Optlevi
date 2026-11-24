@@ -53,7 +53,51 @@ FormatInfo resolveColorFormat(std::string const& name){
 
 constexpr std::uint64_t kMemoryLimit=128ull*1024*1024;
 constexpr std::uint64_t kPackTextureLimit=16ull*1024*1024;
-struct Binding { GLint location; int buffer; int packTexture; unsigned unit; };
+struct Binding { GLint location; int buffer; int packTexture; unsigned unit; int depth=-1; };
+struct DepthSnapshot {
+    GLuint tex=0,fbo=0;
+    GLenum format=0;
+    int width=0,height=0;
+    std::uint64_t bytes=0;
+    bool fresh=false;
+};
+// Only the game EGL thread owns these snapshots. Context or surface changes
+// invalidate them. They are never sampled as color buffers.
+struct DepthFrame {
+    EGLContext ctx=EGL_NO_CONTEXT;
+    EGLSurface surface=EGL_NO_SURFACE;
+    std::array<DepthSnapshot,3> images{};
+};
+thread_local DepthFrame depthFrame;
+std::uint64_t colorTargetBytes=0;
+std::uint64_t depthBytes(){
+    std::uint64_t bytes=0;
+    for(auto const& d:depthFrame.images)bytes+=d.bytes;
+    return bytes;
+}
+void releaseDepth(DepthSnapshot& d){
+    if(d.tex)glDeleteTextures(1,&d.tex);
+    if(d.fbo)glDeleteFramebuffers(1,&d.fbo);
+    d={};
+}
+void syncDepthContext(){
+    auto ctx=eglGetCurrentContext();
+    auto surface=eglGetCurrentSurface(EGL_DRAW);
+    if(depthFrame.ctx==ctx&&depthFrame.surface==surface)return;
+    if(ctx!=EGL_NO_CONTEXT&&ctx==depthFrame.ctx){
+        for(auto& d:depthFrame.images)releaseDepth(d);
+    }
+    depthFrame={};depthFrame.ctx=ctx;depthFrame.surface=surface;
+}
+struct ConsumeDepthFrame {
+    ~ConsumeDepthFrame(){for(auto& d:depthFrame.images)d.fresh=false;}
+};
+int depthIndex(std::string const& name){
+    if(name=="depthtex0")return 0;
+    if(name=="depthtex1")return 1;
+    if(name=="depthtex2")return 2;
+    return -1;
+}
 struct GpuPackTexture { std::string sampler; GLuint texture=0; };
 std::vector<GpuPackTexture> packGpu;
 std::uint64_t packGpuBytes=0;
@@ -89,7 +133,7 @@ void abandonContext() {
     pipeline.clear();
     packGpu.clear();packGpuBytes=0;frameCounter=0;
     textures={};front={};needed={};mipNeeded={};historyNeeded={};mipValid={};colorFormats={};triangleVao=passFbo=outputTex=0;
-    textureWidth=textureHeight=0;
+    textureWidth=textureHeight=0;colorTargetBytes=0;
     renderedFrame=false;
     requestedActive=false;
 }
@@ -104,7 +148,7 @@ void discardGpu() {
     if(outputTex){glDeleteTextures(1,&outputTex);outputTex=0;}
     if(passFbo){glDeleteFramebuffers(1,&passFbo);passFbo=0;}
     if(triangleVao){glDeleteVertexArrays(1,&triangleVao);triangleVao=0;}
-    textureWidth=textureHeight=0;
+    textureWidth=textureHeight=0;colorTargetBytes=0;
     renderedFrame=false;
     requestedActive=false;
 }
@@ -233,7 +277,16 @@ void main() {
         int packIndex=-1;
         for(size_t k=0;k<packGpu.size();++k)
             if(packGpu[k].sampler==uniform){packIndex=int(k);break;}
-        if(type==GL_SAMPLER_2D&&(index>=0||packIndex>=0)&&arraySize==1){
+        int depth=depthIndex(uniform);
+        if(type==GL_SAMPLER_2D&&depth>=0&&arraySize==1){
+            if(!depthFrame.images[unsigned(depth)].fresh)
+                return fail("Missing current-frame "+uniform+" in "+pass.name+
+                    " (requires a verified RenderDragon depth phase)");
+            if(result.samplers.size()>=kBuffers)
+                return fail("Too many active texture samplers in "+pass.name);
+            result.samplers.push_back({glGetUniformLocation(linked,name),-1,-1,
+                                        unsigned(result.samplers.size()),depth});
+        }else if(type==GL_SAMPLER_2D&&(index>=0||packIndex>=0)&&arraySize==1){
             if(packIndex<0&&!available[unsigned(index)])
                 return fail("Missing real input "+uniform+" in "+pass.name+
                   " (requires a RenderDragon scene/geometry pass)");
@@ -380,7 +433,7 @@ bool compilePipeline(std::vector<Pass> const& passes,std::string& error) {
         }
         p.mipmapInputs=mipmapInputs;
         for(auto const& binding:p.samplers)
-            if(binding.packTexture<0&&(mipmapInputs&(std::uint32_t(1)<<binding.buffer)))
+            if(binding.depth<0&&binding.packTexture<0&&(mipmapInputs&(std::uint32_t(1)<<binding.buffer)))
                 mipNeeded[unsigned(binding.buffer)]=true;
         if(!p.finalPass)for(auto t:p.targets){available[t]=true;needed[t]=true;produced[t]=true;}
         pipeline.push_back(std::move(p));
@@ -477,7 +530,7 @@ bool ensureTargets(int width,int height,std::string& error) {
     if(width==textureWidth&&height==textureHeight&&outputTex)return true;
     for(auto& pair:textures){glDeleteTextures(2,pair.data());pair={};}
     if(outputTex){glDeleteTextures(1,&outputTex);outputTex=0;}
-    textureWidth=textureHeight=0;mipValid={};front={};frameCounter=0;
+    textureWidth=textureHeight=0;colorTargetBytes=0;mipValid={};front={};frameCounter=0;
     if(width<=0||height<=0||width>4096||height>4096){error="Unsupported viewport size";return false;}
     std::uint64_t basePixels=std::uint64_t(width)*height,chainPixels=basePixels;
     for(int w=width,h=height;w>1||h>1;){
@@ -487,7 +540,7 @@ bool ensureTargets(int width,int height,std::string& error) {
     std::uint64_t bytes=basePixels*4+packGpuBytes;
     for(unsigned i=0;i<kBuffers;++i)if(needed[i])
         bytes+=2*(mipNeeded[i]?chainPixels:basePixels)*colorFormats[i].bytes;
-    if(bytes>kMemoryLimit){error="Cannot allocate independent GLES3 targets within 128 MiB budget";return false;}
+    if(bytes+depthBytes()>kMemoryLimit){error="Cannot allocate independent GLES3 targets within 128 MiB budget";return false;}
     glActiveTexture(GL_TEXTURE0);
     glBindBuffer(GL_PIXEL_UNPACK_BUFFER,0);
     glPixelStorei(GL_UNPACK_ALIGNMENT,1);
@@ -521,7 +574,7 @@ bool ensureTargets(int width,int height,std::string& error) {
     glFramebufferTexture2D(GL_FRAMEBUFFER,draw,GL_TEXTURE_2D,0,0);
     glBindFramebuffer(GL_FRAMEBUFFER,0);glReadBuffer(GL_BACK);
     if(glGetError()!=GL_NO_ERROR){error="Cannot initialize history buffers";return false;}
-    textureWidth=width;textureHeight=height;
+    textureWidth=width;textureHeight=height;colorTargetBytes=bytes-packGpuBytes;
     return true;
 }
 
@@ -531,10 +584,11 @@ void setUniforms(CompiledPass const& pass,int width,int height,float time,float 
         unsigned unit=b.unit;
         glActiveTexture(GL_TEXTURE0+unit);
         glBindSampler(unit,0);
-        GLuint texture=b.packTexture>=0?packGpu[unsigned(b.packTexture)].texture:
+        GLuint texture=b.depth>=0?depthFrame.images[unsigned(b.depth)].tex:
+                      b.packTexture>=0?packGpu[unsigned(b.packTexture)].texture:
                       textures[unsigned(b.buffer)][front[unsigned(b.buffer)]];
         glBindTexture(GL_TEXTURE_2D,texture);
-        if(b.packTexture<0){
+        if(b.depth<0&&b.packTexture<0){
             unsigned index=unsigned(b.buffer),side=front[index];
             bool mip=(pass.mipmapInputs&(std::uint32_t(1)<<index))!=0;
             if(mip&&!mipValid[index][side]){
@@ -557,6 +611,13 @@ void setUniforms(CompiledPass const& pass,int width,int height,float time,float 
 }
 
 bool renderPipeline(int width,int height,std::string& error) {
+    for(auto const& pass:pipeline)for(auto const& binding:pass.samplers)if(binding.depth>=0){
+        auto const& d=depthFrame.images[unsigned(binding.depth)];
+        if(!d.fresh||d.width!=width||d.height!=height){
+            error="Missing or mismatched current-frame depthtex"+std::to_string(binding.depth)+" in "+pass.name;
+            return false;
+        }
+    }
     // Preserve the entire frame until EVERY pass has rendered successfully.
     // Never render a rejected/partially compiled shader directly to the game.
     glBindFramebuffer(GL_FRAMEBUFFER,0);
@@ -672,9 +733,84 @@ Status status() {
     return {requestedActive.load(),failed,lastStatus};
 }
 
+bool captureSceneDepth(DepthPhase phase,unsigned framebuffer,unsigned internalFormat,
+                       int width,int height,std::string& error){
+    if(eglGetCurrentContext()==EGL_NO_CONTEXT){error="No EGL render context";return false;}
+    syncDepthContext();
+    unsigned n=unsigned(phase);
+    if(n>=depthFrame.images.size()){error="Unknown depth phase";return false;}
+    auto& d=depthFrame.images[n];d.fresh=false;
+    GLenum fmt=GLenum(internalFormat);
+    bool stencil=fmt==GL_DEPTH24_STENCIL8||fmt==GL_DEPTH32F_STENCIL8;
+    unsigned bpp=fmt==GL_DEPTH_COMPONENT16?2:
+        fmt==GL_DEPTH_COMPONENT24||fmt==GL_DEPTH_COMPONENT32F||fmt==GL_DEPTH24_STENCIL8?4:
+        fmt==GL_DEPTH32F_STENCIL8?8:0;
+    if(!bpp||width<=0||height<=0||width>4096||height>4096){
+        error="Unsupported scene depth format or dimensions";return false;
+    }
+    std::uint64_t bytes=std::uint64_t(width)*height*bpp;
+    if(colorTargetBytes+packGpuBytes+depthBytes()-d.bytes+bytes>kMemoryLimit){
+        error="Scene depth exceeds GPU memory budget";return false;
+    }
+    SavedState saved;
+    auto finish=[&](bool ok,char const* message){
+        saved.restore();
+        if(!ok){error=message;d.fresh=false;}
+        return ok;
+    };
+    // The caller identifies the phase and attachment format. GLES validates
+    // source/destination compatibility rather than sampling a dummy texture.
+    if(glGetError()!=GL_NO_ERROR)return finish(false,"Pre-existing GLES error at depth capture");
+    glBindFramebuffer(GL_FRAMEBUFFER,GLuint(framebuffer));
+    GLint samples=0;glGetIntegerv(GL_SAMPLES,&samples);
+    if(samples!=0||glCheckFramebufferStatus(GL_FRAMEBUFFER)!=GL_FRAMEBUFFER_COMPLETE)
+        return finish(false,"Depth source must be a complete single-sample framebuffer");
+    GLint bits=0,stencilBits=0;
+    GLenum attachment=framebuffer?GL_DEPTH_ATTACHMENT:GL_DEPTH;
+    glGetFramebufferAttachmentParameteriv(GL_FRAMEBUFFER,attachment,
+        GL_FRAMEBUFFER_ATTACHMENT_DEPTH_SIZE,&bits);
+    if(stencil)glGetFramebufferAttachmentParameteriv(GL_FRAMEBUFFER,
+        framebuffer?GL_STENCIL_ATTACHMENT:GL_STENCIL,
+        GL_FRAMEBUFFER_ATTACHMENT_STENCIL_SIZE,&stencilBits);
+    int expected=fmt==GL_DEPTH_COMPONENT16?16:
+        fmt==GL_DEPTH_COMPONENT32F||fmt==GL_DEPTH32F_STENCIL8?32:24;
+    if(bits!=expected||(stencil&&stencilBits==0)||glGetError()!=GL_NO_ERROR)
+        return finish(false,"Depth source attachment format mismatch");
+    if(!d.tex||d.width!=width||d.height!=height||d.format!=fmt){
+        releaseDepth(d);
+        glActiveTexture(GL_TEXTURE0);glBindSampler(0,0);
+        glGenTextures(1,&d.tex);glBindTexture(GL_TEXTURE_2D,d.tex);
+        glTexStorage2D(GL_TEXTURE_2D,1,fmt,width,height);
+        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_COMPARE_MODE,GL_NONE);
+        glGenFramebuffers(1,&d.fbo);
+        glBindFramebuffer(GL_FRAMEBUFFER,d.fbo);
+        glFramebufferTexture2D(GL_FRAMEBUFFER,stencil?GL_DEPTH_STENCIL_ATTACHMENT:GL_DEPTH_ATTACHMENT,
+            GL_TEXTURE_2D,d.tex,0);
+        const GLenum none=GL_NONE;glDrawBuffers(1,&none);glReadBuffer(GL_NONE);
+        if(!d.tex||!d.fbo||glCheckFramebufferStatus(GL_FRAMEBUFFER)!=GL_FRAMEBUFFER_COMPLETE||
+           glGetError()!=GL_NO_ERROR){
+            releaseDepth(d);return finish(false,"Cannot allocate a real depth snapshot");
+        }
+        d.width=width;d.height=height;d.format=fmt;d.bytes=bytes;
+    }
+    glDisable(GL_SCISSOR_TEST);glDisable(GL_RASTERIZER_DISCARD);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER,GLuint(framebuffer));
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER,d.fbo);
+    glBlitFramebuffer(0,0,width,height,0,0,width,height,GL_DEPTH_BUFFER_BIT,GL_NEAREST);
+    if(glGetError()!=GL_NO_ERROR)return finish(false,"Real scene depth copy failed");
+    d.fresh=true;
+    return finish(true,"");
+}
+
 void beforeSwap(int width,int height) {
     EGLContext now=eglGetCurrentContext();
     if(now==EGL_NO_CONTEXT)return;
+    syncDepthContext();
+    ConsumeDepthFrame consumeDepth;
     if(context!=now) {
         abandonContext();
         statusMessage(false,"Graphics context changed. Apply shader again.");
@@ -687,7 +823,7 @@ void beforeSwap(int width,int height) {
         action=std::exchange(pendingAction,0);
         if(action==1){passes=std::move(pendingPasses);label=std::move(pendingLabel);}
     }
-    if(action==2){discardGpu();return;}
+    if(action==2){discardGpu();for(auto& d:depthFrame.images)releaseDepth(d);return;}
     if(action==1){
         SavedState saved;
         discardGpu();

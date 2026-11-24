@@ -239,6 +239,45 @@ void main(){color=vec4(texture(colortex2,texcoord).rgb,1.0);}
     requestPipeline({historyEnd},"Missing history writer fixture");
     clearScene();beforeSwap(32,32);
     require(!status().active&&status().failed,"Missing history input was accepted");
+    // Independent depth snapshots with genuine framebuffer depth storage.
+    // No phase guesses and no CPU-generated replacement depth texture.
+    clearScene();
+    GLuint source=0,depth=0;
+    glGenFramebuffers(1,&source);glBindFramebuffer(GL_FRAMEBUFFER,source);
+    glGenRenderbuffers(1,&depth);glBindRenderbuffer(GL_RENDERBUFFER,depth);
+    glRenderbufferStorage(GL_RENDERBUFFER,GL_DEPTH_COMPONENT24,32,32);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER,GL_DEPTH_ATTACHMENT,GL_RENDERBUFFER,depth);
+    const GLenum none=GL_NONE;glDrawBuffers(1,&none);glReadBuffer(GL_NONE);
+    require(glCheckFramebufferStatus(GL_FRAMEBUFFER)==GL_FRAMEBUFFER_COMPLETE,"Depth fixture incomplete");
+    std::string captureError;
+    glDepthMask(GL_TRUE);glClearDepthf(0.25f);glClear(GL_DEPTH_BUFFER_BIT);
+    require(captureSceneDepth(DepthPhase::BeforeHand,source,GL_DEPTH_COMPONENT24,32,32,captureError),"Before-hand capture failed");
+    glClearDepthf(0.5f);glClear(GL_DEPTH_BUFFER_BIT);
+    require(captureSceneDepth(DepthPhase::BeforeTranslucent,source,GL_DEPTH_COMPONENT24,32,32,captureError),"Opaque capture failed");
+    glClearDepthf(0.75f);glClear(GL_DEPTH_BUFFER_BIT);
+    require(captureSceneDepth(DepthPhase::Complete,source,GL_DEPTH_COMPONENT24,32,32,captureError),"Complete capture failed");
+    GLint savedFbo=0;glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING,&savedFbo);
+    require(GLuint(savedFbo)==source,"Depth capture did not restore framebuffer");
+    glBindFramebuffer(GL_FRAMEBUFFER,0);
+    Pass depthEnd{"final",fragment(R"(
+uniform sampler2D depthtex0;
+uniform sampler2D depthtex1;
+uniform sampler2D depthtex2;
+layout(location=0) out vec4 color;
+void main(){color=vec4(texture(depthtex0,texcoord).r,
+                      texture(depthtex1,texcoord).r,
+                      texture(depthtex2,texcoord).r,1.0);}
+)"),{0},true};
+    requestPipeline({depthEnd},"Real depth phase fixture");
+    clearScene();beforeSwap(32,32);
+    require(status().active&&!status().failed,"Real depth graph rejected");
+    actual=pixel();
+    require(std::abs(int(actual[0])-191)<=2&&std::abs(int(actual[1])-128)<=2&&
+        std::abs(int(actual[2])-64)<=2,"Depth phases did not match source data");
+    clearScene();beforeSwap(32,32);
+    require(!status().active&&status().failed,"Stale depth was reused");
+    actual=pixel();require(std::abs(int(actual[0])-51)<=2,"Stale depth modified vanilla scene");
+    glDeleteFramebuffers(1,&source);glDeleteRenderbuffers(1,&depth);
     // Missing geometry input must not turn into a fake color sampler.
     clearScene();
     Pass unavailable{"final",fragment(R"(

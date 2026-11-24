@@ -41,6 +41,11 @@ void requestPipeline(std::vector<Pass> passes,std::string label);
 void requestEnable(std::string translatedFragment,std::string sourceLabel);
 void requestDisable();
 Status status();
+// Called on the game render thread by a phase-aware renderer adapter, with
+// a completed, single-sample depth attachment. Never infer phases at swap.
+enum class DepthPhase : unsigned { Complete=0, BeforeTranslucent=1, BeforeHand=2 };
+bool captureSceneDepth(DepthPhase phase,unsigned framebuffer,unsigned internalFormat,
+                       int width,int height,std::string& error);
 void beforeSwap(int width,int height);
 void stop();
 } // namespace modmenu::android::shaderworld
