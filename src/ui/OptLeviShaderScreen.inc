@@ -91,7 +91,7 @@ static void drawOptLeviShadersScreen(ImVec2 display) {
     float titleW=bold->CalcTextSizeA(bold->FontSize,FLT_MAX,0,title.c_str()).x;
     ofText(dl,bold,{display.x*0.5f-titleW*0.5f,top},
            title.c_str(),ofc(0xFFFFFF));
-    std::string sub="Java final pass / GLES3 test (experimental)";
+    std::string sub="Java composite pipeline / GLES3 (experimental)";
     fonts::note(sub);
     ImFont* font=fonts::body();
     float subW=font->CalcTextSizeA(font->FontSize,FLT_MAX,0,sub.c_str()).x;
@@ -141,7 +141,7 @@ static void drawOptLeviShadersScreen(ImVec2 display) {
         rowDraw->PopClipRect();
         return clicked;
     };
-    if(row("vanilla","Off (vanilla / no shader test)",gOptShadersSelection.empty()))
+    if(row("vanilla","Off (vanilla rendering)",gOptShadersSelection.empty()))
         gOptShadersSelection.clear();
     for(size_t i=0;i<gOptShaderFiles.size();i++){
         auto name=gOptShaderFiles[i].path.filename().string();
@@ -219,17 +219,21 @@ static void drawOptLeviShadersScreen(ImVec2 display) {
                 [](OptPackInfo const& p) {
                     return p.path.filename().string()==gOptShadersSelection;
                 });
-            std::string src,origin;
+            std::vector<modmenu::android::shaderworld::Pass> passes;
+            std::string error;
             if(selected!=gOptShaderFiles.end() &&
-               optReadJavaShader(*selected,src,origin)) {
-                modmenu::android::shaderworld::requestEnable(
-                    optTranslateFinal(src),selected->path.filename().string()+":"+origin);
+               optBuildJavaPipeline(*selected,passes,error)) {
+                modmenu::android::shaderworld::requestPipeline(
+                    std::move(passes),selected->path.filename().string());
                 gOptSavedSelection=gOptShadersSelection;
                 gOptSavedEnabled=gOptPreviewEnabled;
-                gOptImportStatus="Compiling selected Java final pass (not full BSL rendering)...";
-            }else
-                gOptImportStatus=gOptJavaSourceError.empty()?
-                    "Unsupported Java final/composite pass":gOptJavaSourceError;
+                gOptImportStatus.clear();
+            }else {
+                modmenu::android::shaderworld::requestDisable();
+                gOptImportStatus=error.empty()?
+                    "Select a supported Java composite pack":error;
+                gOptPreviewReport=gOptImportStatus;
+            }
         }
     }
     if(ofButton("##iris_done","Done",
