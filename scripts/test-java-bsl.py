@@ -131,5 +131,59 @@ with TemporaryDirectory() as d:
     r = subprocess.run([str(exe), str(tmp / "cycle.zip"), "zip"], capture_output=True, text=True)
     assert r.returncode == 3 and "depth/cycle" in r.stderr
 
+# Exercise the actual C++ translation helpers from the renderer include,
+# without requiring Android or copying copyrighted shader pack contents.
+with TemporaryDirectory() as d:
+    tmp = Path(d)
+    code = (ROOT / "src/ui/OptLeviShaderGlesTest.inc").read_text()
+    begin = code.index("static void optReplaceAll(")
+    end = code.index("static bool optBuildJavaPipeline(")
+    (tmp / "translate.inc").write_text(code[begin:end])
+    (tmp / "translate.cpp").write_text(r'''
+#include <algorithm>
+#include <cassert>
+#include <set>
+#include <sstream>
+#include <string>
+#include <vector>
+#include <iostream>
+#include "translate.inc"
+int main(){
+    std::string legacy=R"(#version 120
+#define FEATURE 1
+uniform float frameTime;
+float a = frameTime * 2.0;
+#if FEATURE
+float b = a + 1.0;
+#else
+float b = a + 2.0;
+#endif
+vec2 c = vec2(
+    a, b);
+void main(){
+  float local = 1.0;
+  /*DRAWBUFFERS:01*/
+  gl_FragData[0] = vec4(c,local,1.0);
+  gl_FragData[1] = vec4(1.0);
+}
+)";
+    std::string fragment,error;
+    assert(optTranslateRoutedComposite(legacy,false,fragment,error));
+    assert(fragment.find("#define MC_VERSION 12100")!=std::string::npos);
+    assert(fragment.find("float a;")!=std::string::npos);
+    assert(fragment.find("a= frameTime * 2.0;")!=std::string::npos);
+    assert(fragment.find("float local = 1.0;")!=std::string::npos);
+    assert(fragment.find("optGlobalInit0();")<fragment.find("optGlobalInit1();"));
+    assert(fragment.find("optRouteTarget1")!=std::string::npos);
+    auto vertex=optTranslateFullscreenVertex("#version 120\nvarying vec2 uv;\nvoid main(){uv=gl_MultiTexCoord0.xy;gl_Position=ftransform();}\n");
+    assert(vertex.find("optFullscreenPosition().xy")!=std::string::npos);
+    std::cout << "Original vertex, global initializers and conditional route translation: OK\n";
+}
+''')
+    exe = tmp / "translate"
+    subprocess.run(["c++", "-std=c++17", "-O0", str(tmp / "translate.cpp"),
+                    "-o", str(exe)], check=True)
+    subprocess.run([str(exe)], check=True)
+
 print("Java pack C++ reader: ZIP / folder / nested includes / dimensions / safety checks OK")
 print("A real BSL final pass still needs a GLES driver/device test and multi-pass scene inputs.")

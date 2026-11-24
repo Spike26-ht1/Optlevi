@@ -128,6 +128,146 @@ static void optReplaceAll(std::string& s,std::string const& a,
         s.replace(at,a.size(),b);at+=b.size();
     }
 }
+static void optReplaceIdentifier(std::string& source,std::string const& from,
+                                 std::string const& to);
+
+// An explicit Java 1.21.0 compatibility profile, not the Bedrock version
+// number and not a claim that Iris's native resource providers exist.
+static std::string optGlesCompatibilityHeader(){
+    return R"GLSL(#version 300 es
+#ifdef GL_EXT_shader_implicit_conversions
+#extension GL_EXT_shader_implicit_conversions : enable
+#endif
+precision highp float;
+precision highp int;
+precision highp sampler2DShadow;
+#ifndef MC_VERSION
+#define MC_VERSION 12100
+#endif
+#define optTexture2DLod(s,u,l) textureLod(s,u,float(l))
+#define optShadow2D(s,c) vec4(vec3(texture(s,c)),1.0)
+)GLSL";
+}
+
+// Desktop GLSL 120 allows global variables initialized from uniforms and
+// varyings. ES 300 requires constant global initializers. Preserve the
+// declaration scope and preprocessor conditions, but execute simple
+// non-const scalar/vector/matrix initializers in source order before main.
+// Complex declarations are deliberately left to the compiler.
+static std::string optTranslateGlobalInitializers(std::string const& source){
+    std::vector<std::string> lines,masked;
+    std::istringstream input(source);
+    std::string line;
+    bool comment=false;
+    while(std::getline(input,line)){
+        lines.push_back(line);
+        std::string mask=line;
+        for(size_t i=0;i<mask.size();++i){
+            if(comment){
+                if(i+1<mask.size()&&line[i]=='*'&&line[i+1]=='/'){
+                    mask[i]=mask[i+1]=' ';++i;comment=false;
+                }else mask[i]=' ';
+            }else if(i+1<mask.size()&&line[i]=='/'&&line[i+1]=='*'){
+                mask[i]=mask[i+1]=' ';++i;comment=true;
+            }else if(i+1<mask.size()&&line[i]=='/'&&line[i+1]=='/'){
+                mask.replace(i,mask.size()-i,mask.size()-i,' ');break;
+            }
+        }
+        masked.push_back(std::move(mask));
+    }
+    auto isAlpha=[](char c){return (c>='A'&&c<='Z')||(c>='a'&&c<='z')||c=='_';};
+    auto ident=[&](char c){return isAlpha(c)||(c>='0'&&c<='9');};
+    auto skip=[](std::string const& s,size_t& p){
+        while(p<s.size()&&(s[p]==' '||s[p]=='\t'||s[p]=='\r'))++p;
+    };
+    auto word=[&](std::string const& s,size_t& p){
+        skip(s,p);size_t a=p;
+        if(p<s.size()&&isAlpha(s[p])){
+            ++p;while(p<s.size()&&ident(s[p]))++p;
+        }
+        return s.substr(a,p-a);
+    };
+    static const std::set<std::string> types{
+        "float","int","uint","bool","vec2","vec3","vec4",
+        "ivec2","ivec3","ivec4","uvec2","uvec3","uvec4",
+        "bvec2","bvec3","bvec4","mat2","mat3","mat4",
+        "mat2x2","mat2x3","mat2x4","mat3x2","mat3x3","mat3x4",
+        "mat4x2","mat4x3","mat4x4"};
+    std::string body,calls;
+    unsigned count=0;
+    int depth=0;
+    std::vector<int> branchDepth;
+    bool continuation=false;
+    for(size_t i=0;i<lines.size();++i){
+        auto const& mask=masked[i];
+        size_t at=0;skip(mask,at);
+        if(continuation||(at<mask.size()&&mask[at]=='#')){
+            if(!continuation){
+                ++at;auto directive=word(mask,at);
+                if(directive=="if"||directive=="ifdef"||directive=="ifndef")
+                    branchDepth.push_back(depth);
+                else if((directive=="else"||directive=="elif")&&!branchDepth.empty())
+                    depth=branchDepth.back();
+                else if(directive=="endif"&&!branchDepth.empty())branchDepth.pop_back();
+            }
+            auto end=mask.find_last_not_of(" \t\r");
+            continuation=end!=std::string::npos&&mask[end]=='\\';
+            body+=lines[i]+"\n";continue;
+        }
+        if(depth==0&&count<512){
+            at=0;auto type=word(mask,at);
+            auto name=word(mask,at);skip(mask,at);
+            if(types.count(type)&&!name.empty()&&at<mask.size()&&mask[at]=='='&&
+               (at+1==mask.size()||mask[at+1]!='=')){
+                size_t start=at+1,j=i,end=std::string::npos;
+                int parentheses=0;
+                bool bad=false;
+                // The original shader contains multi-line expressions. Only
+                // consume a single complete declaration, never a later one.
+                for(;j<lines.size()&&j-i<128&&!bad;++j){
+                    auto const& part=masked[j];
+                    size_t q=j==i?start:0;
+                    size_t first=q;skip(part,first);
+                    if(first<part.size()&&part[first]=='#')continue;
+                    for(;q<part.size();++q){
+                        char c=part[q];
+                        if(c=='('||c=='[')++parentheses;
+                        else if(c==')'||c==']')--parentheses;
+                        else if(c=='{'||c=='}'||(c==','&&parentheses==0)){bad=true;break;}
+                        else if(c==';'&&parentheses==0){end=q;break;}
+                        if(parentheses<0){bad=true;break;}
+                    }
+                    if(end!=std::string::npos)break;
+                }
+                if(!bad&&j<lines.size()&&end!=std::string::npos&&
+                   masked[j].find_first_not_of(" \t\r",end+1)==std::string::npos){
+                    std::string expr;
+                    for(size_t k=i;k<=j;++k){
+                        size_t a=k==i?start:0;
+                        size_t b=k==j?end:lines[k].size();
+                        expr+=lines[k].substr(a,b-a);
+                        if(k!=j)expr+='\n';
+                    }
+                    auto id=std::to_string(count++);
+                    body+=type+" "+name+";\nvoid optGlobalInit"+id+"(){\n"+
+                          name+"="+expr+";\n}\n#define OPTLEVI_INIT_"+id+" 1\n";
+                    // Preserve trailing comments, including a multi-line
+                    // block comment that begins after the semicolon.
+                    body+=lines[j].substr(end+1)+"\n";
+                    calls+="#ifdef OPTLEVI_INIT_"+id+"\noptGlobalInit"+id+
+                           "();\n#endif\n";
+                    i=j;continue;
+                }
+            }
+        }
+        for(char c:mask){if(c=='{')++depth;else if(c=='}')--depth;}
+        body+=lines[i]+"\n";
+    }
+    if(!count)return source;
+    optReplaceIdentifier(body,"main","optLeviGlobalMain");
+    return body+"\nvoid main(){\n"+calls+"optLeviGlobalMain();\n}\n";
+}
+
 static std::string optTranslateFinal(std::string source,bool originalVertex=false) {
     // Translate desktop GLSL 120 directives to GLES3 without claiming full Iris.
     std::istringstream lines(source);
@@ -146,15 +286,16 @@ static std::string optTranslateFinal(std::string source,bool originalVertex=fals
     source=std::move(clean);
     optReplaceAll(source,"texture2D(","texture(");
     optReplaceAll(source,"textureCube(","texture(");
-    optReplaceAll(source,"texture2DLod(","textureLod(");
+    optReplaceAll(source,"texture2DLod(","optTexture2DLod(");
+    optReplaceAll(source,"shadow2D(","optShadow2D(");
     optReplaceAll(source,"gl_FragColor","optFragColor");
     optReplaceAll(source,"gl_FragData[0]","optFragColor");
     optReplaceAll(source,"gl_TexCoord[0]",originalVertex?"optLegacyTexCoord":"vec4(vTexCoord,0.0,1.0)");
     optReplaceAll(source,"varying ","in ");
-    return std::string("#version 300 es\n"
-        "precision highp float;\nprecision highp int;\n"
-        "layout(location=0) out vec4 optFragColor;\n") +
-        (originalVertex?"in vec4 optLegacyTexCoord;\n":"") + source;
+    return optGlesCompatibilityHeader()+
+        "layout(location=0) out vec4 optFragColor;\n"+
+        (originalVertex?"in vec4 optLegacyTexCoord;\n":"")+
+        optTranslateGlobalInitializers(source);
 }
 
 // RenderDragonShaderLoader's input mapping catalog distinguishes pipeline
@@ -262,11 +403,9 @@ static std::string optTranslateFullscreenVertex(std::string source) {
     optReplaceIdentifier(clean,"gl_ModelViewMatrix","mat4(1.0)");
     optReplaceIdentifier(clean,"ftransform","optFullscreenTransform");
     optReplaceAll(clean,"texture2D(","texture(");
-    optReplaceAll(clean,"texture2DLod(","textureLod(");
-    return std::string(R"GLSL(#version 300 es
-precision highp float;
-precision highp int;
-out vec4 optLegacyTexCoord;
+    optReplaceAll(clean,"texture2DLod(","optTexture2DLod(");
+    optReplaceAll(clean,"shadow2D(","optShadow2D(");
+    return optGlesCompatibilityHeader()+std::string(R"GLSL(out vec4 optLegacyTexCoord;
 const mat4 optScreenProjection=mat4(
     2.0,0.0,0.0,0.0, 0.0,2.0,0.0,0.0,
     0.0,0.0,1.0,0.0, -1.0,-1.0,0.0,1.0);
@@ -277,7 +416,7 @@ vec4 optFullscreenPosition(){
     return vec4(corners[gl_VertexID],0.0,1.0);
 }
 vec4 optFullscreenTransform(){return optScreenProjection*optFullscreenPosition();}
-)GLSL")+clean;
+)GLSL")+optTranslateGlobalInitializers(clean);
 }
 
 // Preserve the original conditional branches around routing comments. Turn
