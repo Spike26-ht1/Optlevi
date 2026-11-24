@@ -10,6 +10,8 @@ struct Pass {
     std::string fragment;
     std::vector<unsigned> targets;
     bool finalPass=false;
+    // Translated original fullscreen vertex stage; empty for diagnostic passes.
+    std::string vertex;
 };
 struct Status {
     bool active=false;

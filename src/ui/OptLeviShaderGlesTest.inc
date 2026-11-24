@@ -128,7 +128,7 @@ static void optReplaceAll(std::string& s,std::string const& a,
         s.replace(at,a.size(),b);at+=b.size();
     }
 }
-static std::string optTranslateFinal(std::string source) {
+static std::string optTranslateFinal(std::string source,bool originalVertex=false) {
     // Translate desktop GLSL 120 directives to GLES3 without claiming full Iris.
     std::istringstream lines(source);
     std::string line,clean;
@@ -149,11 +149,12 @@ static std::string optTranslateFinal(std::string source) {
     optReplaceAll(source,"texture2DLod(","textureLod(");
     optReplaceAll(source,"gl_FragColor","optFragColor");
     optReplaceAll(source,"gl_FragData[0]","optFragColor");
-    optReplaceAll(source,"gl_TexCoord[0]","vec4(vTexCoord,0.0,1.0)");
+    optReplaceAll(source,"gl_TexCoord[0]",originalVertex?"optLegacyTexCoord":"vec4(vTexCoord,0.0,1.0)");
     optReplaceAll(source,"varying ","in ");
     return std::string("#version 300 es\n"
         "precision highp float;\nprecision highp int;\n"
-        "layout(location=0) out vec4 optFragColor;\n") + source;
+        "layout(location=0) out vec4 optFragColor;\n") +
+        (originalVertex?"in vec4 optLegacyTexCoord;\n":"") + source;
 }
 
 // RenderDragonShaderLoader's input mapping catalog distinguishes pipeline
@@ -206,10 +207,10 @@ static bool optParseCompositeTargets(std::string const& source,
     return true;
 }
 
-static std::string optTranslateComposite(std::string source,size_t outputs) {
+static std::string optTranslateComposite(std::string source,size_t outputs,bool originalVertex=false) {
     // optTranslateFinal handles legacy desktop syntax and removes #version.
     // Introduce separate fragment outputs for locations 1..N, not aliases.
-    source=optTranslateFinal(std::move(source));
+    source=optTranslateFinal(std::move(source),originalVertex);
     std::string extra;
     for(size_t i=1;i<outputs;++i){
         auto name="optFragColor"+std::to_string(i);
@@ -219,6 +220,60 @@ static std::string optTranslateComposite(std::string source,size_t outputs) {
     auto at=source.find("layout(location=0)");
     if(at!=std::string::npos)source.insert(at,extra);
     return source;
+}
+
+// Legacy fixed-function inputs for a Java fullscreen quad only. These are
+// screen-space coordinates, NOT fabricated Minecraft camera/geometry matrices.
+static void optReplaceIdentifier(std::string& source,std::string const& from,
+                                 std::string const& to) {
+    auto ident=[](char ch){return (ch>='a'&&ch<='z')||(ch>='A'&&ch<='Z')||
+                                  (ch>='0'&&ch<='9')||ch=='_';};
+    size_t pos=0;
+    while((pos=source.find(from,pos))!=std::string::npos){
+        size_t end=pos+from.size();
+        if((pos==0||!ident(source[pos-1]))&&(end==source.size()||!ident(source[end]))){
+            source.replace(pos,from.size(),to);pos+=to.size();
+        }else pos=end;
+    }
+}
+static std::string optTranslateFullscreenVertex(std::string source) {
+    std::istringstream input(source);
+    std::string line,clean;
+    while(std::getline(input,line)){
+        auto at=line.find_first_not_of(" \t\r");
+        if(at!=std::string::npos&&(line.compare(at,8,"#version")==0||
+           line.compare(at,36,"#extension GL_ARB_shader_texture_lod")==0)){
+            clean+='\n';continue;
+        }
+        clean+=line;clean+='\n';
+    }
+    optReplaceIdentifier(clean,"varying","out");
+    optReplaceIdentifier(clean,"attribute","in");
+    optReplaceAll(clean,"gl_TexCoord[0]","optLegacyTexCoord");
+    optReplaceAll(clean,"gl_TextureMatrix[0]","mat4(1.0)");
+    optReplaceIdentifier(clean,"gl_Vertex","optFullscreenPosition()");
+    optReplaceIdentifier(clean,"gl_MultiTexCoord0","optFullscreenPosition()");
+    optReplaceIdentifier(clean,"gl_ModelViewProjectionMatrix","optScreenProjection");
+    optReplaceIdentifier(clean,"gl_ProjectionMatrix","optScreenProjection");
+    optReplaceIdentifier(clean,"gl_ModelViewMatrix","mat4(1.0)");
+    optReplaceIdentifier(clean,"ftransform","optFullscreenTransform");
+    optReplaceAll(clean,"texture2D(","texture(");
+    optReplaceAll(clean,"texture2DLod(","textureLod(");
+    return std::string(R"GLSL(#version 300 es
+precision highp float;
+precision highp int;
+out vec4 optLegacyTexCoord;
+const mat4 optScreenProjection=mat4(
+    2.0,0.0,0.0,0.0, 0.0,2.0,0.0,0.0,
+    0.0,0.0,1.0,0.0, -1.0,-1.0,0.0,1.0);
+vec4 optFullscreenPosition(){
+    const vec2 corners[6]=vec2[6](
+        vec2(0.0,0.0),vec2(1.0,0.0),vec2(1.0,1.0),
+        vec2(0.0,0.0),vec2(1.0,1.0),vec2(0.0,1.0));
+    return vec4(corners[gl_VertexID],0.0,1.0);
+}
+vec4 optFullscreenTransform(){return optScreenProjection*optFullscreenPosition();}
+)GLSL")+clean;
 }
 
 static bool optBuildJavaPipeline(
@@ -276,12 +331,24 @@ static bool optBuildJavaPipeline(
         else if(!optParseCompositeTargets(expanded,targets,error)){
             error=member+": "+error;return false;
         }
-        auto translated=optTranslateComposite(std::move(expanded),targets.size());
-        total+=translated.size();
+        // Resolve the vertex companion from the SAME dimension/program as
+        // the fragment. Its include tree is independent, as in Java.
+        std::string vertexMember=member.substr(0,member.size()-4)+".vsh";
+        std::string vertexRaw,vertex;
+        if(optReadJavaMember(pack,vertexMember,vertexRaw)){
+            std::string vertexExpanded;
+            std::set<std::string> vertexStack;size_t vertexBytes=0;
+            if(!optExpandJavaMember(pack,vertexMember,vertexExpanded,vertexStack,vertexBytes,0)){
+                error=gOptJavaSourceError;return false;
+            }
+            vertex=optTranslateFullscreenVertex(std::move(vertexExpanded));
+        }
+        auto translated=optTranslateComposite(std::move(expanded),targets.size(),!vertex.empty());
+        total+=translated.size()+vertex.size();
         if(total>4*1024*1024 || passes.size()>=24){
             error="Java composite graph exceeds source/pass budget";return false;
         }
-        passes.push_back(Pass{member,std::move(translated),std::move(targets),finalPass});
+        passes.push_back(Pass{member,std::move(translated),std::move(targets),finalPass,std::move(vertex)});
         return true;
     };
     // Ordered composite and composite1...composite22, then final. Deferred,

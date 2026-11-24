@@ -34,6 +34,7 @@ struct CompiledPass {
     std::vector<unsigned> targets;
     std::vector<Binding> samplers;
     bool finalPass=false;
+    bool customVertex=false;
 };
 std::vector<CompiledPass> pipeline;
 std::array<std::array<GLuint,2>,kBuffers> textures{};
@@ -123,7 +124,7 @@ void main() {
 }
 )";
 
-    GLuint vs=compile(GL_VERTEX_SHADER,vertex,error);
+    GLuint vs=compile(GL_VERTEX_SHADER,pass.vertex.empty()?std::string(vertex):pass.vertex,error);
     if(!vs)return false;
     GLuint fs=compile(GL_FRAGMENT_SHADER,pass.fragment,error);
     if(!fs){glDeleteShader(vs);return false;}
@@ -134,6 +135,17 @@ void main() {
     GLint ok=0;glGetProgramiv(linked,GL_LINK_STATUS,&ok);
     if(!ok){error=shaderLog(linked,true);glDeleteProgram(linked);return false;}
     auto fail=[&](std::string message){error=std::move(message);glDeleteProgram(linked);return false;};
+    // An original Java vertex stage may need vertex attributes that the
+    // fullscreen renderer cannot supply. Never silently bind zero attributes.
+    GLint attributes=0;
+    glGetProgramiv(linked,GL_ACTIVE_ATTRIBUTES,&attributes);
+    for(GLint i=0;i<attributes;++i){
+        GLchar name[256]{};
+        GLsizei len=0;GLint size=0;GLenum type=0;
+        glGetActiveAttrib(linked,GLuint(i),sizeof(name),&len,&size,&type,name);
+        if(glGetAttribLocation(linked,name)>=0)
+            return fail("Unsupported fullscreen vertex attribute: "+std::string(name));
+    }
     GLint count=0;
     glGetProgramiv(linked,GL_ACTIVE_UNIFORMS,&count);
     for(GLint i=0;i<count;i++) {
@@ -160,6 +172,7 @@ void main() {
     result.name=pass.name;
     result.targets=pass.targets;
     result.finalPass=pass.finalPass;
+    result.customVertex=!pass.vertex.empty();
     return true;
 }
 
@@ -361,7 +374,8 @@ bool renderPipeline(int width,int height,std::string& error) {
         const GLfloat zero[4]={0,0,0,0};
         for(unsigned i=0;i<draws.size();++i)glClearBufferfv(GL_COLOR,i,zero);
         setUniforms(pass,width,height,time,dt);
-        glDrawArrays(GL_TRIANGLES,0,3);
+        if(pass.customVertex)glDrawArrays(GL_TRIANGLES,0,6);
+        else glDrawArrays(GL_TRIANGLES,0,3);
         if(glGetError()!=GL_NO_ERROR){error=pass.name+": GLES3 pass execution failed";return false;}
         if(!pass.finalPass)for(auto t:pass.targets)front[t]=1-front[t];
     }
@@ -378,7 +392,7 @@ bool renderPipeline(int width,int height,std::string& error) {
 
 void requestPipeline(std::vector<Pass> passes,std::string label) {
     size_t total=0;
-    for(auto const& p:passes)total+=p.fragment.size();
+    for(auto const& p:passes)total+=p.fragment.size()+p.vertex.size();
     std::lock_guard lock(mu);
     if(passes.empty()||passes.size()>kMaxPasses||total>4*1024*1024){
         pendingAction=2;requestedActive=false;

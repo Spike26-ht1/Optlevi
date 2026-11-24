@@ -77,6 +77,32 @@ void main(){color=texture(colortex0,texcoord);}
             std::abs(int(actual[2])-153)<=2,"Unexpected multi-pass pixels");
     std::cout<<"Actual composite result: "<<int(actual[0])<<","<<int(actual[1])
              <<","<<int(actual[2])<<"\n";
+    // Original vertex stage computes a nonstandard varying. The fragment
+    // can only link and produce the expected output when that stage executes.
+    clearScene();
+    Pass custom{"final",R"(#version 300 es
+precision highp float;
+in vec2 customUV;
+layout(location=0) out vec4 color;
+uniform sampler2D colortex0;
+void main(){color=vec4(customUV.x,texture(colortex0,customUV).g,0.25,1.0);}
+)",{0},true,R"(#version 300 es
+precision highp float;
+out vec2 customUV;
+void main(){
+    const vec2 corners[6]=vec2[6](vec2(0,0),vec2(1,0),vec2(1,1),
+        vec2(0,0),vec2(1,1),vec2(0,1));
+    vec2 p=corners[gl_VertexID];
+    customUV=vec2(0.75,p.y);
+    gl_Position=vec4(p*2.0-1.0,0.0,1.0);
+}
+)"};
+    requestPipeline({custom},"Original custom vertex fixture");
+    beforeSwap(32,32);
+    require(status().active&&!status().failed,"Custom vertex stage failed");
+    actual=pixel();
+    require(std::abs(int(actual[0])-191)<=2&&std::abs(int(actual[1])-102)<=2&&
+            std::abs(int(actual[2])-64)<=2,"Original vertex varying was not executed");
     // Missing geometry input must not turn into a fake color sampler.
     clearScene();
     Pass unavailable{"final",fragment(R"(
