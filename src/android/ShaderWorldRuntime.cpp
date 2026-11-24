@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <mutex>
 #include <string>
 #include <utility>
@@ -67,6 +68,7 @@ struct DepthFrame {
     EGLContext ctx=EGL_NO_CONTEXT;
     EGLSurface surface=EGL_NO_SURFACE;
     std::array<DepthSnapshot,3> images{};
+    std::vector<WorldUniform> uniforms;
 };
 thread_local DepthFrame depthFrame;
 std::uint64_t colorTargetBytes=0;
@@ -90,13 +92,50 @@ void syncDepthContext(){
     depthFrame={};depthFrame.ctx=ctx;depthFrame.surface=surface;
 }
 struct ConsumeDepthFrame {
-    ~ConsumeDepthFrame(){for(auto& d:depthFrame.images)d.fresh=false;}
+    ~ConsumeDepthFrame(){for(auto& d:depthFrame.images)d.fresh=false;depthFrame.uniforms.clear();}
 };
 int depthIndex(std::string const& name){
     if(name=="depthtex0")return 0;
     if(name=="depthtex1")return 1;
     if(name=="depthtex2")return 2;
     return -1;
+}
+int uniformComponents(unsigned type){
+    switch(type){
+        case GL_FLOAT:case GL_INT:case GL_BOOL:return 1;
+        case GL_FLOAT_VEC2:case GL_INT_VEC2:case GL_BOOL_VEC2:return 2;
+        case GL_FLOAT_VEC3:case GL_INT_VEC3:case GL_BOOL_VEC3:return 3;
+        case GL_FLOAT_VEC4:case GL_INT_VEC4:case GL_BOOL_VEC4:return 4;
+        case GL_FLOAT_MAT2:return 4;
+        case GL_FLOAT_MAT3:return 9;
+        case GL_FLOAT_MAT4:return 16;
+        default:return 0;
+    }
+}
+bool integerUniform(unsigned type){
+    return type==GL_INT||type==GL_INT_VEC2||type==GL_INT_VEC3||type==GL_INT_VEC4||
+        type==GL_BOOL||type==GL_BOOL_VEC2||type==GL_BOOL_VEC3||type==GL_BOOL_VEC4;
+}
+WorldUniform const* findWorldUniform(std::string const& name){
+    for(auto const& value:depthFrame.uniforms)if(value.name==name)return &value;
+    return nullptr;
+}
+struct WorldBinding { std::string name; GLenum type; GLint location; };
+void uploadWorldUniform(WorldBinding const& b,WorldUniform const& v){
+    auto f=v.floats.data();auto i=v.ints.data();
+    switch(b.type){
+        case GL_FLOAT:glUniform1fv(b.location,1,f);break;
+        case GL_FLOAT_VEC2:glUniform2fv(b.location,1,f);break;
+        case GL_FLOAT_VEC3:glUniform3fv(b.location,1,f);break;
+        case GL_FLOAT_VEC4:glUniform4fv(b.location,1,f);break;
+        case GL_INT:case GL_BOOL:glUniform1iv(b.location,1,i);break;
+        case GL_INT_VEC2:case GL_BOOL_VEC2:glUniform2iv(b.location,1,i);break;
+        case GL_INT_VEC3:case GL_BOOL_VEC3:glUniform3iv(b.location,1,i);break;
+        case GL_INT_VEC4:case GL_BOOL_VEC4:glUniform4iv(b.location,1,i);break;
+        case GL_FLOAT_MAT2:glUniformMatrix2fv(b.location,1,GL_FALSE,f);break;
+        case GL_FLOAT_MAT3:glUniformMatrix3fv(b.location,1,GL_FALSE,f);break;
+        case GL_FLOAT_MAT4:glUniformMatrix4fv(b.location,1,GL_FALSE,f);break;
+    }
 }
 struct GpuPackTexture { std::string sampler; GLuint texture=0; };
 std::vector<GpuPackTexture> packGpu;
@@ -107,6 +146,7 @@ struct CompiledPass {
     std::string name;
     std::vector<unsigned> targets;
     std::vector<Binding> samplers;
+    std::vector<WorldBinding> worldUniforms;
     bool finalPass=false;
     bool customVertex=false;
     std::uint32_t mipmapInputs=0;
@@ -266,6 +306,10 @@ void main() {
         if(glGetAttribLocation(linked,name)>=0)
             return fail("Unsupported fullscreen vertex attribute: "+std::string(name));
     }
+    std::string missing;
+    auto reportMissing=[&](std::string const& name){
+        if(missing.size()<3500){if(!missing.empty())missing+=", ";missing+=name;}
+    };
     GLint count=0;
     glGetProgramiv(linked,GL_ACTIVE_UNIFORMS,&count);
     for(GLint i=0;i<count;i++) {
@@ -279,17 +323,17 @@ void main() {
             if(packGpu[k].sampler==uniform){packIndex=int(k);break;}
         int depth=depthIndex(uniform);
         if(type==GL_SAMPLER_2D&&depth>=0&&arraySize==1){
-            if(!depthFrame.images[unsigned(depth)].fresh)
-                return fail("Missing current-frame "+uniform+" in "+pass.name+
-                    " (requires a verified RenderDragon depth phase)");
+            if(!depthFrame.images[unsigned(depth)].fresh){
+                reportMissing(uniform+" (depth phase)");continue;
+            }
             if(result.samplers.size()>=kBuffers)
                 return fail("Too many active texture samplers in "+pass.name);
             result.samplers.push_back({glGetUniformLocation(linked,name),-1,-1,
                                         unsigned(result.samplers.size()),depth});
         }else if(type==GL_SAMPLER_2D&&(index>=0||packIndex>=0)&&arraySize==1){
-            if(packIndex<0&&!available[unsigned(index)])
-                return fail("Missing real input "+uniform+" in "+pass.name+
-                  " (requires a RenderDragon scene/geometry pass)");
+            if(packIndex<0&&!available[unsigned(index)]){
+                reportMissing(uniform+" (geometry buffer)");continue;
+            }
             if(result.samplers.size()>=kBuffers)
                 return fail("Too many active texture samplers in "+pass.name);
             result.samplers.push_back({glGetUniformLocation(linked,name),index,packIndex,
@@ -299,11 +343,23 @@ void main() {
         }else if(type==GL_FLOAT&&arraySize==1&&
                  (uniform=="viewWidth"||uniform=="viewHeight"||
                   uniform=="aspectRatio"||uniform=="frameTimeCounter"||
-                  uniform=="frameTime")){
-            // Actual viewport values and monotonic frame timing are provided.
+                  uniform=="frameTime"||uniform=="framemod8"||uniform=="framemod2")){
+            // Actual viewport, timing and pack-declared frame modulo values.
+        }else if(arraySize==1&&uniformComponents(type)){
+            auto const* value=findWorldUniform(uniform);
+            if(!value||value->glType!=type){
+                reportMissing(uniform+" (world uniform)");continue;
+            }
+            GLint location=glGetUniformLocation(linked,name);
+            if(location<0){reportMissing(uniform+" (uniform block unsupported)");continue;}
+            result.worldUniforms.push_back({uniform,type,location});
         }else{
-            return fail("Unsupported world shader uniform: "+uniform+" in "+pass.name);
+            reportMissing(uniform+" (unsupported type)");
         }
+    }
+    if(!missing.empty()){
+        // Preserve the old geometry failure wording used by callers/tests.
+        return fail("Missing real input "+missing+"; Unsupported world shader uniform or renderer resource");
     }
     result.targets=pass.targets;
     if(pass.routedOutputs){
@@ -606,8 +662,11 @@ void setUniforms(CompiledPass const& pass,int width,int height,float time,float 
     set("viewWidth",float(width));set("viewHeight",float(height));
     set("aspectRatio",float(width)/float(height));set("frameTimeCounter",time);
     set("frameTime",dt);
+    set("framemod8",float(frameCounter%8));set("framemod2",float(frameCounter%2));
     GLint frameLoc=glGetUniformLocation(pass.program,"frameCounter");
     if(frameLoc>=0)glUniform1i(frameLoc,int(frameCounter));
+    for(auto const& binding:pass.worldUniforms)
+        uploadWorldUniform(binding,*findWorldUniform(binding.name));
 }
 
 bool renderPipeline(int width,int height,std::string& error) {
@@ -615,6 +674,13 @@ bool renderPipeline(int width,int height,std::string& error) {
         auto const& d=depthFrame.images[unsigned(binding.depth)];
         if(!d.fresh||d.width!=width||d.height!=height){
             error="Missing or mismatched current-frame depthtex"+std::to_string(binding.depth)+" in "+pass.name;
+            return false;
+        }
+    }
+    for(auto const& pass:pipeline)for(auto const& binding:pass.worldUniforms){
+        auto const* value=findWorldUniform(binding.name);
+        if(!value||value->glType!=binding.type){
+            error="Missing current-frame world uniform "+binding.name+" in "+pass.name;
             return false;
         }
     }
@@ -731,6 +797,63 @@ void requestDisable() {
 Status status() {
     std::lock_guard lock(mu);
     return {requestedActive.load(),failed,lastStatus};
+}
+
+bool publishWorldUniforms(std::vector<WorldUniform> const& values,std::string& error){
+    if(eglGetCurrentContext()==EGL_NO_CONTEXT){error="No EGL render context";return false;}
+    syncDepthContext();
+    if(values.size()>128){error="Too many world uniforms";return false;}
+    // Validate the whole batch before committing it to the frame.
+    auto next=depthFrame.uniforms;
+    for(auto const& v:values){
+        int components=uniformComponents(v.glType);
+        bool valid=!v.name.empty()&&v.name.size()<128&&components>0;
+        for(char c:v.name)if(!((c>='a'&&c<='z')||(c>='A'&&c<='Z')||
+                               (c>='0'&&c<='9')||c=='_'))valid=false;
+        if(valid&&!integerUniform(v.glType))
+            for(int i=0;i<components;++i)if(!std::isfinite(v.floats[i]))valid=false;
+        if(!valid){error="Invalid world uniform "+v.name;return false;}
+        auto old=std::find_if(next.begin(),next.end(),[&](auto const& x){return x.name==v.name;});
+        if(old!=next.end()){
+            if(old->glType!=v.glType){error="World uniform type changed: "+v.name;return false;}
+            *old=v;
+        }else next.push_back(v);
+        if(next.size()>128){error="Too many world uniforms in frame";return false;}
+    }
+    depthFrame.uniforms=std::move(next);
+    return true;
+}
+
+bool captureProgramUniforms(unsigned program,std::vector<UniformMapping> const& mappings,
+                            std::string& error){
+    if(eglGetCurrentContext()==EGL_NO_CONTEXT||!program||!glIsProgram(program)){
+        error="No valid native GLES program";return false;
+    }
+    if(mappings.empty()||mappings.size()>128){error="Invalid uniform mapping count";return false;}
+    GLint linked=0,count=0;
+    glGetProgramiv(program,GL_LINK_STATUS,&linked);
+    if(!linked){error="Native program not linked";return false;}
+    glGetProgramiv(program,GL_ACTIVE_UNIFORMS,&count);
+    std::vector<WorldUniform> values;
+    for(auto const& mapping:mappings){
+        if(!uniformComponents(mapping.glType)){error="Unsupported mapped type";return false;}
+        bool matched=false;
+        for(GLint n=0;n<count;++n){
+            GLchar name[256]{};GLsizei len=0;GLint size=0;GLenum type=0;
+            glGetActiveUniform(program,GLuint(n),sizeof(name),&len,&size,&type,name);
+            if(mapping.nativeName!=std::string(name,size_t(std::max(0,int(len)))))continue;
+            if(size!=1||type!=mapping.glType)break;
+            GLint location=glGetUniformLocation(program,name);
+            if(location<0)break;
+            WorldUniform value;value.name=mapping.javaName;value.glType=type;
+            if(integerUniform(type))glGetUniformiv(program,location,value.ints.data());
+            else glGetUniformfv(program,location,value.floats.data());
+            values.push_back(std::move(value));matched=true;break;
+        }
+        if(!matched){error="Native uniform missing or wrong type: "+mapping.nativeName;return false;}
+    }
+    if(glGetError()!=GL_NO_ERROR){error="Native uniform capture failed";return false;}
+    return publishWorldUniforms(values,error);
 }
 
 bool captureSceneDepth(DepthPhase phase,unsigned framebuffer,unsigned internalFormat,

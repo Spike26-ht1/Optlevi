@@ -73,7 +73,7 @@ static void drawOptLeviShadersScreen(ImVec2 display) {
     float left=display.x*0.20f,right=display.x*0.80f;
     float w=right-left;
     float top=10*u,barY=74*u;
-    float bottom=display.y-130*u;
+    float bottom=display.y-175*u;
     float line=32*u;
     if(w<240*u||bottom<barY+100*u){
         ofText(dl,fonts::bold(),{20*u,20*u},"Shaders: enlarge the screen",
@@ -165,15 +165,16 @@ static void drawOptLeviShadersScreen(ImVec2 display) {
         label += " | ";
         label += optPackLabel(picked->type);
     }
-    dl->PushClipRect({left,infoY},{right,infoY+55*u},true);
+    dl->PushClipRect({left,infoY},{right,display.y-77*u},true);
     ofText(dl,font,{left+5*u,infoY},label.c_str(),
            ofc(0xDDE6EC),font->FontSize*0.84f,w-10*u);
     // A driver failure must never be hidden behind stale import toast text.
     if(world.failed) status=world.message;
     else if(!gOptImportStatus.empty())status=gOptImportStatus;
     else if(!gOptShadersError.empty())status=gOptShadersError;
-    ofText(dl,font,{left+5*u,infoY+22*u},status.c_str(),
-           ofc(0xD7D7D7),font->FontSize*0.78f,w-10*u);
+    float textSize=font->FontSize*0.78f;
+    dl->AddText(font,textSize,{left+5*u,infoY+22*u},ofc(world.failed?0xFFD0A0:0xD7D7D7),
+                status.c_str(),nullptr,w-10*u);
     dl->PopClipRect();
 
     const float gap=7*u,buttonH=30*u;
@@ -260,8 +261,8 @@ static void drawOptLeviShadersScreen(ImVec2 display) {
         // Compilation errors are not discarded. Use a scrollable popup to
         // inspect the real driver log instead of pretending support.
         if(ofButton("##iris_compilelog","Compiler log",
-                    {std::max(8*u,left-140*u),display.y-118*u},
-                    {125*u,29*u},u))
+                    {left+5*u,bottom-35*u},
+                    {150*u,29*u},u))
             ImGui::OpenPopup("##iris_compile_details");
         if(ImGui::BeginPopup("##iris_compile_details")){
             ImGui::TextWrapped("%s",gOptPreviewFile.c_str());

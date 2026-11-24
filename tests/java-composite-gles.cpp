@@ -278,6 +278,51 @@ void main(){color=vec4(texture(depthtex0,texcoord).r,
     require(!status().active&&status().failed,"Stale depth was reused");
     actual=pixel();require(std::abs(int(actual[0])-51)<=2,"Stale depth modified vanilla scene");
     glDeleteFramebuffers(1,&source);glDeleteRenderbuffers(1,&depth);
+    // Typed actual world uniforms: source values are reflected from a linked
+    // native fixture program, not synthesized by the Java shader runtime.
+    auto buildShader=[](GLenum type,char const* code){
+        GLuint sh=glCreateShader(type);glShaderSource(sh,1,&code,nullptr);glCompileShader(sh);
+        GLint ok=0;glGetShaderiv(sh,GL_COMPILE_STATUS,&ok);require(ok,"Native uniform fixture compile");return sh;
+    };
+    GLuint nativeVs=buildShader(GL_VERTEX_SHADER,R"(#version 300 es
+uniform mat4 nativeMatrix;
+void main(){gl_Position=nativeMatrix*vec4(0.0,0.0,0.0,1.0);}
+)");
+    GLuint nativeFs=buildShader(GL_FRAGMENT_SHADER,R"(#version 300 es
+precision highp float;
+uniform vec3 nativeCamera;
+uniform ivec2 nativeLight;
+out vec4 color;
+void main(){color=vec4(nativeCamera+vec3(nativeLight,0),1.0);}
+)");
+    GLuint nativeProgram=glCreateProgram();glAttachShader(nativeProgram,nativeVs);
+    glAttachShader(nativeProgram,nativeFs);glLinkProgram(nativeProgram);
+    glDeleteShader(nativeVs);glDeleteShader(nativeFs);
+    GLint nativeOk=0;glGetProgramiv(nativeProgram,GL_LINK_STATUS,&nativeOk);require(nativeOk,"Native program link");
+    glUseProgram(nativeProgram);
+    const float matrix[16]={0.25f,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
+    glUniformMatrix4fv(glGetUniformLocation(nativeProgram,"nativeMatrix"),1,GL_FALSE,matrix);
+    glUniform3f(glGetUniformLocation(nativeProgram,"nativeCamera"),0.5f,0.0f,0.0f);
+    glUniform2i(glGetUniformLocation(nativeProgram,"nativeLight"),0,3);
+    require(captureProgramUniforms(nativeProgram,{{"nativeMatrix","gbufferProjection",GL_FLOAT_MAT4},
+        {"nativeCamera","cameraPosition",GL_FLOAT_VEC3},{"nativeLight","eyeBrightnessSmooth",GL_INT_VEC2}},captureError),
+        "Native uniform capture failed");
+    Pass worldEnd{"final",fragment(R"(
+uniform mat4 gbufferProjection;
+uniform vec3 cameraPosition;
+uniform ivec2 eyeBrightnessSmooth;
+layout(location=0) out vec4 color;
+void main(){color=vec4(gbufferProjection[0][0],cameraPosition.x,float(eyeBrightnessSmooth.y)/4.0,1.0);}
+)"),{0},true};
+    requestPipeline({worldEnd},"Typed world uniform fixture");
+    clearScene();beforeSwap(32,32);
+    require(status().active&&!status().failed,"Typed world uniform graph failed");
+    actual=pixel();
+    require(std::abs(int(actual[0])-64)<=2&&std::abs(int(actual[1])-128)<=2&&
+        std::abs(int(actual[2])-191)<=2,"World uniform values not transferred");
+    clearScene();beforeSwap(32,32);
+    require(!status().active&&status().failed,"Stale world uniforms were reused");
+    glUseProgram(0);glDeleteProgram(nativeProgram);
     // Missing geometry input must not turn into a fake color sampler.
     clearScene();
     Pass unavailable{"final",fragment(R"(

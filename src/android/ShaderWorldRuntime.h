@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <vector>
 #include <utility>
+#include <array>
 
 namespace modmenu::android::shaderworld {
 // Ordered fullscreen pass graph. Only buffers actually produced by a pass
@@ -46,6 +47,25 @@ Status status();
 enum class DepthPhase : unsigned { Complete=0, BeforeTranslucent=1, BeforeHand=2 };
 bool captureSceneDepth(DepthPhase phase,unsigned framebuffer,unsigned internalFormat,
                        int width,int height,std::string& error);
+// Typed data from a verified world-rendering phase. Matrices are column
+// major and must already use the Java shader's coordinate convention.
+struct WorldUniform {
+    std::string name;
+    unsigned glType=0;
+    std::array<float,16> floats{};
+    std::array<int,4> ints{};
+};
+struct UniformMapping {
+    std::string nativeName;
+    std::string javaName;
+    unsigned glType=0;
+};
+// Either submit native world-state values, or read a verified linked native
+// GLES program's actual uniform values using explicit semantic mappings.
+// All values expire at the next swap; missing data is never defaulted.
+bool publishWorldUniforms(std::vector<WorldUniform> const& values,std::string& error);
+bool captureProgramUniforms(unsigned program,std::vector<UniformMapping> const& mappings,
+                            std::string& error);
 void beforeSwap(int width,int height);
 void stop();
 } // namespace modmenu::android::shaderworld
