@@ -1,6 +1,7 @@
 // Original synthetic fixture: exercise actual GLES3 rendering and readback,
 // not just source-string checks. This does not run Minecraft or BSL.
 #include "ShaderWorldRuntime.h"
+#include "ShaderCameraMath.h"
 #include <EGL/egl.h>
 #include <GLES3/gl3.h>
 #include <array>
@@ -28,6 +29,30 @@ static void clearScene(){
     glClearColor(0.2f,0.4f,0.6f,1.0f);glClear(GL_COLOR_BUFFER_BIT);
 }
 int main(){
+    // Centered perspective with a rotated and translated rigid view.
+    using modmenu::android::shaderbridge::camera::Projection;
+    using modmenu::android::shaderbridge::camera::recoverProjection;
+    const float a=-101.0f/99.0f,b=-200.0f/99.0f;
+    const std::array<float,16> p={2,0,0,0, 0,3,0,0, 0,0,a,-1, 0,0,b,0};
+    // Eye (3,7,-11), right=(0,0,-1), up=(0,1,0), back=(1,0,0).
+    const std::array<float,16> v={0,0,1,0, 0,1,0,0, -1,0,0,0, -11,-7,-3,1};
+    std::array<float,16> vp{};
+    for(int c=0;c<4;++c)for(int r=0;r<4;++r)for(int k=0;k<4;++k)
+        vp[c*4+r]+=p[k*4+r]*v[c*4+k];
+    Projection recovered;
+    require(recoverProjection(vp,{3,7,-11,0},recovered),"Native perspective recovery failed");
+    require(std::abs(recovered.nearClip-1)<0.001f&&std::abs(recovered.farClip-100)<0.02f,
+            "Recovered clip distances incorrect");
+    for(int i=0;i<16;++i)require(std::abs(recovered.matrix[i]-p[i])<0.001f,"Recovered P differs");
+    for(int c=0;c<4;++c)for(int r=0;r<4;++r){
+        float x=0;for(int k=0;k<4;++k)x+=recovered.matrix[k*4+r]*recovered.inverse[c*4+k];
+        require(std::abs(x-(c==r?1.0f:0.0f))<0.001f,"Recovered inverse incorrect");
+    }
+    require(!recoverProjection(vp,{0,0,0,0},recovered),"Unrelated eye accepted");
+    auto skew=vp;skew[0]+=0.1f;
+    require(!recoverProjection(skew,{3,7,-11,0},recovered),"Off-axis projection accepted");
+    std::array<float,16> ortho={1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1};
+    require(!recoverProjection(ortho,{0,0,0,0},recovered),"Orthographic projection accepted");
     EGLDisplay d=eglGetDisplay(EGL_DEFAULT_DISPLAY);
     EGLint major=0,minor=0;
     require(d!=EGL_NO_DISPLAY&&eglInitialize(d,&major,&minor),"EGL initialize");

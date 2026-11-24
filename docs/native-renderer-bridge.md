@@ -30,3 +30,7 @@ material IO catalog is not an Android ABI or a Java G-buffer encoding.
 
 Compiler log now includes observed native program count, marker count, and
 capture errors. This is not proof of stock Bedrock or BSL gameplay support.
+
+## Native terrain projection recovery
+
+When the observed program exposes the RenderChunk uniform signature, the bridge can recover a centered finite OpenGL perspective and its inverse from the actual `u_viewProj` matrix and independently cross-check `ViewPositionAndTime`. It rejects unsupported projections, ill-conditioned matrices, and inconsistent eyes. It publishes only `gbufferProjection` and `gbufferProjectionInverse`; no Java model-view matrix, absolute camera position, or draw-phase boundary is inferred. This path has not been verified on Bedrock 26.62 hardware.

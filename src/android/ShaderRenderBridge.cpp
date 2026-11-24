@@ -1,5 +1,6 @@
 #include "ShaderRenderBridge.h"
 #include "ShaderWorldRuntime.h"
+#include "ShaderCameraMath.h"
 
 #include <EGL/egl.h>
 #include <GLES3/gl3.h>
@@ -85,15 +86,16 @@ void captureBeforeDraw(){
     if(count<0||count>512)return;
     std::vector<Resource> resources;
     std::vector<UniformMapping> uniforms;
-    bool viewProjection=false,viewPosition=false,terrainAtlas=false;
+    GLint viewProjection=-1,viewPosition=-1;
+    bool terrainAtlas=false;
     for(GLint i=0;i<count;++i){
         GLchar raw[256]{};
         GLsizei length=0;GLint size=0;GLenum type=0;
         glGetActiveUniform(GLuint(program),GLuint(i),sizeof(raw),&length,&size,&type,raw);
         if(length<=0||size!=1)continue;
         std::string name(raw,size_t(length));
-        viewProjection|=name=="u_viewProj";
-        viewPosition|=name=="ViewPositionAndTime";
+        if(name=="u_viewProj"&&type==GL_FLOAT_MAT4)viewProjection=glGetUniformLocation(GLuint(program),raw);
+        if(name=="ViewPositionAndTime"&&type==GL_FLOAT_VEC4)viewPosition=glGetUniformLocation(GLuint(program),raw);
         terrainAtlas|=name=="s_MatTexture";
         constexpr std::string_view prefix="OptLeviWorld_";
         if(name.starts_with(prefix)&&name.size()>prefix.size()){
@@ -113,11 +115,27 @@ void captureBeforeDraw(){
         if(add("OptLeviShadowDepth",2,Resource::Kind::ShadowDepth,GL_INT_VEC3))continue;
         add("OptLeviShadowColor",2,Resource::Kind::ShadowColor,GL_INT_VEC4);
     }
-    // The supplied 26.52 RenderChunk example has these identifiers. Their
-    // presence is diagnostic only: a combined view-projection matrix is not
-    // the separate Java matrices, and a terrain draw isn't a phase barrier.
-    if(viewProjection&&viewPosition&&terrainAtlas){
-        if(frame.terrainCount++==0)note("Native terrain signature observed (u_viewProj, ViewPositionAndTime, s_MatTexture)");
+    // Recover only the projection component of the observed terrain draw.
+    // A terrain draw is not a phase barrier, and native world coordinates
+    // must not be passed off as Java cameraPosition or model-view values.
+    if(viewProjection>=0&&viewPosition>=0&&terrainAtlas){
+        if(frame.terrainCount++==0){
+            camera::Matrix vp{};
+            std::array<float,4> eye{};
+            glGetUniformfv(GLuint(program),viewProjection,vp.data());
+            glGetUniformfv(GLuint(program),viewPosition,eye.data());
+            camera::Projection p;
+            if(camera::recoverProjection(vp,eye,p)){
+                std::vector<WorldUniform> values(2);
+                values[0].name="gbufferProjection";values[0].glType=GL_FLOAT_MAT4;values[0].floats=p.matrix;
+                values[1].name="gbufferProjectionInverse";values[1].glType=GL_FLOAT_MAT4;values[1].floats=p.inverse;
+                std::string error;
+                if(publishWorldUniforms(values,error)){
+                    frame.captureCount+=2;
+                    note("Native terrain perspective recovered (projection and inverse)");
+                }else note("Native camera capture: "+error);
+            }else note("Native terrain signature observed; projection/eye validation failed");
+        }
     }
     if(resources.empty()&&uniforms.empty())return;
     ++frame.markerCount;
