@@ -524,6 +524,8 @@ bool compilePipeline(std::vector<Pass> const& passes,std::string& error) {
                 historyNeeded[n]=true;available[n]=true;needed[n]=true;
             }
     }
+    bool stagedGraph=false;
+    for(size_t i=0;i<passes.size();++i)stagedGraph|=metadata[i].enabled&&passes[i].deferred;
     bool compositeSeen=false;
     for(size_t i=0;i<passes.size();++i) {
         auto const& pass=passes[i];
@@ -566,9 +568,10 @@ bool compilePipeline(std::vector<Pass> const& passes,std::string& error) {
                 sceneNeeded[n]=true;needed[n]=true;
                 if(p.deferred)deferredInputs[n]=true;
             }
-            if(p.deferred&&n==0&&!produced[n]){
-                // A final-frame backbuffer is never an opaque scene source.
-                deferredInputs[0]=true;sceneNeeded[0]=true;
+            if(stagedGraph&&n==0&&!produced[n]){
+                // A final-frame backbuffer is never a staged G-buffer source.
+                sceneNeeded[0]=true;
+                if(p.deferred)deferredInputs[0]=true;
             }
         }
         if(!p.finalPass)for(auto t:p.targets){available[t]=true;needed[t]=true;produced[t]=true;if(p.deferred)deferredOutputs[t]=true;}
@@ -972,7 +975,7 @@ bool captureRequested(){return wantsNativeCapture.load(std::memory_order_relaxed
 
 Status status() {
     std::lock_guard lock(mu);
-    return {requestedActive.load(),failed,lastStatus};
+    return {requestedActive.load()&&!failed,failed,lastStatus};
 }
 
 static bool captureColorAttachment(unsigned colortex,unsigned framebuffer,unsigned attachment,

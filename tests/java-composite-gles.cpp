@@ -479,6 +479,20 @@ void main(){color=vec4(texture(colortex0,texcoord).rgb,1.0);}
     actual=pixel();require(std::abs(int(actual[0])-51)<=2&&std::abs(int(actual[1])-26)<=2&&
         std::abs(int(actual[2])-77)<=2,"Deferred output not preserved");
     require(deferredTexture(0)==0,"Stale deferred output exposed after swap");
+    clearScene();beforeSwap(32,32);
+    require(!status().active&&status().failed,"Missing opaque phase reported active");
+    require(captureSceneColor(0,opaqueFbo,0,"RGBA8",32,32,captureError),"Returning opaque capture failed");
+    require(renderDeferred(32,32,captureError),"Returning deferred phase failed");
+    require(!renderDeferred(32,32,captureError),"Repeated opaque phase accepted");
+    // Simulate the native material's updated G-buffer after translucency.
+    glBindFramebuffer(GL_FRAMEBUFFER,opaqueFbo);
+    const GLfloat translucentColor[4]={0.8f,0.4f,0.2f,1.0f};
+    glClearBufferfv(GL_COLOR,0,translucentColor);
+    require(captureSceneColor(0,opaqueFbo,0,"RGBA8",32,32,captureError),"Late geometry capture failed");
+    clearScene();beforeSwap(32,32);
+    require(status().active&&!status().failed,"Updated geometry not accepted");
+    actual=pixel();require(std::abs(int(actual[0])-204)<=2&&std::abs(int(actual[1])-102)<=2&&
+        std::abs(int(actual[2])-51)<=2,"Late geometry did not replace deferred buffer");
     glDeleteFramebuffers(1,&opaqueFbo);glDeleteTextures(1,&opaqueTex);
     // Missing geometry input must not turn into a fake color sampler.
     clearScene();

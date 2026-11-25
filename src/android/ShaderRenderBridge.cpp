@@ -22,6 +22,7 @@ using namespace shaderworld;
 std::mutex reportMu;
 std::string lastReport="Native draw bridge not initialized";
 std::atomic<unsigned> hookCount{0};
+struct DeferredSampler { GLuint program; GLint location; unsigned index; };
 struct Frame {
     EGLContext context=EGL_NO_CONTEXT;
     EGLSurface surface=EGL_NO_SURFACE;
@@ -29,6 +30,7 @@ struct Frame {
     std::array<GLuint,128> seen{};
     unsigned seenCount=0,markerCount=0,captureCount=0,terrainCount=0;
     std::string details;
+    std::vector<DeferredSampler> deferredSamplers;
 };
 thread_local Frame frame;
 thread_local unsigned drawNesting=0;
@@ -99,6 +101,13 @@ void captureBeforeDraw(){
         if(name=="ViewPositionAndTime"&&type==GL_FLOAT_VEC4)viewPosition=glGetUniformLocation(GLuint(program),raw);
         terrainAtlas|=name=="s_MatTexture";
         if(name=="OptLeviDeferred"&&type==GL_INT_VEC2){deferredMarker=glGetUniformLocation(GLuint(program),raw);continue;}
+        int deferredIndex=indexOf(name,"s_OptLeviDeferred",16);
+        if(deferredIndex>=0&&type==GL_SAMPLER_2D){
+            auto loc=glGetUniformLocation(GLuint(program),raw);
+            if(loc>=0&&frame.deferredSamplers.size()<256)
+                frame.deferredSamplers.push_back({GLuint(program),loc,unsigned(deferredIndex)});
+            continue;
+        }
         constexpr std::string_view prefix="OptLeviWorld_";
         if(name.starts_with(prefix)&&name.size()>prefix.size()){
             uniforms.push_back({name,name.substr(prefix.size()),type});continue;
@@ -179,10 +188,58 @@ void captureBeforeDraw(){
     }
 }
 
+// Explicit native material samplers may borrow the deferred outputs during
+// every translucent draw. Restore the game's texture and sampler bindings
+// immediately afterward; a missing output never substitutes a fake image.
+struct DeferredInputs {
+    struct Saved { unsigned unit; GLint texture,sampler; };
+    std::vector<Saved> saved;
+    GLint active=GL_TEXTURE0;
+    DeferredInputs(){
+        if(drawNesting!=1||frame.inPresent||frame.deferredSamplers.empty()||
+            !captureRequested()||frame.context!=eglGetCurrentContext()||
+            frame.surface!=eglGetCurrentSurface(EGL_DRAW))return;
+        GLint program=0,maxUnits=0;
+        glGetIntegerv(GL_CURRENT_PROGRAM,&program);
+        glGetIntegerv(GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS,&maxUnits);
+        struct Input { unsigned unit; GLuint texture; };
+        std::vector<Input> inputs;
+        for(auto const& binding:frame.deferredSamplers)if(binding.program==GLuint(program)){
+            GLuint texture=deferredTexture(binding.index);
+            GLint unit=-1;glGetUniformiv(GLuint(program),binding.location,&unit);
+            if(!texture||unit<0||unit>=maxUnits){
+                note("Deferred material input unavailable: "+std::to_string(binding.index));return;
+            }
+            if(std::any_of(inputs.begin(),inputs.end(),[&](auto const& i){return i.unit==unsigned(unit);})){
+                note("Conflicting deferred sampler units");return;
+            }
+            inputs.push_back({unsigned(unit),texture});
+        }
+        if(inputs.empty())return;
+        glGetIntegerv(GL_ACTIVE_TEXTURE,&active);
+        for(auto const& input:inputs){
+            glActiveTexture(GL_TEXTURE0+input.unit);
+            Saved old{input.unit,0,0};
+            glGetIntegerv(GL_TEXTURE_BINDING_2D,&old.texture);
+            glGetIntegerv(GL_SAMPLER_BINDING,&old.sampler);
+            saved.push_back(old);
+            glBindSampler(input.unit,0);glBindTexture(GL_TEXTURE_2D,input.texture);
+        }
+        glActiveTexture(GLenum(active));
+    }
+    ~DeferredInputs(){
+        for(auto const& old:saved){
+            glActiveTexture(GL_TEXTURE0+old.unit);
+            glBindTexture(GL_TEXTURE_2D,GLuint(old.texture));glBindSampler(old.unit,GLuint(old.sampler));
+        }
+        if(!saved.empty())glActiveTexture(GLenum(active));
+    }
+};
 template<class Fn,class... Args>
 void draw(Fn original,Args... args){
     struct Guard { Guard(){++drawNesting;} ~Guard(){--drawNesting;} } guard;
     if(drawNesting==1)captureBeforeDraw();
+    DeferredInputs inputs;
     original(args...);
 }
 
@@ -249,7 +306,7 @@ PresentGuard::PresentGuard(){
     }
     frame.context=ctx;frame.surface=surface;
     frame.seenCount=frame.markerCount=frame.captureCount=frame.terrainCount=0;
-    frame.details.clear();
+    frame.details.clear();frame.deferredSamplers.clear();
 }
 PresentGuard::~PresentGuard(){frame.inPresent=false;}
 std::string report(){std::lock_guard lock(reportMu);return lastReport;}
