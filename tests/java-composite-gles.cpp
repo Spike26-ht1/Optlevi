@@ -524,6 +524,60 @@ void main(){color=vec4(texture(colortex0,texcoord).rgb,1.0);}
     actual=pixel();require(std::abs(int(actual[0])-204)<=2&&std::abs(int(actual[1])-102)<=2&&
         std::abs(int(actual[2])-51)<=2,"Late geometry did not replace deferred buffer");
     glDeleteFramebuffers(1,&opaqueFbo);glDeleteTextures(1,&opaqueTex);
+    // A mapped indexed mesh runs a selected geometry vertex+fragment
+    // pair into real MRT/depth attachments, without writing the backbuffer.
+    Pass meshPack=end;
+    meshPack.geometryPrograms.push_back({"gbuffers_terrain",R"(#version 300 es
+in vec4 optPosition;
+in vec4 optColor;
+uniform mat4 optProjection;
+out vec4 tint;
+void main(){gl_Position=optProjection*optPosition;tint=optColor;}
+)",R"(#version 300 es
+precision highp float;
+in vec4 tint;
+layout(location=0) out vec4 optRouteTarget0;
+void main(){optRouteTarget0=tint;}
+)",false});
+    requestPipeline({meshPack},"Mapped geometry fixture");
+    clearScene();beforeSwap(32,32);
+    GLuint meshFbo=0,meshColor=0,meshDepth=0,meshVao=0,meshVbo=0,meshEbo=0;
+    glGenFramebuffers(1,&meshFbo);glBindFramebuffer(GL_FRAMEBUFFER,meshFbo);
+    glGenTextures(1,&meshColor);glBindTexture(GL_TEXTURE_2D,meshColor);
+    glTexStorage2D(GL_TEXTURE_2D,1,GL_RGBA8,32,32);
+    glFramebufferTexture2D(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_TEXTURE_2D,meshColor,0);
+    glGenRenderbuffers(1,&meshDepth);glBindRenderbuffer(GL_RENDERBUFFER,meshDepth);
+    glRenderbufferStorage(GL_RENDERBUFFER,GL_DEPTH_COMPONENT24,32,32);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER,GL_DEPTH_ATTACHMENT,GL_RENDERBUFFER,meshDepth);
+    glDrawBuffers(1,&opaqueDraw);glReadBuffer(GL_COLOR_ATTACHMENT0);
+    require(glCheckFramebufferStatus(GL_FRAMEBUFFER)==GL_FRAMEBUFFER_COMPLETE,"Mesh FBO incomplete");
+    glClearColor(0,0,0,1);glClearDepthf(1);glDepthMask(GL_TRUE);
+    glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);glEnable(GL_DEPTH_TEST);
+    glGenVertexArrays(1,&meshVao);glBindVertexArray(meshVao);
+    glGenBuffers(1,&meshVbo);glBindBuffer(GL_ARRAY_BUFFER,meshVbo);
+    const float verts[]={-1,-1,0,1, 0.25f,0.5f,0.75f,1,
+                         3,-1,0,1, 0.25f,0.5f,0.75f,1,
+                        -1, 3,0,1, 0.25f,0.5f,0.75f,1};
+    glBufferData(GL_ARRAY_BUFFER,sizeof(verts),verts,GL_STATIC_DRAW);
+    glVertexAttribPointer(0,4,GL_FLOAT,GL_FALSE,8*sizeof(float),nullptr);
+    glVertexAttribPointer(1,4,GL_FLOAT,GL_FALSE,8*sizeof(float),reinterpret_cast<void*>(4*sizeof(float)));
+    glEnableVertexAttribArray(0);glEnableVertexAttribArray(1);
+    glGenBuffers(1,&meshEbo);glBindBuffer(GL_ELEMENT_ARRAY_BUFFER,meshEbo);
+    const unsigned short indices[]={0,1,2};glBufferData(GL_ELEMENT_ARRAY_BUFFER,sizeof(indices),indices,GL_STATIC_DRAW);
+    WorldUniform transform;transform.name="optProjection";transform.glType=GL_FLOAT_MAT4;
+    transform.floats={1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1};
+    GeometryDraw mesh;mesh.program="gbuffers_terrain";mesh.vao=meshVao;mesh.framebuffer=meshFbo;
+    mesh.width=mesh.height=32;mesh.count=3;mesh.indexType=GL_UNSIGNED_SHORT;
+    mesh.uniforms={transform};
+    require(drawGeometry(mesh,captureError),"Mapped geometry draw failed");
+    glReadPixels(16,16,1,1,GL_RGBA,GL_UNSIGNED_BYTE,actual.data());
+    require(std::abs(int(actual[0])-64)<=2&&std::abs(int(actual[1])-128)<=2&&
+        std::abs(int(actual[2])-191)<=2,"Geometry output wrong");
+    mesh.uniforms.clear();
+    require(!drawGeometry(mesh,captureError),"Missing draw transform accepted");
+    glDisable(GL_DEPTH_TEST);glBindFramebuffer(GL_FRAMEBUFFER,0);glBindVertexArray(0);
+    glDeleteBuffers(1,&meshVbo);glDeleteBuffers(1,&meshEbo);glDeleteVertexArrays(1,&meshVao);
+    glDeleteRenderbuffers(1,&meshDepth);glDeleteTextures(1,&meshColor);glDeleteFramebuffers(1,&meshFbo);
     // Missing geometry input must not turn into a fake color sampler.
     clearScene();
     Pass unavailable{"final",fragment(R"(

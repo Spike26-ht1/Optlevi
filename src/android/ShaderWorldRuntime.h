@@ -101,6 +101,18 @@ struct GeometryHandle {
     bool shadow=false;
 };
 bool acquireGeometryProgram(std::string const& name,GeometryHandle& result,std::string& error);
+// Explicit, mapped native mesh and dedicated G-buffer/light-space FBO.
+// Attachment slots must match the reflected GeometryHandle target list.
+struct GeometryDraw {
+    std::string program;
+    unsigned vao=0,framebuffer=0;
+    int width=0,height=0,first=0,count=0,instances=1;
+    unsigned indexType=0; // 0 for arrays; otherwise GL_UNSIGNED_SHORT/INT
+    std::uintptr_t indexOffset=0;
+    std::vector<WorldUniform> uniforms;
+    std::vector<std::pair<std::string,unsigned>> textures2D;
+};
+bool drawGeometry(GeometryDraw const& draw,std::string& error);
 void beforeSwap(int width,int height);
 void stop();
 } // namespace modmenu::android::shaderworld

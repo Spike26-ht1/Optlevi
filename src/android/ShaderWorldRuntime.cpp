@@ -1311,6 +1311,148 @@ bool acquireGeometryProgram(std::string const& name,GeometryHandle& result,std::
     geometryNames.push_back(name);geometryHandles.push_back(g);result=std::move(g);return true;
 }
 
+bool drawGeometry(GeometryDraw const& draw,std::string& error){
+    GeometryHandle g;
+    if(!acquireGeometryProgram(draw.program,g,error))return false;
+    if(!draw.vao||!glIsVertexArray(draw.vao)||!draw.framebuffer||
+       !glIsFramebuffer(draw.framebuffer)||draw.width<=0||draw.height<=0||
+       draw.width>4096||draw.height>4096||draw.count<=0||draw.first<0||draw.instances<=0||
+       (draw.indexType&&draw.indexType!=GL_UNSIGNED_SHORT&&draw.indexType!=GL_UNSIGNED_INT)){
+        error="Invalid native geometry draw";return false;
+    }
+    if(draw.uniforms.size()>128||draw.textures2D.size()>16){
+        error="Native geometry binding budget exceeded";return false;
+    }
+    SavedState saved;
+    std::vector<GLenum> oldDraws;
+    bool changed=false;
+    auto finish=[&](bool ok,std::string message){
+        if(changed){
+            glBindFramebuffer(GL_DRAW_FRAMEBUFFER,draw.framebuffer);
+            glDrawBuffers(GLsizei(oldDraws.size()),oldDraws.data());
+        }
+        saved.restore();
+        if(!ok)error=std::move(message);
+        return ok;
+    };
+    glBindVertexArray(draw.vao);
+    for(auto const& attr:g.attributes){
+        GLint enabled=0,buffer=0;
+        glGetVertexAttribiv(attr.second,GL_VERTEX_ATTRIB_ARRAY_ENABLED,&enabled);
+        glGetVertexAttribiv(attr.second,GL_VERTEX_ATTRIB_ARRAY_BUFFER_BINDING,&buffer);
+        if(!enabled||!buffer)return finish(false,"Missing mapped geometry attribute "+attr.first);
+    }
+    if(draw.indexType){
+        GLint buffer=0;glGetIntegerv(GL_ELEMENT_ARRAY_BUFFER_BINDING,&buffer);
+        if(!buffer)return finish(false,"Missing geometry index buffer");
+        GLint64 bytes=0;glGetBufferParameteri64v(GL_ELEMENT_ARRAY_BUFFER,GL_BUFFER_SIZE,&bytes);
+        unsigned stride=draw.indexType==GL_UNSIGNED_SHORT?2:4;
+        if(draw.indexOffset%stride||bytes<0||draw.indexOffset>std::uint64_t(bytes)||
+           std::uint64_t(draw.count)*stride>std::uint64_t(bytes)-draw.indexOffset)
+            return finish(false,"Geometry index range exceeds buffer");
+    }
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER,draw.framebuffer);
+    GLint maxDraw=0,maxColor=0;
+    glGetIntegerv(GL_MAX_DRAW_BUFFERS,&maxDraw);
+    glGetIntegerv(GL_MAX_COLOR_ATTACHMENTS,&maxColor);
+    if(g.targets.size()>size_t(maxDraw)||g.targets.size()>size_t(maxColor))
+        return finish(false,"Geometry route exceeds native attachments");
+    std::vector<GLenum> routes;
+    std::vector<GLuint> attachedTextures;
+    auto attachment=[&](GLenum slot,bool required){
+        GLint type=0,object=0;
+        glGetFramebufferAttachmentParameteriv(GL_DRAW_FRAMEBUFFER,slot,
+            GL_FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE,&type);
+        if(type==GL_NONE)return !required;
+        if(type==GL_TEXTURE){
+            glGetFramebufferAttachmentParameteriv(GL_DRAW_FRAMEBUFFER,slot,
+                GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME,&object);
+            attachedTextures.push_back(GLuint(object));
+        }
+        return true;
+    };
+    for(int i=0;i<maxColor;++i){
+        GLenum slot=GL_COLOR_ATTACHMENT0+i;
+        bool required=size_t(i)<g.targets.size();
+        if(!attachment(slot,required))return finish(false,"Missing geometry color target");
+        if(required)routes.push_back(slot);
+    }
+    if(!attachment(GL_DEPTH_ATTACHMENT,true))return finish(false,"Missing geometry depth target");
+    attachment(GL_STENCIL_ATTACHMENT,false);
+    for(int i=0;i<maxDraw;++i){
+        GLint value=0;glGetIntegerv(GL_DRAW_BUFFER0+i,&value);
+        oldDraws.push_back(GLenum(value));
+    }
+    glDrawBuffers(GLsizei(routes.size()),routes.data());changed=true;
+    if(glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER)!=GL_FRAMEBUFFER_COMPLETE)
+        return finish(false,"Incomplete geometry framebuffer");
+    struct Input { GLint loc; GLuint texture; GLenum type; };
+    std::vector<Input> inputs;
+    std::vector<std::pair<WorldBinding,WorldUniform>> values;
+    GLint count=0;glGetProgramiv(g.program,GL_ACTIVE_UNIFORMS,&count);
+    for(GLint i=0;i<count;++i){
+        char name[256]{};GLsizei length=0;GLint size=0;GLenum type=0;
+        glGetActiveUniform(g.program,GLuint(i),sizeof(name),&length,&size,&type,name);
+        GLint loc=glGetUniformLocation(g.program,name);
+        if(size!=1||loc<0)return finish(false,"Unsupported geometry array/block "+std::string(name));
+        if(type==GL_SAMPLER_2D||type==GL_SAMPLER_2D_SHADOW){
+            auto tex=std::find_if(draw.textures2D.begin(),draw.textures2D.end(),[&](auto const& t){return t.first==name;});
+            GLuint object=tex==draw.textures2D.end()?0:tex->second;
+            if(!object){
+                auto pack=std::find_if(packGpu.begin(),packGpu.end(),[&](auto const& t){return t.sampler==name;});
+                if(pack!=packGpu.end())object=pack->texture;
+            }
+            if(!object||!glIsTexture(object)||inputs.size()>=kBuffers||
+               std::find(attachedTextures.begin(),attachedTextures.end(),object)!=attachedTextures.end())
+                return finish(false,"Missing or feedback geometry texture "+std::string(name));
+            inputs.push_back({loc,object,type});
+        }else{
+            auto value=named(draw.uniforms,name);
+            if(!value)value=findWorldUniform(name);
+            int components=uniformComponents(type);
+            if(!value||value->glType!=type||!components)return finish(false,"Missing geometry uniform "+std::string(name));
+            if(!integerUniform(type))for(int j=0;j<components;++j)
+                if(!std::isfinite(value->floats[j]))return finish(false,"Nonfinite geometry uniform "+std::string(name));
+            values.push_back({{name,type,loc},*value});
+        }
+    }
+    GLint vertexUnits=0,fragmentUnits=0,combinedUnits=0;
+    glGetIntegerv(GL_MAX_VERTEX_TEXTURE_IMAGE_UNITS,&vertexUnits);
+    glGetIntegerv(GL_MAX_TEXTURE_IMAGE_UNITS,&fragmentUnits);
+    glGetIntegerv(GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS,&combinedUnits);
+    if(inputs.size()>size_t(combinedUnits)||inputs.size()>size_t(fragmentUnits))
+        return finish(false,"Insufficient geometry texture units");
+    if(glGetError()!=GL_NO_ERROR)return finish(false,"Native geometry validation generated GL error");
+    // The adapter controls depth/blend/culling, and owns the geometry FBO.
+    // This call never writes the game's presentation framebuffer.
+    glUseProgram(g.program);glViewport(0,0,draw.width,draw.height);
+    GLuint compare=0;
+    if(std::any_of(inputs.begin(),inputs.end(),[](auto const& t){return t.type==GL_SAMPLER_2D_SHADOW;})){
+        glGenSamplers(1,&compare);
+        glSamplerParameteri(compare,GL_TEXTURE_COMPARE_MODE,GL_COMPARE_REF_TO_TEXTURE);
+        glSamplerParameteri(compare,GL_TEXTURE_COMPARE_FUNC,GL_LEQUAL);
+        glSamplerParameteri(compare,GL_TEXTURE_MIN_FILTER,GL_NEAREST);
+        glSamplerParameteri(compare,GL_TEXTURE_MAG_FILTER,GL_NEAREST);
+        glSamplerParameteri(compare,GL_TEXTURE_WRAP_S,GL_CLAMP_TO_EDGE);
+        glSamplerParameteri(compare,GL_TEXTURE_WRAP_T,GL_CLAMP_TO_EDGE);
+    }
+    for(unsigned i=0;i<inputs.size();++i){
+        auto const& t=inputs[i];
+        glActiveTexture(GL_TEXTURE0+i);glBindTexture(GL_TEXTURE_2D,t.texture);
+        glBindSampler(i,t.type==GL_SAMPLER_2D_SHADOW?compare:0);glUniform1i(t.loc,GLint(i));
+    }
+    for(auto const& v:values)uploadWorldUniform(v.first,v.second);
+    bool bound=glGetError()==GL_NO_ERROR;
+    if(bound){
+        if(draw.indexType)glDrawElementsInstanced(GL_TRIANGLES,draw.count,draw.indexType,
+            reinterpret_cast<void const*>(draw.indexOffset),draw.instances);
+        else glDrawArraysInstanced(GL_TRIANGLES,draw.first,draw.count,draw.instances);
+    }
+    bool ok=bound&&glGetError()==GL_NO_ERROR;
+    if(compare)glDeleteSamplers(1,&compare);
+    return finish(ok,ok?"":"Native Java geometry draw failed");
+}
+
 bool renderDeferred(int width,int height,std::string& error){
     if(eglGetCurrentContext()==EGL_NO_CONTEXT||eglGetCurrentContext()!=context||
         eglGetCurrentSurface(EGL_DRAW)!=pipelineSurface||!requestedActive.load()){
