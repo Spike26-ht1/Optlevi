@@ -251,6 +251,8 @@ bool renderedFrame=false;
 // Render-thread-owned selected source; retain it across temporary absence
 // of native world resources, but never render with stale attachments.
 std::vector<Pass> selectedSource;
+std::vector<GeometryHandle> geometryHandles;
+std::vector<std::string> geometryNames;
 std::string selectedLabel,lastResourceSignature;
 bool waitingForResources=false,attemptedResources=false;
 EGLSurface pipelineSurface=EGL_NO_SURFACE;
@@ -264,6 +266,7 @@ void statusMessage(bool ok,std::string message) {
 void abandonContext() {
     // Names from the previous EGL context are invalid in this one.
     context=eglGetCurrentContext();
+    geometryHandles.clear();geometryNames.clear();
     pipeline.clear();
     packGpu.clear();packGpuBytes=0;frameCounter=0;
     textures={};front={};needed={};mipNeeded={};historyNeeded={};sceneNeeded={};deferredInputs={};deferredOutputs={};deferredReady=false;mipValid={};colorFormats={};triangleVao=passFbo=outputTex=shadowCompareSampler=0;
@@ -272,6 +275,10 @@ void abandonContext() {
     requestedActive=false;
 }
 
+void discardGeometry(){
+    for(auto const& g:geometryHandles)if(g.program)glDeleteProgram(g.program);
+    geometryHandles.clear();geometryNames.clear();
+}
 void discardGpu() {
     for(auto& p:pipeline) if(p.program)glDeleteProgram(p.program);
     pipeline.clear();
@@ -971,7 +978,15 @@ void requestPipeline(std::vector<Pass> passes,std::string label) {
     for(size_t i=0;i<passes.size();++i){
         auto const& p=passes[i];
         total+=p.fragment.size()+p.vertex.size()+p.enabledProbe.size();
-        if(i!=0&&(!p.packTextures.empty()||!p.colorFormats.empty()))badImages=true;
+        if(i!=0&&(!p.packTextures.empty()||!p.colorFormats.empty()||!p.geometryPrograms.empty()))badImages=true;
+        if(p.geometryPrograms.size()>24)badImages=true;
+        std::vector<std::string> names;
+        for(auto const& g:p.geometryPrograms){
+            if(g.name.empty()||g.name.size()>64||g.vertex.empty()||g.fragment.empty()||
+                std::find(names.begin(),names.end(),g.name)!=names.end())badImages=true;
+            names.push_back(g.name);
+            total+=g.vertex.size()+g.fragment.size();
+        }
         if(p.colorFormats.size()>kBuffers)badImages=true;
         std::array<bool,kBuffers> formatSeen{};
         for(auto const& entry:p.colorFormats){
@@ -986,7 +1001,7 @@ void requestPipeline(std::vector<Pass> passes,std::string label) {
         }
     }
     std::lock_guard lock(mu);
-    if(passes.empty()||passes.size()>kMaxPasses||total>4*1024*1024||badImages){
+    if(passes.empty()||passes.size()>kMaxPasses||total>12*1024*1024||badImages){
         pendingAction=2;requestedActive=false;wantsNativeCapture=false;
         pendingPasses.clear();
         failed=true;lastStatus="Java composite graph exceeds pass/source budget";
@@ -1237,6 +1252,65 @@ bool captureShadowDepth(unsigned index,unsigned framebuffer,unsigned internalFor
     return captureDepthAttachment(3+index,framebuffer,internalFormat,width,height,error);
 }
 
+bool acquireGeometryProgram(std::string const& name,GeometryHandle& result,std::string& error){
+    result={};
+    if(eglGetCurrentContext()==EGL_NO_CONTEXT||eglGetCurrentContext()!=context||
+       eglGetCurrentSurface(EGL_DRAW)!=pipelineSurface||!captureRequested()||selectedSource.empty()){
+        error="No selected Java geometry graph on this render surface";return false;
+    }
+    {
+        std::lock_guard lock(mu);
+        if(pendingAction!=0){error="Java shader selection is changing";return false;}
+    }
+    for(size_t i=0;i<geometryNames.size();++i)if(geometryNames[i]==name){
+        result=geometryHandles[i];return true;
+    }
+    auto const& sources=selectedSource.front().geometryPrograms;
+    auto source=std::find_if(sources.begin(),sources.end(),[&](auto const& g){return g.name==name;});
+    if(source==sources.end()){error="Java geometry program unavailable: "+name;return false;}
+    GLuint vs=compile(GL_VERTEX_SHADER,source->vertex,error);
+    if(!vs){error=name+" vertex: "+error;return false;}
+    GLuint fs=compile(GL_FRAGMENT_SHADER,source->fragment,error);
+    if(!fs){glDeleteShader(vs);error=name+" fragment: "+error;return false;}
+    GLuint program=glCreateProgram();
+    if(!program){glDeleteShader(vs);glDeleteShader(fs);error="Cannot create geometry program";return false;}
+    glAttachShader(program,vs);glAttachShader(program,fs);
+    // Fixed semantic locations for a separately constructed real geometry VAO.
+    static char const* attrs[]={"optPosition","optColor","optNormal","optUV0","optUV1",
+        "mc_Entity","mc_midTexCoord","at_tangent","at_midBlock"};
+    for(unsigned i=0;i<sizeof(attrs)/sizeof(attrs[0]);++i)glBindAttribLocation(program,i,attrs[i]);
+    glLinkProgram(program);glDeleteShader(vs);glDeleteShader(fs);
+    auto fail=[&](std::string message){glDeleteProgram(program);error=name+": "+message;return false;};
+    GLint ok=0;glGetProgramiv(program,GL_LINK_STATUS,&ok);
+    if(!ok)return fail(shaderLog(program,true));
+    GeometryHandle g;g.program=program;g.shadow=source->shadow;
+    GLint count=0;glGetProgramiv(program,GL_ACTIVE_ATTRIBUTES,&count);
+    for(GLint i=0;i<count;++i){
+        GLchar attr[128]{};GLsizei len=0;GLint size=0;GLenum type=0;
+        glGetActiveAttrib(program,GLuint(i),sizeof(attr),&len,&size,&type,attr);
+        auto loc=glGetAttribLocation(program,attr);
+        if(loc<0)continue;
+        bool known=false;
+        for(unsigned j=0;j<sizeof(attrs)/sizeof(attrs[0]);++j)
+            if(std::string(attr)==attrs[j]&&unsigned(loc)==j&&size==1)known=true;
+        if(!known)return fail("Unsupported geometry vertex input "+std::string(attr));
+        g.attributes.emplace_back(attr,unsigned(loc));
+    }
+    std::array<int,16> routes{};routes.fill(-1);
+    GLint limit=0;glGetIntegerv(GL_MAX_DRAW_BUFFERS,&limit);
+    for(unsigned i=0;i<16;++i){
+        auto out="optRouteTarget"+std::to_string(i);
+        auto loc=glGetFragDataLocation(program,out.c_str());
+        if(loc<0)continue;
+        if(loc>=16||loc>=limit||routes[unsigned(loc)]!=-1)return fail("Invalid geometry output route");
+        routes[unsigned(loc)]=int(i);
+    }
+    bool gap=false;
+    for(auto i:routes){if(i<0)gap=true;else{if(gap)return fail("Noncontiguous geometry route");g.targets.push_back(unsigned(i));}}
+    if(g.targets.empty())return fail("No reflected geometry output");
+    geometryNames.push_back(name);geometryHandles.push_back(g);result=std::move(g);return true;
+}
+
 bool renderDeferred(int width,int height,std::string& error){
     if(eglGetCurrentContext()==EGL_NO_CONTEXT||eglGetCurrentContext()!=context||
         eglGetCurrentSurface(EGL_DRAW)!=pipelineSurface||!requestedActive.load()){
@@ -1261,7 +1335,7 @@ void beforeSwap(int width,int height) {
     ConsumeDepthFrame consumeDepth;
     struct EndDeferredFrame { ~EndDeferredFrame(){deferredReady=false;} } endDeferredFrame;
     if(context!=now||pipelineSurface!=surface){
-        if(context!=now)abandonContext();else discardGpu();
+        if(context!=now)abandonContext();else{discardGeometry();discardGpu();}
         pipelineSurface=surface;
         if(!selectedSource.empty()){
             waitingForResources=true;attemptedResources=false;
@@ -1277,7 +1351,7 @@ void beforeSwap(int width,int height) {
         if(action==1){passes=std::move(pendingPasses);label=std::move(pendingLabel);}
     }
     if(action==2){
-        discardGpu();
+        discardGeometry();discardGpu();
         for(auto& d:depthFrame.images)releaseDepth(d);
         for(auto& d:depthFrame.colors)releaseColor(d);
         selectedSource.clear();selectedLabel.clear();lastResourceSignature.clear();
@@ -1285,6 +1359,7 @@ void beforeSwap(int width,int height) {
         return;
     }
     if(action==1){
+        discardGeometry();
         depthFrame.previousCamera.clear();deriveCamera();
         selectedSource=std::move(passes);selectedLabel=std::move(label);
         waitingForResources=true;attemptedResources=false;

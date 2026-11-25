@@ -201,6 +201,16 @@ void main(){
     assert(numeric.find("1.0.0")==std::string::npos);
     assert(numeric.find("1.0 / float(samples)")!=std::string::npos);
     assert(optTranslateBslNumeric("1.0 / samples")=="1.0 / samples");
+    auto geometry=optTranslateGeometryVertex("#version 120\nattribute vec4 mc_Entity;\nvarying vec4 color;\nvoid main(){color=gl_Color;gl_Position=ftransform();}\n");
+    assert(geometry.find("in vec4 optPosition;")!=std::string::npos);
+    assert(geometry.find("in vec4 mc_Entity;")!=std::string::npos);
+    assert(geometry.find("gl_VertexID")==std::string::npos);
+    assert(geometry.find("optGeometryTransform()")!=std::string::npos);
+    std::string geometryFragment;
+    assert(optTranslateGeometryFragment("#version 120\nuniform sampler2D texture;\nvoid main(){\n/* DRAWBUFFERS:13 */\ngl_FragData[0]=texture2D(texture,vec2(0.5));gl_FragData[1]=vec4(1.0);\n}\n",geometryFragment,error));
+    assert(geometryFragment.find("uniform sampler2D optGeometryAtlas;")!=std::string::npos);
+    assert(geometryFragment.find("texture(optGeometryAtlas,")!=std::string::npos);
+    assert(geometryFragment.find("optRouteTarget3")!=std::string::npos);
     std::vector<std::pair<unsigned,std::string>> formats;
     assert(optReadColorFormats("/*\nconst int colortex0Format = R11F_G11F_B10F; // HDR\nconst int gaux3Format = RGBA16;\n*/\n// const int colortex1Format = R8;\n",formats,error));
     assert(formats.size()==2&&formats[0].first==0&&formats[0].second=="R11F_G11F_B10F");

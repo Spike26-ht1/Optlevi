@@ -14,6 +14,10 @@ struct PackTexture {
     bool nearest=false;
     std::vector<std::uint8_t> rgba;
 };
+struct GeometryProgram {
+    std::string name,vertex,fragment;
+    bool shadow=false;
+};
 struct Pass {
     std::string name;
     std::string fragment;
@@ -32,6 +36,8 @@ struct Pass {
     std::vector<std::pair<unsigned,std::string>> colorFormats;
     // Deferred programs run at the opaque/translucent boundary, not at swap.
     bool deferred=false;
+    // Selected pack geometry/shadow source pairs, shared on first pass.
+    std::vector<GeometryProgram> geometryPrograms;
     // Clear=false history is reflected via enabledProbe; no history buffer
     // is usable without an actual writer in the graph.
 };
@@ -86,6 +92,15 @@ bool captureProgramUniforms(unsigned program,std::vector<UniformMapping> const& 
 // adapter must consume them using the pack's actual G-buffer semantics.
 bool renderDeferred(int width,int height,std::string& error);
 unsigned deferredTexture(unsigned colortex);
+// A geometry program is not a fullscreen pass. Its attribute ABI and
+// output locations are reflected for a native adapter with real meshes.
+struct GeometryHandle {
+    unsigned program=0;
+    std::vector<unsigned> targets; // colortex indices, or shadowcolor indices
+    std::vector<std::pair<std::string,unsigned>> attributes;
+    bool shadow=false;
+};
+bool acquireGeometryProgram(std::string const& name,GeometryHandle& result,std::string& error);
 void beforeSwap(int width,int height);
 void stop();
 } // namespace modmenu::android::shaderworld

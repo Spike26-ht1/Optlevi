@@ -527,6 +527,66 @@ static bool optTranslateRoutedComposite(std::string source,bool originalVertex,
 }
 
 
+// Unlike fullscreen translation, geometry uses actual mapped VAO attributes,
+// native per-draw transforms and texture transforms. No screen-space vertex
+// synthesis or identity camera is permitted.
+static std::string optGeometryLegacyNames(std::string source){
+    optReplaceIdentifier(source,"texture","optGeometryAtlas");
+    optReplaceAll(source,"texture2DGradARB(","textureGrad(");
+    optReplaceAll(source,"texture2DLodARB(","optTexture2DLod(");
+    optReplaceAll(source,"texture2DProj(","textureProj(");
+    return source;
+}
+static std::string optTranslateGeometryVertex(std::string source){
+    std::istringstream input(source);std::string line,clean;
+    while(std::getline(input,line)){
+        auto at=line.find_first_not_of(" \t\r");
+        if(at!=std::string::npos&&(line.compare(at,8,"#version")==0||
+            line.compare(at,36,"#extension GL_ARB_shader_texture_lod")==0||
+            line.compare(at,41,"#extension GL_ARB_shader_image_load_store")==0)){
+            clean+='\n';continue;
+        }
+        clean+=line;clean+='\n';
+    }
+    clean=optGeometryLegacyNames(std::move(clean));
+    optReplaceIdentifier(clean,"varying","out");
+    optReplaceIdentifier(clean,"attribute","in");
+    optReplaceIdentifier(clean,"gl_Vertex","optPosition");
+    optReplaceIdentifier(clean,"gl_Color","optColor");
+    optReplaceIdentifier(clean,"gl_Normal","optNormal");
+    optReplaceIdentifier(clean,"gl_MultiTexCoord0","optUV0");
+    optReplaceIdentifier(clean,"gl_MultiTexCoord1","optUV1");
+    optReplaceIdentifier(clean,"gl_ModelViewMatrix","optModelView");
+    optReplaceIdentifier(clean,"gl_ProjectionMatrix","optProjection");
+    optReplaceIdentifier(clean,"gl_ModelViewProjectionMatrix","optModelViewProjection");
+    optReplaceIdentifier(clean,"gl_NormalMatrix","optNormalMatrix");
+    optReplaceAll(clean,"gl_TextureMatrix[0]","optTextureMatrix0");
+    optReplaceAll(clean,"gl_TextureMatrix[1]","optTextureMatrix1");
+    optReplaceIdentifier(clean,"ftransform","optGeometryTransform");
+    optReplaceAll(clean,"texture2D(","texture(");
+    optReplaceAll(clean,"textureCube(","texture(");
+    optReplaceAll(clean,"texture2DLod(","optTexture2DLod(");
+    optReplaceAll(clean,"shadow2D(","optShadow2D(");
+    return optGlesCompatibilityHeader()+std::string(R"GLSL(
+in vec4 optPosition;
+in vec4 optColor;
+in vec3 optNormal;
+in vec4 optUV0;
+in vec4 optUV1;
+uniform mat4 optModelView;
+uniform mat4 optProjection;
+uniform mat4 optModelViewProjection;
+uniform mat3 optNormalMatrix;
+uniform mat4 optTextureMatrix0;
+uniform mat4 optTextureMatrix1;
+vec4 optGeometryTransform(){return optProjection*optModelView*optPosition;}
+)GLSL")+optTranslateGlobalInitializers(optTranslateBslNumeric(std::move(clean)));
+}
+static bool optTranslateGeometryFragment(std::string source,std::string& translated,std::string& error){
+    source=optGeometryLegacyNames(std::move(source));
+    return optTranslateRoutedComposite(std::move(source),false,translated,error);
+}
+
 // Use the driver preprocessor to resolve shader option flags in the same
 // expanded fragment source and Java profile. Only boolean option expressions
 // are supported; fail closed on other property expression syntax.
@@ -867,6 +927,39 @@ static bool optBuildJavaPipeline(
     for(unsigned i=1;i<=22;++i)
         if(!append("composite"+std::to_string(i),false))return false;
     if(!append("final",true))return false;
+    // Geometry and shadow are separate linked programs, not fullscreen
+    // passes. Load actual original vertex/fragment pairs for the adapter.
+    // Their active attributes and uniform resources will be reflected on
+    // the render thread. The existing combined source budget also covers them.
+    for(auto const* name:{"gbuffers_basic","gbuffers_textured","gbuffers_terrain",
+        "gbuffers_water","gbuffers_entities","gbuffers_entities_translucent",
+        "gbuffers_block","gbuffers_hand","gbuffers_hand_water","gbuffers_skybasic",
+        "gbuffers_skytextured","gbuffers_clouds","gbuffers_weather",
+        "gbuffers_armor_glint","gbuffers_beaconbeam","gbuffers_damagedblock",
+        "gbuffers_entities_glowing","gbuffers_spidereyes","shadow","shadow_solid",
+        "shadow_cutout","shadow_water","shadow_entities"}){
+        std::string member,raw;
+        if(!resolve(name,member,raw))continue;
+        std::string fragmentSource,vertexSource;
+        std::set<std::string> stack;size_t bytes=0;
+        if(!optExpandJavaMember(pack,member,fragmentSource,stack,bytes,0)){
+            error=gOptJavaSourceError;return false;
+        }
+        auto vertexMember=member.substr(0,member.size()-4)+".vsh";
+        stack.clear();bytes=0;
+        if(!optExpandJavaMember(pack,vertexMember,vertexSource,stack,bytes,0)){
+            error=vertexMember+": "+gOptJavaSourceError;return false;
+        }
+        modmenu::android::shaderworld::GeometryProgram program;
+        program.name=name;program.shadow=program.name.rfind("shadow",0)==0;
+        program.vertex=optTranslateGeometryVertex(std::move(vertexSource));
+        if(!optTranslateGeometryFragment(std::move(fragmentSource),program.fragment,error)){
+            error=member+": "+error;return false;
+        }
+        total+=program.vertex.size()+program.fragment.size();
+        if(total>12*1024*1024){error="Java geometry source budget exceeded";return false;}
+        passes.front().geometryPrograms.push_back(std::move(program));
+    }
     passes.front().colorFormats=std::move(colorFormats);
     if(!optLoadCompositeTextures(pack,properties,passes.front().packTextures,error)){
         passes.clear();return false;
