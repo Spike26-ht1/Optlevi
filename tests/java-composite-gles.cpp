@@ -409,6 +409,36 @@ void main(){color=vec4(gbufferProjection[0][0],cameraPosition.x,float(eyeBrightn
     clearScene();beforeSwap(32,32);
     require(status().active&&!status().failed,"Main menu selection did not activate in world");
     glUseProgram(0);glDeleteProgram(nativeProgram);
+    // Inverse/previous values derive from actual Java-convention current
+    // matrices. History advances only after successful presentation.
+    WorldUniform pose;pose.name="gbufferModelView";pose.glType=GL_FLOAT_MAT4;
+    pose.floats={2,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
+    WorldUniform position;position.name="cameraPosition";position.glType=GL_FLOAT_VEC3;
+    position.floats[0]=0.25f;
+    Pass cameraHistory{"final",fragment(R"(
+uniform mat4 gbufferModelViewInverse;
+uniform mat4 gbufferPreviousModelView;
+uniform vec3 previousCameraPosition;
+layout(location=0) out vec4 color;
+void main(){color=vec4(gbufferModelViewInverse[0][0],
+                       gbufferPreviousModelView[0][0]*0.25,
+                       previousCameraPosition.x,1.0);}
+)"),{0},true};
+    require(publishWorldUniforms({pose,position},captureError),"Camera publish failed");
+    requestPipeline({cameraHistory},"Camera history fixture");
+    clearScene();beforeSwap(32,32);actual=pixel();
+    require(status().active&&std::abs(int(actual[0])-128)<=2&&
+        std::abs(int(actual[1])-128)<=2&&std::abs(int(actual[2])-64)<=2,"First camera history invalid");
+    pose.floats[0]=4;position.floats[0]=0.75f;
+    require(publishWorldUniforms({pose,position},captureError),"Next camera publish failed");
+    clearScene();beforeSwap(32,32);actual=pixel();
+    require(status().active&&std::abs(int(actual[0])-64)<=2&&
+        std::abs(int(actual[1])-128)<=2&&std::abs(int(actual[2])-64)<=2,"Previous camera was not preserved");
+    clearScene();beforeSwap(32,32);
+    require(!status().active,"Missing current camera accepted");
+    require(publishWorldUniforms({pose,position},captureError),"Reentry camera publish failed");
+    clearScene();beforeSwap(32,32);actual=pixel();
+    require(status().active&&actual[1]>=253&&std::abs(int(actual[2])-191)<=2,"Camera history not reset after gap");
     // Native G-buffer snapshots must contain the actual selected MRT
     // attachment, not the final color, and must expire after the frame.
     GLuint geometryFbo=0,geometryTex[2]{};

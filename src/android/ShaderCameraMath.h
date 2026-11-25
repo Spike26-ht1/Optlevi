@@ -6,6 +6,35 @@
 namespace modmenu::android::shaderbridge::camera {
 using Matrix=std::array<float,16>;
 using Vec=std::array<double,3>;
+// Invert a supplied, column-major matrix without replacing a singular
+// matrix by an identity. Validate the result after rounding to GPU floats.
+inline bool invert(Matrix const& input,Matrix& output){
+    double m[4][8]{};
+    for(int r=0;r<4;++r)for(int c=0;c<4;++c){
+        double v=input[c*4+r];if(!std::isfinite(v))return false;
+        m[r][c]=v;m[r][4+c]=r==c?1.0:0.0;
+    }
+    for(int c=0;c<4;++c){
+        int pivot=c;
+        for(int r=c+1;r<4;++r)if(std::abs(m[r][c])>std::abs(m[pivot][c]))pivot=r;
+        if(std::abs(m[pivot][c])<1e-12)return false;
+        for(int k=0;k<8;++k)std::swap(m[c][k],m[pivot][k]);
+        double divisor=m[c][c];for(double& v:m[c])v/=divisor;
+        for(int r=0;r<4;++r)if(r!=c){
+            double scale=m[r][c];for(int k=0;k<8;++k)m[r][k]-=scale*m[c][k];
+        }
+    }
+    Matrix result{};
+    for(int r=0;r<4;++r)for(int c=0;c<4;++c){
+        result[c*4+r]=float(m[r][4+c]);if(!std::isfinite(result[c*4+r]))return false;
+    }
+    for(int r=0;r<4;++r)for(int c=0;c<4;++c){
+        double value=0;
+        for(int k=0;k<4;++k)value+=double(input[k*4+r])*result[c*4+k];
+        if(std::abs(value-(r==c?1.0:0.0))>0.001)return false;
+    }
+    output=result;return true;
+}
 struct Projection {
     Matrix matrix{},inverse{};
     float nearClip=0,farClip=0;

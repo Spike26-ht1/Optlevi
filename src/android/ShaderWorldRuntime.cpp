@@ -1,4 +1,5 @@
 #include "ShaderWorldRuntime.h"
+#include "ShaderCameraMath.h"
 
 #include <EGL/egl.h>
 #include <GLES3/gl3.h>
@@ -78,7 +79,7 @@ struct DepthFrame {
     EGLSurface surface=EGL_NO_SURFACE;
     std::array<DepthSnapshot,5> images{}; // scene 0..2, shadow 3..4
     std::array<SceneColorSnapshot,kBuffers+2> colors{}; // scene and shadow
-    std::vector<WorldUniform> uniforms;
+    std::vector<WorldUniform> uniforms,derived,previousCamera;
 };
 thread_local DepthFrame depthFrame;
 std::uint64_t colorTargetBytes=0;
@@ -108,8 +109,46 @@ void syncDepthContext(){
     }
     depthFrame={};depthFrame.ctx=ctx;depthFrame.surface=surface;
 }
+struct CameraPair { char const* current;char const* previous;char const* inverse;unsigned type; };
+constexpr CameraPair cameraPairs[]={
+    {"gbufferProjection","gbufferPreviousProjection","gbufferProjectionInverse",GL_FLOAT_MAT4},
+    {"gbufferModelView","gbufferPreviousModelView","gbufferModelViewInverse",GL_FLOAT_MAT4},
+    {"cameraPosition","previousCameraPosition",nullptr,GL_FLOAT_VEC3}
+};
+WorldUniform const* named(std::vector<WorldUniform> const& values,std::string const& name){
+    for(auto const& v:values)if(v.name==name)return &v;return nullptr;
+}
+void deriveCamera(){
+    depthFrame.derived.clear();
+    for(auto const& pair:cameraPairs){
+        auto current=named(depthFrame.uniforms,pair.current);
+        if(!current||current->glType!=pair.type)continue;
+        if(pair.inverse&&!named(depthFrame.uniforms,pair.inverse)){
+            WorldUniform inverse;inverse.name=pair.inverse;inverse.glType=pair.type;
+            if(modmenu::android::shaderbridge::camera::invert(current->floats,inverse.floats))
+                depthFrame.derived.push_back(std::move(inverse));
+        }
+        if(!named(depthFrame.uniforms,pair.previous)){
+            // On the first valid frame the current actual value seeds history.
+            // Never reuse a camera from an interrupted or failed frame.
+            auto previous=named(depthFrame.previousCamera,pair.current);
+            WorldUniform value=previous?*previous:*current;
+            value.name=pair.previous;depthFrame.derived.push_back(std::move(value));
+        }
+    }
+}
 struct ConsumeDepthFrame {
-    ~ConsumeDepthFrame(){for(auto& d:depthFrame.images)d.fresh=false;for(auto& d:depthFrame.colors)d.fresh=false;depthFrame.uniforms.clear();}
+    bool rendered=false;
+    ~ConsumeDepthFrame(){
+        depthFrame.previousCamera.clear();
+        if(rendered)for(auto const& pair:cameraPairs){
+            auto v=named(depthFrame.uniforms,pair.current);
+            if(v&&v->glType==pair.type)depthFrame.previousCamera.push_back(*v);
+        }
+        for(auto& d:depthFrame.images)d.fresh=false;
+        for(auto& d:depthFrame.colors)d.fresh=false;
+        depthFrame.uniforms.clear();depthFrame.derived.clear();
+    }
 };
 std::string resourceSignature(){
     // Ignore values and object names: world data changes every frame.
@@ -129,6 +168,7 @@ std::string resourceSignature(){
     }
     std::vector<std::string> uniforms;
     for(auto const& v:depthFrame.uniforms)uniforms.push_back(v.name+":"+std::to_string(v.glType));
+    for(auto const& v:depthFrame.derived)uniforms.push_back(v.name+":"+std::to_string(v.glType));
     std::sort(uniforms.begin(),uniforms.end());
     for(auto const& u:uniforms)signature+="u"+u+";";
     return signature;
@@ -159,8 +199,8 @@ bool integerUniform(unsigned type){
         type==GL_BOOL||type==GL_BOOL_VEC2||type==GL_BOOL_VEC3||type==GL_BOOL_VEC4;
 }
 WorldUniform const* findWorldUniform(std::string const& name){
-    for(auto const& value:depthFrame.uniforms)if(value.name==name)return &value;
-    return nullptr;
+    if(auto value=named(depthFrame.uniforms,name))return value;
+    return named(depthFrame.derived,name);
 }
 struct WorldBinding { std::string name; GLenum type; GLint location; };
 void uploadWorldUniform(WorldBinding const& b,WorldUniform const& v){
@@ -1077,7 +1117,7 @@ bool publishWorldUniforms(std::vector<WorldUniform> const& values,std::string& e
         }else next.push_back(v);
         if(next.size()>128){error="Too many world uniforms in frame";return false;}
     }
-    depthFrame.uniforms=std::move(next);
+    depthFrame.uniforms=std::move(next);deriveCamera();
     return true;
 }
 
@@ -1245,6 +1285,7 @@ void beforeSwap(int width,int height) {
         return;
     }
     if(action==1){
+        depthFrame.previousCamera.clear();deriveCamera();
         selectedSource=std::move(passes);selectedLabel=std::move(label);
         waitingForResources=true;attemptedResources=false;
     }
@@ -1287,6 +1328,7 @@ void beforeSwap(int width,int height) {
         SavedState saved;
         std::string error;
         bool ok=renderPipeline(width,height,error);
+        consumeDepth.rendered=ok;
         saved.restore();
         if(!ok){
             discardGpu();
