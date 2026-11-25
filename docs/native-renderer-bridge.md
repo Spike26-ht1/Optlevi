@@ -34,3 +34,7 @@ capture errors. This is not proof of stock Bedrock or BSL gameplay support.
 ## Native terrain projection recovery
 
 When the observed program exposes the RenderChunk uniform signature, the bridge can recover a centered finite OpenGL perspective and its inverse from the actual `u_viewProj` matrix and independently cross-check `ViewPositionAndTime`. It rejects unsupported projections, ill-conditioned matrices, and inconsistent eyes. It publishes only `gbufferProjection` and `gbufferProjectionInverse`; no Java model-view matrix, absolute camera position, or draw-phase boundary is inferred. This path has not been verified on Bedrock 26.62 hardware.
+
+## Deferred phase
+
+A dedicated `OptLeviDeferred` active `ivec2(width,height)` marker executes the enabled deferred programs after opaque resource captures, before translucent geometry. The native adapter can borrow `deferredTexture(colortex)` for the current frame. A later explicit capture of an updated attachment replaces the opaque/deferred texture before composite. No deferred pass is run at swap. This interface does not itself supply a Bedrock material which writes or consumes those buffers.

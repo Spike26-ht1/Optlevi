@@ -64,6 +64,7 @@ struct DepthSnapshot {
     bool fresh=false;
 };
 struct SceneColorSnapshot {
+    std::uint64_t serial=0;
     GLuint tex=0,fbo=0;
     FormatInfo format{};
     int width=0,height=0;
@@ -190,12 +191,18 @@ struct CompiledPass {
     std::vector<WorldBinding> worldUniforms;
     bool finalPass=false;
     bool customVertex=false;
+    bool deferred=false;
     std::uint32_t mipmapInputs=0;
 };
 std::vector<CompiledPass> pipeline;
 std::array<std::array<GLuint,2>,kBuffers> textures{};
 std::array<unsigned,kBuffers> front{};
 std::array<bool,kBuffers> needed{},mipNeeded{},historyNeeded{},sceneNeeded{};
+std::array<bool,kBuffers> deferredInputs{},deferredOutputs{};
+std::array<std::uint64_t,kBuffers> opaqueSerial{};
+std::uint64_t snapshotSerial=0;
+bool deferredReady=false;
+float frameTime=0,frameDelta=0;
 std::array<std::array<bool,2>,kBuffers> mipValid{};
 GLuint triangleVao=0,passFbo=0,outputTex=0,shadowCompareSampler=0;
 int textureWidth=0,textureHeight=0;
@@ -219,7 +226,7 @@ void abandonContext() {
     context=eglGetCurrentContext();
     pipeline.clear();
     packGpu.clear();packGpuBytes=0;frameCounter=0;
-    textures={};front={};needed={};mipNeeded={};historyNeeded={};sceneNeeded={};mipValid={};colorFormats={};triangleVao=passFbo=outputTex=shadowCompareSampler=0;
+    textures={};front={};needed={};mipNeeded={};historyNeeded={};sceneNeeded={};deferredInputs={};deferredOutputs={};deferredReady=false;mipValid={};colorFormats={};triangleVao=passFbo=outputTex=shadowCompareSampler=0;
     textureWidth=textureHeight=0;colorTargetBytes=0;
     renderedFrame=false;
     requestedActive=false;
@@ -231,7 +238,7 @@ void discardGpu() {
     for(auto& p:packGpu)if(p.texture)glDeleteTextures(1,&p.texture);
     packGpu.clear();packGpuBytes=0;frameCounter=0;
     for(auto& pair:textures) glDeleteTextures(2,pair.data());
-    textures={};front={};needed={};mipNeeded={};historyNeeded={};sceneNeeded={};mipValid={};colorFormats={};
+    textures={};front={};needed={};mipNeeded={};historyNeeded={};sceneNeeded={};deferredInputs={};deferredOutputs={};deferredReady=false;mipValid={};colorFormats={};
     if(outputTex){glDeleteTextures(1,&outputTex);outputTex=0;}
     if(passFbo){glDeleteFramebuffers(1,&passFbo);passFbo=0;}
     if(triangleVao){glDeleteVertexArrays(1,&triangleVao);triangleVao=0;}
@@ -443,6 +450,7 @@ void main() {
     result.name=pass.name;
     result.finalPass=pass.finalPass;
     result.customVertex=!pass.vertex.empty();
+    result.deferred=pass.deferred;
     return true;
 }
 
@@ -516,6 +524,7 @@ bool compilePipeline(std::vector<Pass> const& passes,std::string& error) {
                 historyNeeded[n]=true;available[n]=true;needed[n]=true;
             }
     }
+    bool compositeSeen=false;
     for(size_t i=0;i<passes.size();++i) {
         auto const& pass=passes[i];
         auto const& m=metadata[i];
@@ -524,6 +533,10 @@ bool compilePipeline(std::vector<Pass> const& passes,std::string& error) {
             if(pass.finalPass){error="Final pass cannot be disabled";return false;}
             continue;
         }
+        if(pass.deferred&&(compositeSeen||pass.finalPass)){
+            error="Deferred pass outside opaque stage: "+pass.name;return false;
+        }
+        if(!pass.deferred)compositeSeen=true;
         if(pass.finalPass!=(i+1==passes.size())||pass.targets.empty()||
            pass.targets.size()>size_t(std::min(maxDraw,maxColor))||
            (pass.finalPass&&pass.targets.size()!=1)){
@@ -551,9 +564,14 @@ bool compilePipeline(std::vector<Pass> const& passes,std::string& error) {
             if(mipmapInputs&(std::uint32_t(1)<<n))mipNeeded[n]=true;
             if(!produced[n]&&!historyNeeded[n]&&depthFrame.colors[n].fresh){
                 sceneNeeded[n]=true;needed[n]=true;
+                if(p.deferred)deferredInputs[n]=true;
+            }
+            if(p.deferred&&n==0&&!produced[n]){
+                // A final-frame backbuffer is never an opaque scene source.
+                deferredInputs[0]=true;sceneNeeded[0]=true;
             }
         }
-        if(!p.finalPass)for(auto t:p.targets){available[t]=true;needed[t]=true;produced[t]=true;}
+        if(!p.finalPass)for(auto t:p.targets){available[t]=true;needed[t]=true;produced[t]=true;if(p.deferred)deferredOutputs[t]=true;}
         pipeline.push_back(std::move(p));
     }
     for(unsigned i=0;i<kBuffers;++i)if(historyNeeded[i]&&depthFrame.colors[i].fresh){
@@ -748,8 +766,10 @@ void setUniforms(CompiledPass const& pass,int width,int height,float time,float 
         uploadWorldUniform(binding,*findWorldUniform(binding.name));
 }
 
-bool renderPipeline(int width,int height,std::string& error) {
-    for(auto const& pass:pipeline)for(auto const& binding:pass.samplers){
+bool hasDeferred(){return std::any_of(pipeline.begin(),pipeline.end(),[](auto const& p){return p.deferred;});}
+
+bool validateStage(bool deferred,int width,int height,std::string& error){
+    for(auto const& pass:pipeline)if(pass.deferred==deferred)for(auto const& binding:pass.samplers){
         if(binding.depth>=0){
             auto const& d=depthFrame.images[unsigned(binding.depth)];
             bool scene=binding.depth<3;
@@ -763,69 +783,53 @@ bool renderPipeline(int width,int height,std::string& error) {
             error="Missing current-frame shadowcolor"+std::to_string(binding.shadowColor-int(kBuffers))+" in "+pass.name;return false;
         }
     }
-    for(unsigned i=0;i<kBuffers;++i)if(sceneNeeded[i]){
-        auto const& d=depthFrame.colors[i];
-        if(!d.fresh||d.width!=width||d.height!=height||
-           d.format.internal!=colorFormats[i].internal){
-            error="Missing or mismatched native scene colortex"+std::to_string(i);return false;
-        }
-    }
-    for(auto const& pass:pipeline)for(auto const& binding:pass.worldUniforms){
+    for(auto const& pass:pipeline)if(pass.deferred==deferred)for(auto const& binding:pass.worldUniforms){
         auto const* value=findWorldUniform(binding.name);
         if(!value||value->glType!=binding.type){
             error="Missing current-frame world uniform "+binding.name+" in "+pass.name;
             return false;
         }
     }
-    // Preserve the entire frame until EVERY pass has rendered successfully.
-    // Never render a rejected/partially compiled shader directly to the game.
-    glBindFramebuffer(GL_FRAMEBUFFER,0);
-    glReadBuffer(GL_BACK);
-    if(!ensureTargets(width,height,error))return false;
-    for(unsigned i=0;i<kBuffers;++i)if(!historyNeeded[i])front[i]=0;
-    mipValid[0][0]=false;
-    glActiveTexture(GL_TEXTURE0);
-    glBindSampler(0,0);
-    if(!sceneNeeded[0]){
-        glBindTexture(GL_TEXTURE_2D,textures[0][0]);
-        glCopyTexSubImage2D(GL_TEXTURE_2D,0,0,0,0,0,width,height);
-        if(glGetError()!=GL_NO_ERROR){error="Cannot capture actual Bedrock backbuffer";return false;}
+    return true;
+}
+bool seedScene(unsigned index,int width,int height,std::string& error){
+    auto const& d=depthFrame.colors[index];
+    if(!d.fresh||d.width!=width||d.height!=height||d.format.internal!=colorFormats[index].internal){
+        error="Missing or mismatched native scene colortex"+std::to_string(index);return false;
     }
-    // Copy captured native G-buffer inputs before running Java passes.
-    // Their format and dimensions must match; no color alias substitutes.
-    if(std::any_of(sceneNeeded.begin(),sceneNeeded.end(),[](bool b){return b;})){
-        glBindFramebuffer(GL_FRAMEBUFFER,passFbo);
-        GLint maxDraw=0,maxColor=0;
-        glGetIntegerv(GL_MAX_DRAW_BUFFERS,&maxDraw);
-        glGetIntegerv(GL_MAX_COLOR_ATTACHMENTS,&maxColor);
-        for(int n=0;n<std::min({maxDraw,maxColor,int(kBuffers)});++n)
-            glFramebufferTexture2D(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0+n,GL_TEXTURE_2D,0,0);
-        const GLenum draw=GL_COLOR_ATTACHMENT0;
-        glDrawBuffers(1,&draw);glReadBuffer(draw);
-        glDisable(GL_SCISSOR_TEST);
-        for(unsigned i=0;i<kBuffers;++i)if(sceneNeeded[i]){
-            glBindFramebuffer(GL_DRAW_FRAMEBUFFER,passFbo);
-            glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER,draw,GL_TEXTURE_2D,textures[i][0],0);
-            if(glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER)!=GL_FRAMEBUFFER_COMPLETE){
-                error="Incomplete native scene target colortex"+std::to_string(i);return false;
-            }
-            glBindFramebuffer(GL_READ_FRAMEBUFFER,depthFrame.colors[i].fbo);
-            glBlitFramebuffer(0,0,width,height,0,0,width,height,GL_COLOR_BUFFER_BIT,GL_NEAREST);
-            if(glGetError()!=GL_NO_ERROR){error="Cannot seed native scene colortex"+std::to_string(i);return false;}
-            mipValid[i][0]=false;
-        }
+    glBindFramebuffer(GL_FRAMEBUFFER,passFbo);
+    GLint maxDraw=0,maxColor=0;
+    glGetIntegerv(GL_MAX_DRAW_BUFFERS,&maxDraw);
+    glGetIntegerv(GL_MAX_COLOR_ATTACHMENTS,&maxColor);
+    for(int n=0;n<std::min({maxDraw,maxColor,int(kBuffers)});++n)
+        glFramebufferTexture2D(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0+n,GL_TEXTURE_2D,0,0);
+    const GLenum draw=GL_COLOR_ATTACHMENT0;
+    glDrawBuffers(1,&draw);glReadBuffer(draw);
+    glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER,draw,GL_TEXTURE_2D,textures[index][front[index]],0);
+    if(glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER)!=GL_FRAMEBUFFER_COMPLETE){
+        error="Incomplete native scene target colortex"+std::to_string(index);return false;
     }
+    glDisable(GL_SCISSOR_TEST);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER,d.fbo);
+    glBlitFramebuffer(0,0,width,height,0,0,width,height,GL_COLOR_BUFFER_BIT,GL_NEAREST);
+    if(glGetError()!=GL_NO_ERROR){error="Cannot seed native scene colortex"+std::to_string(index);return false;}
+    mipValid[index][front[index]]=false;return true;
+}
+void beginFrameTiming(){
+    static const auto started=std::chrono::steady_clock::now();
+    static auto last=started;
+    auto now=std::chrono::steady_clock::now();
+    frameTime=std::chrono::duration<float>(now-started).count();
+    frameDelta=std::chrono::duration<float>(now-last).count();last=now;
+}
+bool drawStage(bool deferred,int width,int height,std::string& error){
     glDisable(GL_BLEND);glDisable(GL_DEPTH_TEST);glDisable(GL_STENCIL_TEST);
     glDisable(GL_SCISSOR_TEST);glDisable(GL_CULL_FACE);glDisable(GL_RASTERIZER_DISCARD);
     glDepthMask(GL_FALSE);glColorMask(GL_TRUE,GL_TRUE,GL_TRUE,GL_TRUE);
     glViewport(0,0,width,height);glBindVertexArray(triangleVao);
     glBindFramebuffer(GL_FRAMEBUFFER,passFbo);
-    static const auto started=std::chrono::steady_clock::now();
-    static auto last=started;
-    auto now=std::chrono::steady_clock::now();
-    float time=std::chrono::duration<float>(now-started).count();
-    float dt=std::chrono::duration<float>(now-last).count();last=now;
     for(auto const& pass:pipeline){
+        if(pass.deferred!=deferred)continue;
         // Attach write-side texture(s) distinct from every sampled read-side.
         // MRT locations index the directive list, not the colortex number.
         GLint maxDraw=0,maxColor=0;
@@ -851,12 +855,61 @@ bool renderPipeline(int width,int height,std::string& error) {
         // scene depth, shadow or normal textures are ever provided as inputs.
         const GLfloat zero[4]={0,0,0,0};
         for(unsigned i=0;i<draws.size();++i)glClearBufferfv(GL_COLOR,i,zero);
-        setUniforms(pass,width,height,time,dt);
+        setUniforms(pass,width,height,frameTime,frameDelta);
         if(pass.customVertex)glDrawArrays(GL_TRIANGLES,0,6);
         else glDrawArrays(GL_TRIANGLES,0,3);
         if(glGetError()!=GL_NO_ERROR){error=pass.name+": GLES3 pass execution failed";return false;}
         if(!pass.finalPass)for(auto t:pass.targets){front[t]=1-front[t];mipValid[t][front[t]]=false;}
     }
+    return true;
+}
+bool renderOpaqueStage(int width,int height,std::string& error){
+    if(!hasDeferred()){error="No active deferred graph";return false;}
+    if(deferredReady){error="Deferred phase already executed";return false;}
+    if(!validateStage(true,width,height,error)||!ensureTargets(width,height,error))return false;
+    for(unsigned i=0;i<kBuffers;++i)if(!historyNeeded[i])front[i]=0;
+    for(unsigned i=0;i<kBuffers;++i){
+        opaqueSerial[i]=depthFrame.colors[i].serial;
+        if(deferredInputs[i]&&!seedScene(i,width,height,error))return false;
+    }
+    beginFrameTiming();
+    if(!drawStage(true,width,height,error))return false;
+    deferredReady=true;return true;
+}
+bool renderPipeline(int width,int height,std::string& error){
+    bool staged=hasDeferred();
+    if(staged&&(!deferredReady||width!=textureWidth||height!=textureHeight)){
+        error="Missing current-frame opaque deferred phase";return false;
+    }
+    if(!validateStage(false,width,height,error))return false;
+    glBindFramebuffer(GL_FRAMEBUFFER,0);glReadBuffer(GL_BACK);
+    if(!ensureTargets(width,height,error))return false;
+    if(!staged){
+        for(unsigned i=0;i<kBuffers;++i)if(!historyNeeded[i])front[i]=0;
+        beginFrameTiming();
+    }
+    // In staged mode only a newly captured native attachment may replace
+    // an opaque input or a deferred output. This is how the adapter submits
+    // the result of subsequent translucent geometry into the shared graph.
+    for(unsigned i=0;i<kBuffers;++i){
+        auto const& d=depthFrame.colors[i];
+        bool updated=staged&&d.fresh&&d.serial>opaqueSerial[i]&&needed[i]&&!historyNeeded[i];
+        if(updated|| (sceneNeeded[i]&&(!staged||!deferredInputs[i])&&!deferredOutputs[i])){
+            if(!seedScene(i,width,height,error))return false;
+        }
+    }
+    if(!sceneNeeded[0]&&!staged){
+        glBindFramebuffer(GL_READ_FRAMEBUFFER,0);glReadBuffer(GL_BACK);
+        glActiveTexture(GL_TEXTURE0);glBindSampler(0,0);
+        glBindTexture(GL_TEXTURE_2D,textures[0][0]);
+        glCopyTexSubImage2D(GL_TEXTURE_2D,0,0,0,0,0,width,height);
+        mipValid[0][0]=false;
+        if(glGetError()!=GL_NO_ERROR){error="Cannot capture actual Bedrock backbuffer";return false;}
+    }
+    if(staged&&!deferredOutputs[0]&&!deferredInputs[0]&&!depthFrame.colors[0].fresh){
+        error="Missing current-frame staged scene color";return false;
+    }
+    if(!drawStage(false,width,height,error))return false;
     // Only publish the output after the final pass succeeds.
     glBindFramebuffer(GL_READ_FRAMEBUFFER,passFbo);
     glReadBuffer(GL_COLOR_ATTACHMENT0);
@@ -986,7 +1039,7 @@ static bool captureColorAttachment(unsigned colortex,unsigned framebuffer,unsign
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER,d.fbo);
     glBlitFramebuffer(0,0,width,height,0,0,width,height,GL_COLOR_BUFFER_BIT,GL_NEAREST);
     if(glGetError()!=GL_NO_ERROR)return finish(false,"Native scene color copy failed");
-    d.fresh=true;return finish(true,"");
+    d.serial=++snapshotSerial;d.fresh=true;return finish(true,"");
 }
 
 bool captureSceneColor(unsigned colortex,unsigned framebuffer,unsigned attachment,
@@ -1141,12 +1194,29 @@ bool captureShadowDepth(unsigned index,unsigned framebuffer,unsigned internalFor
     return captureDepthAttachment(3+index,framebuffer,internalFormat,width,height,error);
 }
 
+bool renderDeferred(int width,int height,std::string& error){
+    if(eglGetCurrentContext()==EGL_NO_CONTEXT||eglGetCurrentContext()!=context||
+        eglGetCurrentSurface(EGL_DRAW)!=pipelineSurface||!requestedActive.load()){
+        error="Deferred graph is not prepared for this EGL surface";return false;
+    }
+    // Preserve native GL bindings. No deferred result is presented here.
+    SavedState saved;
+    bool ok=renderOpaqueStage(width,height,error);
+    saved.restore();
+    return ok;
+}
+unsigned deferredTexture(unsigned colortex){
+    if(colortex>=kBuffers||!deferredReady||!deferredOutputs[colortex]||
+       eglGetCurrentContext()!=context||eglGetCurrentSurface(EGL_DRAW)!=pipelineSurface)return 0;
+    return textures[colortex][front[colortex]];
+}
 void beforeSwap(int width,int height) {
     EGLContext now=eglGetCurrentContext();
     if(now==EGL_NO_CONTEXT)return;
     auto surface=eglGetCurrentSurface(EGL_DRAW);
     syncDepthContext();
     ConsumeDepthFrame consumeDepth;
+    struct EndDeferredFrame { ~EndDeferredFrame(){deferredReady=false;} } endDeferredFrame;
     if(context!=now||pipelineSurface!=surface){
         if(context!=now)abandonContext();else discardGpu();
         pipelineSurface=surface;
@@ -1206,6 +1276,11 @@ void beforeSwap(int width,int height) {
         }
     }
     if(requestedActive.load()&&!pipeline.empty()){
+        if(hasDeferred()&&!deferredReady){
+            renderedFrame=false;
+            statusMessage(false,"Waiting for verified opaque deferred phase; vanilla preserved");
+            return;
+        }
         SavedState saved;
         std::string error;
         bool ok=renderPipeline(width,height,error);

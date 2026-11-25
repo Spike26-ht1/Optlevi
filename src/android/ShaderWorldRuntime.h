@@ -30,6 +30,8 @@ struct Pass {
     std::string enabledProbe;
     // Pack-wide attachment formats, present only on the first graph pass.
     std::vector<std::pair<unsigned,std::string>> colorFormats;
+    // Deferred programs run at the opaque/translucent boundary, not at swap.
+    bool deferred=false;
     // Clear=false history is reflected via enabledProbe; no history buffer
     // is usable without an actual writer in the graph.
 };
@@ -79,6 +81,11 @@ struct UniformMapping {
 bool publishWorldUniforms(std::vector<WorldUniform> const& values,std::string& error);
 bool captureProgramUniforms(unsigned program,std::vector<UniformMapping> const& mappings,
                             std::string& error);
+// Called after all opaque snapshots and uniforms have been captured, before
+// translucent draws. Outputs are borrowed until the next swap; the native
+// adapter must consume them using the pack's actual G-buffer semantics.
+bool renderDeferred(int width,int height,std::string& error);
+unsigned deferredTexture(unsigned colortex);
 void beforeSwap(int width,int height);
 void stop();
 } // namespace modmenu::android::shaderworld

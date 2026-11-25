@@ -446,6 +446,40 @@ texture(colortex1,texcoord).b,1.0);}
     clearScene();beforeSwap(32,32);
     require(!status().active&&status().failed,"Stale native MRT data reused");
     glDeleteFramebuffers(1,&geometryFbo);glDeleteTextures(2,geometryTex);
+    // Deferred output is generated only at the opaque boundary and can
+    // be consumed by the native translucent stage before composite.
+    GLuint opaqueFbo=0,opaqueTex=0;
+    glGenFramebuffers(1,&opaqueFbo);glBindFramebuffer(GL_FRAMEBUFFER,opaqueFbo);
+    glGenTextures(1,&opaqueTex);glBindTexture(GL_TEXTURE_2D,opaqueTex);
+    glTexStorage2D(GL_TEXTURE_2D,1,GL_RGBA8,32,32);
+    glFramebufferTexture2D(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_TEXTURE_2D,opaqueTex,0);
+    const GLenum opaqueDraw=GL_COLOR_ATTACHMENT0;glDrawBuffers(1,&opaqueDraw);glReadBuffer(opaqueDraw);
+    const GLfloat opaqueColor[4]={0.4f,0.2f,0.6f,1.0f};
+    glClearBufferfv(GL_COLOR,0,opaqueColor);
+    require(captureSceneColor(0,opaqueFbo,0,"RGBA8",32,32,captureError),"Opaque input capture failed");
+    Pass deferred{"deferred",fragment(R"(
+uniform sampler2D colortex0;
+layout(location=0) out vec4 color;
+void main(){color=texture(colortex0,texcoord)*0.5;}
+)"),{0},false};
+    deferred.deferred=true;
+    Pass stagedEnd{"final",fragment(R"(
+uniform sampler2D colortex0;
+layout(location=0) out vec4 color;
+void main(){color=vec4(texture(colortex0,texcoord).rgb,1.0);}
+)"),{0},true};
+    requestPipeline({deferred,stagedEnd},"Opaque phase fixture");
+    clearScene();beforeSwap(32,32);
+    actual=pixel();require(std::abs(int(actual[0])-51)<=2,"Deferred ran at presentation");
+    require(captureSceneColor(0,opaqueFbo,0,"RGBA8",32,32,captureError),"Next opaque capture failed");
+    require(renderDeferred(32,32,captureError),"Deferred phase execution failed");
+    require(deferredTexture(0)!=0,"Deferred output not exposed to translucent stage");
+    clearScene();beforeSwap(32,32);
+    require(status().active&&!status().failed,"Composite after deferred failed");
+    actual=pixel();require(std::abs(int(actual[0])-51)<=2&&std::abs(int(actual[1])-26)<=2&&
+        std::abs(int(actual[2])-77)<=2,"Deferred output not preserved");
+    require(deferredTexture(0)==0,"Stale deferred output exposed after swap");
+    glDeleteFramebuffers(1,&opaqueFbo);glDeleteTextures(1,&opaqueTex);
     // Missing geometry input must not turn into a fake color sampler.
     clearScene();
     Pass unavailable{"final",fragment(R"(

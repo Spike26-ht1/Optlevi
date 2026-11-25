@@ -88,6 +88,7 @@ void captureBeforeDraw(){
     std::vector<UniformMapping> uniforms;
     GLint viewProjection=-1,viewPosition=-1;
     bool terrainAtlas=false;
+    GLint deferredMarker=-1;
     for(GLint i=0;i<count;++i){
         GLchar raw[256]{};
         GLsizei length=0;GLint size=0;GLenum type=0;
@@ -97,6 +98,7 @@ void captureBeforeDraw(){
         if(name=="u_viewProj"&&type==GL_FLOAT_MAT4)viewProjection=glGetUniformLocation(GLuint(program),raw);
         if(name=="ViewPositionAndTime"&&type==GL_FLOAT_VEC4)viewPosition=glGetUniformLocation(GLuint(program),raw);
         terrainAtlas|=name=="s_MatTexture";
+        if(name=="OptLeviDeferred"&&type==GL_INT_VEC2){deferredMarker=glGetUniformLocation(GLuint(program),raw);continue;}
         constexpr std::string_view prefix="OptLeviWorld_";
         if(name.starts_with(prefix)&&name.size()>prefix.size()){
             uniforms.push_back({name,name.substr(prefix.size()),type});continue;
@@ -137,7 +139,7 @@ void captureBeforeDraw(){
             }else note("Native terrain signature observed; projection/eye validation failed");
         }
     }
-    if(resources.empty()&&uniforms.empty())return;
+    if(resources.empty()&&uniforms.empty()&&deferredMarker<0)return;
     ++frame.markerCount;
     GLint framebuffer=0;glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING,&framebuffer);
     std::string error;
@@ -169,6 +171,11 @@ void captureBeforeDraw(){
         }
         if(ok)++frame.captureCount;
         else note(resource.name+": "+error);
+    }
+    if(deferredMarker>=0){
+        GLint dimensions[2]{};glGetUniformiv(GLuint(program),deferredMarker,dimensions);
+        if(renderDeferred(dimensions[0],dimensions[1],error))note("Opaque deferred stage executed");
+        else note("Opaque deferred stage: "+error);
     }
 }
 

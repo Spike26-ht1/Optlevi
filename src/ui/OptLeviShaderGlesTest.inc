@@ -792,7 +792,8 @@ static bool optBuildJavaPipeline(
                 }
             }
             for(auto const* prefix:{"flip.","size.buffer.","scale.composite",
-                                    "blend.composite","program.composite","program.world0.composite"}){
+                                    "blend.composite","program.composite","program.world0.composite",
+                                    "scale.deferred","blend.deferred","program.deferred","program.world0/deferred"}){
                 if(line.compare(at,std::strlen(prefix),prefix)==0){
                     error="Unsupported Java pipeline property: "+line.substr(at,120);
                     return false;
@@ -854,10 +855,14 @@ static bool optBuildJavaPipeline(
         }
         passes.push_back(Pass{member,std::move(translated),std::move(targets),finalPass,std::move(vertex),!finalPass});
         passes.back().enabledProbe=std::move(probe);
+        passes.back().deferred=name.rfind("deferred",0)==0;
         return true;
     };
-    // Ordered composite and composite1...composite22, then final. Deferred,
-    // shadow and geometry are not appended to the wrong render phase.
+    // Deferred passes run at an explicit opaque-stage marker. The remaining
+    // composite passes run after translucent rendering.
+    if(!append("deferred",false))return false;
+    for(unsigned i=1;i<=15;++i)
+        if(!append("deferred"+std::to_string(i),false))return false;
     if(!append("composite",false))return false;
     for(unsigned i=1;i<=22;++i)
         if(!append("composite"+std::to_string(i),false))return false;
