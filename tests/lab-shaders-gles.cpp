@@ -49,7 +49,21 @@ int main(int argc,char** argv){
     load("OptLevi-Lab-Lite-0.1.zip","VIVID");
     p=readPixel();
     check(status().active&&p[2]>153&&p[0]<51,"Lite profile did not change actual frame");
-    // Actual pack geometry consumes a real atlas texture and mapped VAO.
+    // Load the actual embedded 3-pass pack through the full ZIP parser,
+    // compile and draw its shader programs against real GLES backbuffer data.
+    load("OptLevi-Lab-WorldFX-0.2.zip","PERFORMANCE");
+    auto lowFx=readPixel();
+    check(status().active&&lowFx[2]>100&&lowFx[0]>0,
+          "WorldFX single-pass fallback did not execute");
+    load("OptLevi-Lab-WorldFX-0.2.zip","BALANCED");
+    auto balanced=readPixel();
+    check(status().active&&balanced[2]>lowFx[2]&&balanced[1]>=lowFx[1],
+          "WorldFX multi-pass bloom pipeline not applied");
+    load("OptLevi-Lab-WorldFX-0.2.zip","QUALITY");
+    auto quality=readPixel();
+    check(status().active&&quality[2]>=balanced[2],
+          "WorldFX quality profile did not execute");
+        // Actual pack geometry consumes a real atlas texture and mapped VAO.
     // The mesh is deliberately controlled; no claim of Bedrock gameplay.
     GLuint vao=0,vbo=0,atlas=0;
     glGenVertexArrays(1,&vao);glBindVertexArray(vao);
