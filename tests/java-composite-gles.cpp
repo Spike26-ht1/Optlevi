@@ -606,8 +606,8 @@ void main(){optDisabledOutput=vec4(1.0);}
     clearScene();beforeSwap(32,32);
     require(!status().active&&status().message.find("Missing real input colortex3")!=std::string::npos,
         "Expected composite to wait for geometry");
-    GeometryHandle disabled;
-    require(!acquireGeometryProgram("shadow",disabled,captureError)&&
+    GeometryHandle disabledGeometry;
+    require(!acquireGeometryProgram("shadow",disabledGeometry,captureError)&&
         captureError.find("disabled by shader-pack settings")!=std::string::npos,
         "Disabled geometry shader was compiled");
     GLuint meshFbo=0,meshColor=0,meshDepth=0,meshVao=0,meshVbo=0,meshEbo=0;
