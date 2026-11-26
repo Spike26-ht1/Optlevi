@@ -595,10 +595,21 @@ void main(){color=texture(colortex3,texcoord);}
     require(at!=std::string::npos,"Geometry fixture output missing");
     terrain.replace(at,std::string("optRouteTarget0=tint;").size(),
         "optRouteTarget0=tint*texture(noisetex,vec2(0.5))*vec4(viewWidth/32.0,viewHeight/32.0,frameCounter==0?1.0:0.0,1.0);");
+    // Disabled shadow source must never be compiled, even if invalid GLSL.
+    GeometryProgram disabledShadow{"shadow","invalid vertex","invalid fragment",true};
+    disabledShadow.enabledProbe=fragment(R"(
+layout(location=0) out vec4 optDisabledOutput;
+void main(){optDisabledOutput=vec4(1.0);}
+)");
+    meshPack.geometryPrograms.push_back(std::move(disabledShadow));
     requestPipeline({meshPack},"Mapped geometry fixture");
     clearScene();beforeSwap(32,32);
     require(!status().active&&status().message.find("Missing real input colortex3")!=std::string::npos,
         "Expected composite to wait for geometry");
+    GeometryHandle disabled;
+    require(!acquireGeometryProgram("shadow",disabled,captureError)&&
+        captureError.find("disabled by shader-pack settings")!=std::string::npos,
+        "Disabled geometry shader was compiled");
     GLuint meshFbo=0,meshColor=0,meshDepth=0,meshVao=0,meshVbo=0,meshEbo=0;
     glGenFramebuffers(1,&meshFbo);glBindFramebuffer(GL_FRAMEBUFFER,meshFbo);
     glGenTextures(1,&meshColor);glBindTexture(GL_TEXTURE_2D,meshColor);

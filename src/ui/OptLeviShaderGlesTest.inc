@@ -472,7 +472,8 @@ vec4 optFullscreenTransform(){return optScreenProjection*optFullscreenPosition()
 // each route into a macro assignment and emit only the selected output
 // declaration after the pack's source has been preprocessed by the GLES driver.
 static bool optTranslateRoutedComposite(std::string source,bool originalVertex,
-                                        std::string& translated,std::string& error){
+                                        std::string& translated,std::string& error,
+                                        std::string const& alphaCondition={}){
     std::vector<std::vector<unsigned>> routes{{0}};
     std::istringstream lines(source);
     std::string line,body="#define OPTLEVI_DRAW_ROUTE 0\n";
@@ -518,6 +519,7 @@ static bool optTranslateRoutedComposite(std::string source,bool originalVertex,
             translated+="layout(location="+std::to_string(slot)+") out vec4 optRouteTarget"+
                         std::to_string(routes[i][slot])+";\n";
         translated+="void main(){optLeviShaderMain();\n";
+        if(!alphaCondition.empty())translated+="if (!("+alphaCondition+")) discard;\n";
         for(size_t slot=0;slot<routes[i].size();++slot)
             translated+="optRouteTarget"+std::to_string(routes[i][slot])+"="+temp(slot)+";\n";
         translated+="}\n";
@@ -582,9 +584,39 @@ uniform mat4 optTextureMatrix1;
 vec4 optGeometryTransform(){return optProjection*optModelView*optPosition;}
 )GLSL")+optTranslateGlobalInitializers(optTranslateBslNumeric(std::move(clean)));
 }
-static bool optTranslateGeometryFragment(std::string source,std::string& translated,std::string& error){
+// Iris/OptiFine alphaTest.<program> compares the first fragment
+// output's alpha before writing color OR depth. GLES has no fixed alpha test.
+static bool optAlphaCondition(std::string const& setting,std::string& condition,std::string& error){
+    condition.clear();
+    std::istringstream input(setting);std::string func,threshold,extra;
+    if(!(input>>func)){error="Empty alphaTest setting";return false;}
+    if(func=="off"||func=="OFF"){
+        if(input>>extra){error="Unexpected alphaTest off argument";return false;}
+        return true;
+    }
+    if(!(input>>threshold)||input>>extra){error="Expected alphaTest function and reference";return false;}
+    if(threshold.size()>32||threshold.empty()||
+       threshold.find_first_not_of("0123456789.+-eE")!=std::string::npos){
+        error="Invalid alphaTest reference";return false;
+    }
+    std::istringstream number(threshold);double ref=0;
+    if(!(number>>ref)||number>>extra||!(ref>=0&&ref<=1)){
+        error="Invalid alphaTest reference";return false;
+    }
+    if(threshold.find_first_of(".eE")==std::string::npos)threshold+=".0";
+    std::string op;
+    if(func=="NEVER"){condition="false";return true;}
+    if(func=="ALWAYS")return true;
+    if(func=="LESS")op="<";else if(func=="LEQUAL")op="<=";
+    else if(func=="EQUAL")op="==";else if(func=="NOTEQUAL")op="!=";
+    else if(func=="GEQUAL")op=">=";else if(func=="GREATER")op=">";
+    else{error="Unsupported alphaTest function: "+func;return false;}
+    condition="optFragColor.a "+op+" ("+threshold+")";return true;
+}
+static bool optTranslateGeometryFragment(std::string source,std::string& translated,std::string& error,
+                                        std::string const& alphaCondition={}){
     source=optGeometryLegacyNames(std::move(source));
-    return optTranslateRoutedComposite(std::move(source),false,translated,error);
+    return optTranslateRoutedComposite(std::move(source),false,translated,error,alphaCondition);
 }
 
 // Use the driver preprocessor to resolve shader option flags in the same
@@ -845,7 +877,7 @@ static bool optBuildJavaPipeline(
     // Buffer flip overrides, program scales and per-buffer dimensions require
     // distinct semantics. Reject those rather than presenting an invalid graph.
     std::string properties;
-    std::vector<std::pair<std::string,std::string>> enabledRules;
+    std::vector<std::pair<std::string,std::string>> enabledRules,alphaRules;
     if(optReadJavaMember(pack,"shaders/shaders.properties",properties)){
         std::istringstream input(properties);std::string line;
         while(std::getline(input,line)){
@@ -855,6 +887,9 @@ static bool optBuildJavaPipeline(
             if(eq!=std::string::npos){
                 auto last=line.find_last_not_of(" \t\r",eq-1);
                 auto key=line.substr(at,last-at+1);
+                if(key.rfind("alphaTest.",0)==0){
+                    alphaRules.emplace_back(key.substr(10),line.substr(eq+1));continue;
+                }
                 if(key.rfind("program.",0)==0&&optEnds(key,".enabled")){
                     enabledRules.emplace_back(key,line.substr(eq+1));
                     continue;
@@ -974,11 +1009,26 @@ static bool optBuildJavaPipeline(
         if(!applyProfile(vertexSource)||!applyProfile(fragmentSource)){error=member+": "+error;return false;}
         modmenu::android::shaderworld::GeometryProgram program;
         program.name=name;program.shadow=program.name.rfind("shadow",0)==0;
+        std::string expression,alpha,condition;
+        bool hasRule=false,hasAlpha=false;
+        for(auto const& rule:enabledRules)if(rule.first=="program."+program.name+".enabled"){expression=rule.second;hasRule=true;}
+        for(auto const& rule:enabledRules)if(rule.first=="program.world0/"+program.name+".enabled"){expression=rule.second;hasRule=true;}
+        if(hasRule){
+            if(expression.find_first_not_of(" \t\r")==std::string::npos){
+                error=member+": empty program.enabled expression";return false;
+            }
+            if(!optBuildEnabledProbe(fragmentSource,expression,program.enabledProbe,error)){
+                error=member+": "+error;return false;
+            }
+        }
+        for(auto const& rule:alphaRules)if(rule.first==program.name){alpha=rule.second;hasAlpha=true;}
+        for(auto const& rule:alphaRules)if(rule.first=="world0/"+program.name){alpha=rule.second;hasAlpha=true;}
+        if(hasAlpha&&!optAlphaCondition(alpha,condition,error)){error=member+": "+error;return false;}
         program.vertex=optTranslateGeometryVertex(std::move(vertexSource));
-        if(!optTranslateGeometryFragment(std::move(fragmentSource),program.fragment,error)){
+        if(!optTranslateGeometryFragment(std::move(fragmentSource),program.fragment,error,condition)){
             error=member+": "+error;return false;
         }
-        total+=program.vertex.size()+program.fragment.size();
+        total+=program.vertex.size()+program.fragment.size()+program.enabledProbe.size();
         if(total>12*1024*1024){error="Java geometry source budget exceeded";return false;}
         passes.front().geometryPrograms.push_back(std::move(program));
     }

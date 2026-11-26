@@ -211,6 +211,14 @@ void main(){
     assert(geometryFragment.find("uniform sampler2D optGeometryAtlas;")!=std::string::npos);
     assert(geometryFragment.find("texture(optGeometryAtlas,")!=std::string::npos);
     assert(geometryFragment.find("optRouteTarget3")!=std::string::npos);
+    std::string alpha;
+    assert(optAlphaCondition("GREATER 0.005",alpha,error));
+    assert(alpha=="optFragColor.a > (0.005)");
+    assert(optTranslateGeometryFragment("#version 120\nvoid main(){gl_FragData[0]=vec4(1.0);}\n",geometryFragment,error,alpha));
+    assert(geometryFragment.find("if (!(optFragColor.a > (0.005))) discard;")!=std::string::npos);
+    assert(optAlphaCondition("off",alpha,error)&&alpha.empty());
+    assert(optAlphaCondition("NEVER 0",alpha,error)&&alpha=="false");
+    assert(!optAlphaCondition("GREATER 2",alpha,error));
     std::vector<std::pair<unsigned,std::string>> formats;
     assert(optReadColorFormats("/*\nconst int colortex0Format = R11F_G11F_B10F; // HDR\nconst int gaux3Format = RGBA16;\n*/\n// const int colortex1Format = R8;\n",formats,error));
     assert(formats.size()==2&&formats[0].first==0&&formats[0].second=="R11F_G11F_B10F");

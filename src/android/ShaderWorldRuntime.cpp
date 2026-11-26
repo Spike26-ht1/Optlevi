@@ -1068,7 +1068,7 @@ void requestPipeline(std::vector<Pass> passes,std::string label) {
             if(g.name.empty()||g.name.size()>64||g.vertex.empty()||g.fragment.empty()||
                 std::find(names.begin(),names.end(),g.name)!=names.end())badImages=true;
             names.push_back(g.name);
-            total+=g.vertex.size()+g.fragment.size();
+            total+=g.vertex.size()+g.fragment.size()+g.enabledProbe.size();
         }
         if(p.colorFormats.size()>kBuffers)badImages=true;
         std::array<bool,kBuffers> formatSeen{};
@@ -1352,6 +1352,14 @@ bool acquireGeometryProgram(std::string const& name,GeometryHandle& result,std::
     auto const& sources=selectedSource.front().geometryPrograms;
     auto source=std::find_if(sources.begin(),sources.end(),[&](auto const& g){return g.name==name;});
     if(source==sources.end()){error="Java geometry program unavailable: "+name;return false;}
+    if(!source->enabledProbe.empty()){
+        Pass metadata;metadata.enabledProbe=source->enabledProbe;
+        bool enabled=true;std::uint32_t mip=0,history=0;
+        if(!evaluateEnabled(metadata,enabled,mip,history,error)){
+            error=name+" program.enabled: "+error;return false;
+        }
+        if(!enabled){error="Java geometry program disabled by shader-pack settings: "+name;return false;}
+    }
     GLuint vs=compile(GL_VERTEX_SHADER,source->vertex,error);
     if(!vs){error=name+" vertex: "+error;return false;}
     GLuint fs=compile(GL_FRAGMENT_SHADER,source->fragment,error);

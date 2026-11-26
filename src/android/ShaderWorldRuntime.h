@@ -20,6 +20,7 @@ struct PackTexture {
 struct GeometryProgram {
     std::string name,vertex,fragment;
     bool shadow=false;
+    std::string enabledProbe;
 };
 struct Pass {
     std::string name;
