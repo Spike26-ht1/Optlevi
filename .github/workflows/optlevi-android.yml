@@ -52,6 +52,9 @@ on:
       - "scripts/test-optlevi-touch.py"
       - "scripts/test-optlevi-pause-ui.py"
       - "docs/ui-research-log.md"
+      - "shaderpacks/**"
+      - "scripts/build-lab-shaders.py"
+      - "scripts/test-lab-shaders.py"
       - ".github/workflows/optlevi-android.yml"
       - "patches/modmenube/**"
   pull_request:
@@ -67,6 +70,9 @@ on:
       - "resources/levi_api/**"
       - "assets/**"
       - "scripts/package-optlevi.py"
+      - "shaderpacks/**"
+      - "scripts/build-lab-shaders.py"
+      - "scripts/test-lab-shaders.py"
       - ".github/workflows/optlevi-android.yml"
       - "patches/modmenube/**"
   workflow_dispatch:
@@ -210,6 +216,17 @@ jobs:
           sudo apt-get install -y libegl1-mesa-dev libgles2-mesa-dev
           g++ -std=c++17 -O2 -pthread -I src/android tests/java-composite-gles.cpp src/android/ShaderWorldRuntime.cpp -lEGL -lGLESv2 -o /tmp/optlevi-java-composite
           EGL_PLATFORM=surfaceless LIBGL_ALWAYS_SOFTWARE=1 /tmp/optlevi-java-composite
+
+      - name: Package original OptLevi Lab shader packs
+        run: python3 scripts/build-lab-shaders.py
+
+      - name: Upload OptLevi Lab shader packs
+        uses: actions/upload-artifact@v4
+        with:
+          name: OptLevi-Lab-shaders-0.1
+          path: build/lab-shaders/*.zip
+          if-no-files-found: error
+          retention-days: 14
 
       - name: Install opt-in Java final-pass world GPU test
         run: |
