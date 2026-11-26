@@ -80,7 +80,7 @@ struct DepthFrame {
     EGLSurface surface=EGL_NO_SURFACE;
     std::array<DepthSnapshot,5> images{}; // scene 0..2, shadow 3..4
     std::array<SceneColorSnapshot,kBuffers+2> colors{}; // scene and shadow
-    std::vector<WorldUniform> uniforms,derived,previousCamera,customValues;
+    std::vector<WorldUniform> uniforms,derived,previousCamera,customValues,shadowValues;
     custom::Smooth smoothPrevious,smoothNext;
     std::chrono::steady_clock::time_point previousTime{},frameTime{};
 };
@@ -150,7 +150,7 @@ struct ConsumeDepthFrame {
         }
         for(auto& d:depthFrame.images)d.fresh=false;
         for(auto& d:depthFrame.colors)d.fresh=false;
-        depthFrame.uniforms.clear();depthFrame.derived.clear();depthFrame.customValues.clear();
+        depthFrame.uniforms.clear();depthFrame.derived.clear();depthFrame.customValues.clear();depthFrame.shadowValues.clear();
         if(rendered){depthFrame.smoothPrevious=std::move(depthFrame.smoothNext);depthFrame.previousTime=depthFrame.frameTime;}
         else {depthFrame.smoothPrevious.clear();depthFrame.previousTime={};}
         depthFrame.smoothNext.clear();depthFrame.frameTime={};
@@ -176,6 +176,7 @@ std::string resourceSignature(){
     for(auto const& v:depthFrame.uniforms)uniforms.push_back(v.name+":"+std::to_string(v.glType));
     for(auto const& v:depthFrame.derived)uniforms.push_back(v.name+":"+std::to_string(v.glType));
     for(auto const& v:depthFrame.customValues)uniforms.push_back(v.name+":"+std::to_string(v.glType));
+    for(auto const& v:depthFrame.shadowValues)uniforms.push_back(v.name+":"+std::to_string(v.glType));
     std::sort(uniforms.begin(),uniforms.end());
     for(auto const& u:uniforms)signature+="u"+u+";";
     return signature;
@@ -208,6 +209,7 @@ bool integerUniform(unsigned type){
 WorldUniform const* findWorldUniform(std::string const& name){
     if(auto value=named(depthFrame.customValues,name))return value;
     if(auto value=named(depthFrame.uniforms,name))return value;
+    if(auto value=named(depthFrame.shadowValues,name))return value;
     return named(depthFrame.derived,name);
 }
 struct WorldBinding { std::string name; GLenum type; GLint location; };
@@ -278,7 +280,32 @@ std::optional<WorldUniform> frameBuiltin(std::string const& name){
     else return {};
     return u;
 }
+bool computeShadowCamera(shaderbridge::camera::ShadowCamera& camera,int& resolution){
+    if(selectedSource.empty()||!selectedSource.front().shadowSettings)return false;
+    auto sun=named(depthFrame.uniforms,"sunAngle");
+    auto position=named(depthFrame.uniforms,"cameraPosition");
+    if(!sun||sun->glType!=GL_FLOAT||!position||position->glType!=GL_FLOAT_VEC3)return false;
+    auto const& settings=*selectedSource.front().shadowSettings;
+    shaderbridge::camera::Vec eye{position->floats[0],position->floats[1],position->floats[2]};
+    if(!shaderbridge::camera::shadowCamera(settings,sun->floats[0],eye,camera))return false;
+    resolution=settings.resolution;return true;
+}
+void refreshShadowUniforms(){
+    depthFrame.shadowValues.clear();
+    // Never mix explicitly supplied matrices and a computed camera.
+    for(auto const* name:{"shadowModelView","shadowProjection","shadowModelViewInverse","shadowProjectionInverse"})
+        if(named(depthFrame.uniforms,name))return;
+    shaderbridge::camera::ShadowCamera camera;int resolution=0;
+    if(!computeShadowCamera(camera,resolution))return;
+    auto add=[&](char const* name,shaderbridge::camera::Matrix const& m){
+        WorldUniform u;u.name=name;u.glType=GL_FLOAT_MAT4;u.floats=m;
+        depthFrame.shadowValues.push_back(std::move(u));
+    };
+    add("shadowModelView",camera.view);add("shadowProjection",camera.projection);
+    add("shadowModelViewInverse",camera.viewInverse);add("shadowProjectionInverse",camera.projectionInverse);
+}
 void refreshCustomUniforms(){
+    refreshShadowUniforms();
     depthFrame.customValues.clear();depthFrame.smoothNext.clear();
     if(selectedSource.empty()||selectedSource.front().customUniforms.empty())return;
     if(depthFrame.frameTime==std::chrono::steady_clock::time_point{})
@@ -1060,6 +1087,7 @@ void requestPipeline(std::vector<Pass> passes,std::string label) {
         total+=p.fragment.size()+p.vertex.size()+p.enabledProbe.size();
         if(i!=0&&(!p.packTextures.empty()||!p.colorFormats.empty()||!p.geometryPrograms.empty()||!p.blockRules.empty()||!p.customUniforms.empty()))badImages=true;
         if(p.customUniforms.size()>256)badImages=true;
+        if(p.shadowSettings&&(i!=0||!shaderbridge::camera::validShadowSettings(*p.shadowSettings)))badImages=true;
         for(auto const& rule:p.customUniforms)if(rule.nodes.empty()||rule.nodes.size()>512)badImages=true;
         if(p.blockRules.size()>32768)badImages=true;
         if(p.geometryPrograms.size()>24)badImages=true;
@@ -1328,6 +1356,15 @@ bool captureSceneDepth(DepthPhase phase,unsigned framebuffer,unsigned internalFo
     unsigned n=unsigned(phase);
     if(n>=3){error="Unknown depth phase";return false;}
     return captureDepthAttachment(n,framebuffer,internalFormat,width,height,error);
+}
+bool getShadowCamera(shaderbridge::camera::ShadowCamera& camera,int& resolution,std::string& error){
+    if(eglGetCurrentContext()==EGL_NO_CONTEXT||eglGetCurrentContext()!=context||
+       eglGetCurrentSurface(EGL_DRAW)!=pipelineSurface||!computeShadowCamera(camera,resolution)){
+        error="Missing real Java sun angle/camera or unsupported shadow settings";return false;
+    }
+    for(auto const* name:{"shadowModelView","shadowProjection","shadowModelViewInverse","shadowProjectionInverse"})
+        if(named(depthFrame.uniforms,name)){error="Explicit shadow matrices already supplied";return false;}
+    return true;
 }
 bool captureShadowDepth(unsigned index,unsigned framebuffer,unsigned internalFormat,
                         int width,int height,std::string& error){

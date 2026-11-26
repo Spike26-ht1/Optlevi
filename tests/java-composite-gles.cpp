@@ -722,6 +722,34 @@ void main(){color=vec4(timeBrightness,blindFactor,isCold,1.0);}
     require(!profiles::apply(optionSource,profileSettings,appliedOptions,captureError),"Invalid profile value accepted");
     profileDefs["MINIMUM"]={"profile.LOW"};
     require(!profiles::resolve(profileDefs,"LOW",profileSettings,captureError),"Profile cycle accepted");
+    // A real published sun angle and camera pose drive the Java shadow
+    // projection. The actual shadow depth still has to come from geometry.
+    using modmenu::android::shaderbridge::camera::ShadowSettings;
+    using modmenu::android::shaderbridge::camera::ShadowCamera;
+    Pass lightCamera{"final",fragment(R"(
+uniform mat4 shadowProjection;
+uniform mat4 shadowModelView;
+uniform mat4 shadowModelViewInverse;
+layout(location=0) out vec4 color;
+void main(){color=vec4(shadowProjection[0][0]*32.0,
+(shadowModelView*shadowModelViewInverse)[1][1],0.25,1.0);}
+)"),{0},true};
+    ShadowSettings settings;settings.distance=64;settings.rotation=-40;settings.resolution=512;
+    lightCamera.shadowSettings=settings;
+    requestPipeline({lightCamera},"Java shadow camera fixture");
+    clearScene();beforeSwap(32,32);
+    require(!status().active,"Shadow camera without world inputs accepted");
+    WorldUniform realSun;realSun.name="sunAngle";realSun.glType=GL_FLOAT;realSun.floats[0]=0.25f;
+    WorldUniform realEye;realEye.name="cameraPosition";realEye.glType=GL_FLOAT_VEC3;
+    realEye.floats[0]=2;realEye.floats[1]=65;realEye.floats[2]=-7;
+    require(publishWorldUniforms({realSun,realEye},captureError),"Shadow camera source publish failed");
+    ShadowCamera light;int mapSize=0;
+    require(getShadowCamera(light,mapSize,captureError)&&mapSize==512&&
+        std::abs(light.projection[0]-1.0f/64)<1e-6,"Shadow camera query wrong");
+    clearScene();beforeSwap(32,32);actual=pixel();
+    require(status().active&&std::abs(int(actual[0])-128)<=2&&actual[1]>=253&&
+        std::abs(int(actual[2])-64)<=2,"Java shadow camera uniform output wrong");
+    clearScene();beforeSwap(32,32);require(!status().active,"Stale shadow camera accepted");
     // Missing geometry input must not turn into a fake color sampler.
     clearScene();
     Pass unavailable{"final",fragment(R"(

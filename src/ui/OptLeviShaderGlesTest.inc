@@ -843,6 +843,49 @@ static bool optLoadCompositeTextures(
     return true;
 }
 
+// Read the explicit literal orthographic shadow directives used by BSL.
+// Unknown expressions/conflicting declarations leave automatic camera off.
+static bool optReadShadowSettings(std::string const& source,
+                                  modmenu::android::shaderbridge::camera::ShadowSettings& settings){
+    std::istringstream input(source);std::string line;
+    std::map<std::string,double> seen;
+    bool block=false;
+    while(std::getline(input,line)){
+        std::string code;
+        for(size_t i=0;i<line.size();++i){
+            if(block){if(i+1<line.size()&&line.compare(i,2,"*/")==0){block=false;++i;}continue;}
+            if(i+1<line.size()&&line.compare(i,2,"//")==0)break;
+            if(i+1<line.size()&&line.compare(i,2,"/*")==0){block=true;++i;continue;}
+            code+=line[i];
+        }
+        auto at=code.find_first_not_of(" \t\r");
+        if(at==std::string::npos||code.compare(at,6,"const ")!=0)continue;
+        auto eq=code.find('=',at),end=code.find(';',at);
+        if(eq==std::string::npos||end==std::string::npos||end<eq)continue;
+        std::istringstream decl(code.substr(at,eq-at));std::string qualifier,type,key,extra;
+        if(!(decl>>qualifier>>type>>key)||decl>>extra)continue;
+        if(key=="shadowMapFov")return false;
+        if(key!="shadowMapResolution"&&key!="shadowDistance"&&key!="shadowNearPlane"&&
+           key!="shadowFarPlane"&&key!="shadowIntervalSize"&&key!="sunPathRotation")continue;
+        std::istringstream value(code.substr(eq+1,end-eq-1));double n=0;
+        if(!(value>>n)||value>>extra||!std::isfinite(n))return false;
+        auto old=seen.find(key);if(old!=seen.end()&&old->second!=n)return false;
+        seen[key]=n;
+        if(key=="shadowMapResolution"){
+            if(type!="int"||n<16||n>8192||std::floor(n)!=n)return false;
+            settings.resolution=int(n);
+        }else{
+            if(type!="float")return false;
+            if(key=="shadowDistance")settings.distance=float(n);
+            else if(key=="shadowNearPlane")settings.nearPlane=float(n);
+            else if(key=="shadowFarPlane")settings.farPlane=float(n);
+            else if(key=="shadowIntervalSize")settings.interval=float(n);
+            else if(key=="sunPathRotation")settings.rotation=float(n);
+        }
+    }
+    return modmenu::android::shaderbridge::camera::validShadowSettings(settings);
+}
+
 static bool optReadJavaProfiles(OptPackInfo const& pack,std::vector<std::string>& names,std::string& error){
     using namespace modmenu::android::shaderworld;
     std::string properties;profiles::Definitions definitions;
@@ -1009,6 +1052,10 @@ static bool optBuildJavaPipeline(
         if(!applyProfile(vertexSource)||!applyProfile(fragmentSource)){error=member+": "+error;return false;}
         modmenu::android::shaderworld::GeometryProgram program;
         program.name=name;program.shadow=program.name.rfind("shadow",0)==0;
+        if(program.name=="shadow"){
+            modmenu::android::shaderbridge::camera::ShadowSettings config;
+            if(optReadShadowSettings(vertexSource,config))passes.front().shadowSettings=config;
+        }
         std::string expression,alpha,condition;
         bool hasRule=false,hasAlpha=false;
         for(auto const& rule:enabledRules)if(rule.first=="program."+program.name+".enabled"){expression=rule.second;hasRule=true;}

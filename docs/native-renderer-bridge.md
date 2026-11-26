@@ -76,3 +76,7 @@ Java geometry and fullscreen programs share engine-owned frame counter, modulo, 
 ## Geometry program controls
 
 Original `program.<name>.enabled` and dimension-specific overrides now gate geometry and shadow compilation through the same GLES preprocessor probe used for fullscreen programs. `alphaTest.<program>` comparisons are applied to the first fragment output before any routed color or depth write, implementing the explicit OptiFine/Iris property on GLES. Only declared alpha overrides are applied; implicit per-render-type defaults still depend on the native adapter. No material binaries are changed.
+
+## Java orthographic shadow camera
+
+The engine reads literal shadow camera settings from the expanded/profile-adjusted shadow vertex source. It computes a camera-relative orthographic shadow view/projection and validated inverses from actual Java-convention `sunAngle` and `cameraPosition`, matching the rotation, signed grid remainder and OpenGL clip-space convention documented by Iris 1.21.1 (https://github.com/IrisShaders/Iris/blob/1.21.1/common/src/main/java/net/irisshaders/iris/shadows/ShadowMatrices.java). Unsupported perspective FOV or conflicting/nonliteral settings do not enable automatic camera calculation. Explicit supplied shadow matrices take precedence as a complete set. `getShadowCamera` exposes the computed transform and requested map size to the future renderer adapter; this does not create shadow geometry or claim real world shadow rendering. No material binaries are modified.

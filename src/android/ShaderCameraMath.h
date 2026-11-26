@@ -35,6 +35,48 @@ inline bool invert(Matrix const& input,Matrix& output){
     }
     output=result;return true;
 }
+struct ShadowSettings {
+    int resolution=1024;
+    float distance=160,nearPlane=-100.05f,farPlane=156,interval=2,rotation=0;
+};
+struct ShadowCamera { Matrix view{},projection{},viewInverse{},projectionInverse{}; };
+inline Matrix multiply(Matrix const& a,Matrix const& b){
+    Matrix result{};
+    for(int c=0;c<4;++c)for(int r=0;r<4;++r)
+        for(int k=0;k<4;++k)result[c*4+r]+=a[k*4+r]*b[c*4+k];
+    return result;
+}
+inline bool validShadowSettings(ShadowSettings const& s){
+    return s.resolution>=16&&s.resolution<=8192&&
+        std::isfinite(s.distance)&&s.distance>0&&s.distance<=16384&&
+        std::isfinite(s.nearPlane)&&std::isfinite(s.farPlane)&&s.farPlane-s.nearPlane>0.001f&&
+        std::isfinite(s.interval)&&s.interval>=0&&s.interval<=1024&&
+        std::isfinite(s.rotation)&&std::abs(s.rotation)<=360;
+}
+// Java 1.21 Iris-compatible orthographic shadow convention. Coordinates
+// are camera-relative Java world coordinates, NOT native Bedrock matrices.
+inline bool shadowCamera(ShadowSettings const& s,float sunAngle,Vec const& eye,ShadowCamera& output){
+    if(!validShadowSettings(s)||!std::isfinite(sunAngle)||sunAngle<0||sunAngle>1)return false;
+    for(double x:eye)if(!std::isfinite(x))return false;
+    constexpr double pi=3.14159265358979323846;
+    double angle=double(sunAngle);if(angle>0.5)angle-=0.5;
+    double sky=angle-0.25;double z=-2*pi*sky,x=s.rotation*pi/180;
+    float cz=float(std::cos(z)),sz=float(std::sin(z)),cx=float(std::cos(x)),sx=float(std::sin(x));
+    Matrix rx90={1,0,0,0, 0,0,1,0, 0,-1,0,0, 0,0,0,1};
+    Matrix rz={cz,sz,0,0, -sz,cz,0,0, 0,0,1,0, 0,0,0,1};
+    Matrix rx={1,0,0,0, 0,cx,sx,0, 0,-sx,cx,0, 0,0,0,1};
+    ShadowCamera result;result.view=multiply(multiply(rx90,rz),rx);
+    if(s.interval>0){
+        // Preserve Java signed remainder convention for grid snapping.
+        for(int r=0;r<3;++r)for(int c=0;c<3;++c)
+            result.view[12+r]+=result.view[c*4+r]*float(std::fmod(eye[c],double(s.interval))-s.interval*0.5);
+    }
+    float span=s.farPlane-s.nearPlane;
+    result.projection={1/s.distance,0,0,0, 0,1/s.distance,0,0,
+        0,0,-2/span,0, 0,0,-(s.farPlane+s.nearPlane)/span,1};
+    if(!invert(result.view,result.viewInverse)||!invert(result.projection,result.projectionInverse))return false;
+    output=result;return true;
+}
 struct Projection {
     Matrix matrix{},inverse{};
     float nearClip=0,farClip=0;

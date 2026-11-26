@@ -7,6 +7,7 @@
 #include "ShaderMeshMapping.h"
 #include "ShaderPackUniforms.h"
 #include "ShaderPackProfiles.h"
+#include "ShaderCameraMath.h"
 
 namespace modmenu::android::shaderworld {
 // Ordered fullscreen pass graph. Only buffers actually produced by a pass
@@ -44,6 +45,7 @@ struct Pass {
     std::vector<GeometryProgram> geometryPrograms;
     std::vector<mesh::BlockRule> blockRules;
     std::vector<custom::Rule> customUniforms;
+    std::optional<shaderbridge::camera::ShadowSettings> shadowSettings;
     // Clear=false history is reflected via enabledProbe; no history buffer
     // is usable without an actual writer in the graph.
 };
@@ -70,6 +72,9 @@ bool captureSceneDepth(DepthPhase phase,unsigned framebuffer,unsigned internalFo
 bool captureSceneColor(unsigned colortex,unsigned framebuffer,unsigned attachment,
                        std::string const& format,int width,int height,std::string& error);
 // Independent light-space resources; the adapter must render actual shadows.
+// Obtain the engine-computed camera and selected pack shadow resolution.
+// The renderer supplies actual Java sunAngle and cameraPosition first.
+bool getShadowCamera(shaderbridge::camera::ShadowCamera& camera,int& resolution,std::string& error);
 bool captureShadowDepth(unsigned index,unsigned framebuffer,unsigned internalFormat,
                         int width,int height,std::string& error);
 bool captureShadowColor(unsigned index,unsigned framebuffer,unsigned attachment,
