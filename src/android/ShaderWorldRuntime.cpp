@@ -1,4 +1,5 @@
 #include "ShaderWorldRuntime.h"
+#include <cstddef>
 #include "ShaderCameraMath.h"
 
 #include <EGL/egl.h>
@@ -1321,9 +1322,14 @@ bool translateTerrainQuad(std::string const& canonicalName,mesh::State const& st
     }
     {std::lock_guard lock(mu);if(pendingAction!=0){error="Java shader selection changing";return false;}}
     int id=0;
-    if(!mesh::blockId(selectedSource.front().blockRules,canonicalName,states,id)){
-        error="Unmapped or ambiguous Java block state: "+canonicalName;return false;
+    if(canonicalName.empty()||canonicalName.find(':')==std::string::npos){
+        error="Missing canonical Java block name";return false;
     }
+    auto match=mesh::resolveBlockId(selectedSource.front().blockRules,canonicalName,states,id);
+    if(match==mesh::BlockMatch::Ambiguous){error="Ambiguous Java block state: "+canonicalName;return false;}
+    // A verified ordinary block absent from block.properties has ID zero,
+    // distinct from an unknown native block identity or conflicting rule.
+    if(match==mesh::BlockMatch::Unlisted)id=0;
     return mesh::translateQuad(vertices,center,id,output,error);
 }
 
@@ -1467,6 +1473,57 @@ bool drawGeometry(GeometryDraw const& draw,std::string& error){
     bool ok=bound&&glGetError()==GL_NO_ERROR;
     if(compare)glDeleteSamplers(1,&compare);
     return finish(ok,ok?"":"Native Java geometry draw failed");
+}
+
+bool drawTerrainQuads(GeometryDraw const& draw,std::vector<TerrainQuad> const& faces,std::string& error){
+    if(faces.empty()||faces.size()>16384||draw.instances!=1){
+        error="Unsupported terrain batch size or instancing";return false;
+    }
+    std::vector<mesh::JavaVertex> vertices;
+    std::vector<std::uint32_t> indices;
+    vertices.reserve(faces.size()*4);indices.reserve(faces.size()*6);
+    for(auto const& face:faces){
+        std::array<mesh::JavaVertex,4> mapped{};
+        if(!translateTerrainQuad(face.canonicalName,face.states,face.vertices,face.center,mapped,error))return false;
+        auto base=std::uint32_t(vertices.size());
+        vertices.insert(vertices.end(),mapped.begin(),mapped.end());
+        for(auto i:{0u,1u,2u,0u,2u,3u})indices.push_back(base+i);
+    }
+    GLint oldVao=0,oldArray=0;
+    glGetIntegerv(GL_VERTEX_ARRAY_BINDING,&oldVao);
+    glGetIntegerv(GL_ARRAY_BUFFER_BINDING,&oldArray);
+    GLuint vao=0,vbo=0,ebo=0;
+    glGenVertexArrays(1,&vao);glGenBuffers(1,&vbo);glGenBuffers(1,&ebo);
+    auto cleanup=[&](){
+        glBindVertexArray(GLuint(oldVao));glBindBuffer(GL_ARRAY_BUFFER,GLuint(oldArray));
+        if(ebo)glDeleteBuffers(1,&ebo);if(vbo)glDeleteBuffers(1,&vbo);
+        if(vao)glDeleteVertexArrays(1,&vao);
+    };
+    if(!vao||!vbo||!ebo){cleanup();error="Cannot allocate mapped terrain buffers";return false;}
+    glBindVertexArray(vao);glBindBuffer(GL_ARRAY_BUFFER,vbo);
+    glBufferData(GL_ARRAY_BUFFER,GLsizeiptr(vertices.size()*sizeof(mesh::JavaVertex)),vertices.data(),GL_STREAM_DRAW);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER,ebo);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER,GLsizeiptr(indices.size()*sizeof(std::uint32_t)),indices.data(),GL_STREAM_DRAW);
+    using V=mesh::JavaVertex;
+    const std::array<std::pair<GLint,size_t>,9> attrs={{
+        {4,offsetof(V,position)},{4,offsetof(V,color)},{3,offsetof(V,normal)},
+        {4,offsetof(V,uv0)},{4,offsetof(V,uv1)},{4,offsetof(V,entity)},
+        {4,offsetof(V,midUV)},{4,offsetof(V,tangent)},{3,offsetof(V,midBlock)}
+    }};
+    for(unsigned i=0;i<attrs.size();++i){
+        glVertexAttribPointer(i,attrs[i].first,GL_FLOAT,GL_FALSE,sizeof(V),
+            reinterpret_cast<void const*>(attrs[i].second));
+        glEnableVertexAttribArray(i);
+    }
+    bool ok=glGetError()==GL_NO_ERROR;
+    if(ok){
+        auto batch=draw;
+        batch.vao=vao;batch.first=0;batch.count=int(indices.size());
+        batch.indexType=GL_UNSIGNED_INT;batch.indexOffset=0;
+        ok=drawGeometry(batch,error);
+    }else error="Mapped terrain buffer upload failed";
+    cleanup();
+    return ok;
 }
 
 bool renderDeferred(int width,int height,std::string& error){

@@ -119,6 +119,15 @@ bool drawGeometry(GeometryDraw const& draw,std::string& error);
 bool translateTerrainQuad(std::string const& canonicalName,mesh::State const& states,
     std::array<mesh::NativeVertex,4> const& vertices,mesh::V3 center,
     std::array<mesh::JavaVertex,4>& output,std::string& error);
+struct TerrainQuad {
+    std::string canonicalName;
+    mesh::State states;
+    std::array<mesh::NativeVertex,4> vertices;
+    mesh::V3 center;
+};
+// The native adapter supplies verified faces and per-draw inputs. Uses
+// the selected geometry/shadow program with a generated mapped VAO.
+bool drawTerrainQuads(GeometryDraw const& draw,std::vector<TerrainQuad> const& faces,std::string& error);
 void beforeSwap(int width,int height);
 void stop();
 } // namespace modmenu::android::shaderworld

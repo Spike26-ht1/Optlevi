@@ -594,6 +594,22 @@ void main(){optRouteTarget0=tint;}
         std::abs(int(actual[2])-191)<=2,"Geometry output wrong");
     mesh.uniforms.clear();
     require(!drawGeometry(mesh,captureError),"Missing draw transform accepted");
+    // Use the translated quad batch path, not a hand-built Java VAO.
+    TerrainQuad quad;quad.canonicalName="minecraft:stone";quad.center={0,0,0};
+    quad.vertices[0].position={-1,-1,0};quad.vertices[1].position={1,-1,0};
+    quad.vertices[2].position={1,1,0};quad.vertices[3].position={-1,1,0};
+    quad.vertices[0].packedUV={0.1f,0.1f};quad.vertices[1].packedUV={0.2f,0.1f};
+    quad.vertices[2].packedUV={0.2f,0.2f};quad.vertices[3].packedUV={0.1f,0.2f};
+    for(auto& vertex:quad.vertices){vertex.color={0.6f,0.2f,0.4f,1};vertex.packedLight=0;}
+    mesh.uniforms={transform};glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);
+    require(drawTerrainQuads(mesh,{quad},captureError),"Mapped terrain batch draw failed");
+    glReadPixels(16,16,1,1,GL_RGBA,GL_UNSIGNED_BYTE,actual.data());
+    require(std::abs(int(actual[0])-153)<=2&&std::abs(int(actual[1])-51)<=2&&
+        std::abs(int(actual[2])-102)<=2,"Mapped terrain batch output wrong");
+    GLint restoredVao=0,restoredArray=0;
+    glGetIntegerv(GL_VERTEX_ARRAY_BINDING,&restoredVao);
+    glGetIntegerv(GL_ARRAY_BUFFER_BINDING,&restoredArray);
+    require(GLuint(restoredVao)==meshVao&&GLuint(restoredArray)==meshVbo,"Terrain batch leaked GL bindings");
     glDisable(GL_DEPTH_TEST);glBindFramebuffer(GL_FRAMEBUFFER,0);glBindVertexArray(0);
     glDeleteBuffers(1,&meshVbo);glDeleteBuffers(1,&meshEbo);glDeleteVertexArrays(1,&meshVao);
     glDeleteRenderbuffers(1,&meshDepth);glDeleteTextures(1,&meshColor);glDeleteFramebuffers(1,&meshFbo);

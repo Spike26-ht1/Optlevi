@@ -106,7 +106,8 @@ inline bool parseBlockRules(std::string const& text,std::vector<BlockRule>& out,
 }
 // State-specific mappings outrank generic mappings. Conflicting equally
 // specific matches are reported rather than choosing an arbitrary material.
-inline bool blockId(std::vector<BlockRule> const& rules,std::string const& canonicalName,State const& states,int& id){
+enum class BlockMatch { Unlisted, Matched, Ambiguous };
+inline BlockMatch resolveBlockId(std::vector<BlockRule> const& rules,std::string const& canonicalName,State const& states,int& id){
     id=0;int best=-1;bool ambiguous=false;
     for(auto const& r:rules){
         if(r.name!=canonicalName)continue;
@@ -117,7 +118,11 @@ inline bool blockId(std::vector<BlockRule> const& rules,std::string const& canon
         if(n>best){best=n;id=r.id;ambiguous=false;}
         else if(n==best&&r.id!=id)ambiguous=true;
     }
-    return best>=0&&!ambiguous;
+    if(ambiguous)return BlockMatch::Ambiguous;
+    return best>=0?BlockMatch::Matched:BlockMatch::Unlisted;
+}
+inline bool blockId(std::vector<BlockRule> const& rules,std::string const& canonicalName,State const& states,int& id){
+    return resolveBlockId(rules,canonicalName,states,id)==BlockMatch::Matched;
 }
 using V2=std::array<float,2>;using V3=std::array<float,3>;using V4=std::array<float,4>;
 struct NativeVertex { V3 position;V4 color;V2 packedUV;float packedLight; };
