@@ -750,6 +750,68 @@ void main(){color=vec4(shadowProjection[0][0]*32.0,
     require(status().active&&std::abs(int(actual[0])-128)<=2&&actual[1]>=253&&
         std::abs(int(actual[2])-64)<=2,"Java shadow camera uniform output wrong");
     clearScene();beforeSwap(32,32);require(!status().active,"Stale shadow camera accepted");
+    // Render real mapped triangles into the engine-owned shadow targets.
+    // The test uses a synthetic mesh, but depth is written by the GPU and
+    // the final program samples BOTH opaque-only and complete shadow maps.
+    Pass shadowScene{"final",fragment(R"(
+precision highp sampler2DShadow;
+uniform sampler2DShadow shadowtex0;
+uniform sampler2DShadow shadowtex1;
+uniform sampler2D shadowcolor0;
+layout(location=0) out vec4 color;
+void main(){color=vec4(texture(shadowtex0,vec3(0.5,0.5,0.5)),
+texture(shadowtex1,vec3(0.5,0.5,0.5)),texture(shadowcolor0,vec2(0.5)).g,1.0);}
+)"),{0},true};
+    settings.resolution=32;settings.distance=1;settings.nearPlane=-1;settings.farPlane=1;
+    settings.rotation=0;settings.interval=0;
+    shadowScene.shadowSettings=settings;
+    shadowScene.geometryPrograms.push_back({"shadow",R"(#version 300 es
+in vec4 optPosition;
+in vec4 optColor;
+uniform mat4 optModelViewProjection;
+out vec4 tint;
+void main(){gl_Position=optModelViewProjection*optPosition;tint=optColor;}
+)",R"(#version 300 es
+precision highp float;
+in vec4 tint;
+layout(location=0) out vec4 optRouteTarget0;
+void main(){optRouteTarget0=tint;}
+)",true});
+    requestPipeline({shadowScene},"Engine owned shadow scene fixture");
+    clearScene();beforeSwap(32,32);
+    require(!status().active,"Shadow graph accepted without generated maps");
+    require(publishWorldUniforms({realSun,realEye},captureError),"Shadow scene inputs failed");
+    require(getShadowCamera(light,mapSize,captureError),"Shadow scene camera failed");
+    GLuint shadowMeshVao=0,shadowMeshVbo=0;
+    glGenVertexArrays(1,&shadowMeshVao);glBindVertexArray(shadowMeshVao);
+    glGenBuffers(1,&shadowMeshVbo);glBindBuffer(GL_ARRAY_BUFFER,shadowMeshVbo);
+    // Invert the actual camera transform to construct known light-space
+    // triangle positions in the camera-relative world coordinate frame.
+    std::vector<float> shadowVerts;
+    auto inverse=modmenu::android::shaderbridge::camera::multiply(light.viewInverse,light.projectionInverse);
+    for(int layer=0;layer<2;++layer){
+        float z=layer==0?0.5f:-0.5f;
+        for(auto xy:std::array<std::array<float,2>,3>{{{-1,-1},{3,-1},{-1,3}}}){
+            std::array<float,4> clip{xy[0],xy[1],z,1};
+            for(int row=0;row<4;++row){
+                float v=0;for(int col=0;col<4;++col)v+=inverse[col*4+row]*clip[col];
+                shadowVerts.push_back(v);
+            }
+            for(float v:std::array<float,4>{1,layer==0?0.2f:0.6f,1,1})shadowVerts.push_back(v);
+        }
+    }
+    glBufferData(GL_ARRAY_BUFFER,GLsizeiptr(shadowVerts.size()*sizeof(float)),shadowVerts.data(),GL_STATIC_DRAW);
+    glVertexAttribPointer(0,4,GL_FLOAT,GL_FALSE,8*sizeof(float),nullptr);glEnableVertexAttribArray(0);
+    glVertexAttribPointer(1,4,GL_FLOAT,GL_FALSE,8*sizeof(float),reinterpret_cast<void*>(4*sizeof(float)));glEnableVertexAttribArray(1);
+    GeometryDraw caster;caster.program="shadow";caster.vao=shadowMeshVao;caster.count=3;
+    auto transparentCaster=caster;transparentCaster.first=3;
+    require(renderShadowScene({caster},{transparentCaster},captureError),"Engine shadow pass failed");
+    clearScene();beforeSwap(32,32);actual=pixel();
+    require(status().active&&actual[0]<=2&&actual[1]>=253&&
+        std::abs(int(actual[2])-153)<=2,"Generated opaque/translucent shadow textures wrong");
+    clearScene();beforeSwap(32,32);require(!status().active,"Generated shadow textures reused without world draw");
+    glBindVertexArray(0);glBindBuffer(GL_ARRAY_BUFFER,0);
+    glDeleteVertexArrays(1,&shadowMeshVao);glDeleteBuffers(1,&shadowMeshVbo);
     // Missing geometry input must not turn into a fake color sampler.
     clearScene();
     Pass unavailable{"final",fragment(R"(

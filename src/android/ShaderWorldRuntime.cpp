@@ -1622,6 +1622,151 @@ bool drawGeometry(GeometryDraw const& draw,std::string& error){
     return finish(ok,ok?"":"Native Java geometry draw failed");
 }
 
+bool renderShadowScene(std::vector<GeometryDraw> const& opaque,
+                       std::vector<GeometryDraw> const& translucent,std::string& error){
+    if(opaque.size()+translucent.size()==0||opaque.size()+translucent.size()>65536){
+        error="No supplied world shadow geometry or excessive batch count";return false;
+    }
+    shaderbridge::camera::ShadowCamera light;int size=0;
+    if(!getShadowCamera(light,size,error)||size>4096)return false;
+    syncDepthContext();
+    std::array<bool,2> colors{};
+    auto inspect=[&](std::vector<GeometryDraw> const& draws){
+        for(auto const& draw:draws){
+            GeometryHandle g;
+            if(!acquireGeometryProgram(draw.program,g,error))return false;
+            if(!g.shadow){error="Non-shadow program in light-space pass";return false;}
+            for(auto target:g.targets){
+                if(target>=2){error="Unsupported shadow color target";return false;}
+                colors[target]=true;
+            }
+        }
+        return true;
+    };
+    // Invalidate old data even if a new scene fails validation.
+    auto& all=depthFrame.images[3];auto& solid=depthFrame.images[4];
+    all.fresh=solid.fresh=false;
+    for(unsigned i=0;i<2;++i)depthFrame.colors[kBuffers+i].fresh=false;
+    if(!inspect(opaque)||!inspect(translucent))return false;
+    SavedState saved;
+    GLint oldDepthFunc=GL_LESS;GLfloat oldRange[2]{};
+    glGetIntegerv(GL_DEPTH_FUNC,&oldDepthFunc);glGetFloatv(GL_DEPTH_RANGE,oldRange);
+    GLuint work=0;
+    auto finish=[&](bool ok){
+        if(work)glDeleteFramebuffers(1,&work);
+        glDepthFunc(GLenum(oldDepthFunc));glDepthRangef(oldRange[0],oldRange[1]);
+        saved.restore();
+        if(!ok){
+            all.fresh=solid.fresh=false;
+            for(unsigned i=0;i<2;++i)depthFrame.colors[kBuffers+i].fresh=false;
+        }
+        return ok;
+    };
+    if(glGetError()!=GL_NO_ERROR){error="Pre-existing GLES error at shadow pass";return finish(false);}
+    std::uint64_t pixels=std::uint64_t(size)*size;
+    std::uint64_t oldBytes=all.bytes+solid.bytes;
+    unsigned channels=0;
+    for(unsigned i=0;i<2;++i){
+        oldBytes+=depthFrame.colors[kBuffers+i].bytes;
+        channels+=colors[i]?1:0;
+    }
+    if(colorTargetBytes+packGpuBytes+depthBytes()-oldBytes+pixels*(8+4*channels)>kMemoryLimit){
+        error="Java shadow scene exceeds GPU memory budget";return finish(false);
+    }
+    glActiveTexture(GL_TEXTURE0);glBindSampler(0,0);glBindBuffer(GL_PIXEL_UNPACK_BUFFER,0);
+    auto depth=[&](DepthSnapshot& d){
+        if(d.tex&&d.fbo&&d.width==size&&d.height==size&&d.format==GL_DEPTH_COMPONENT24)return true;
+        releaseDepth(d);
+        glGenTextures(1,&d.tex);glBindTexture(GL_TEXTURE_2D,d.tex);
+        glTexStorage2D(GL_TEXTURE_2D,1,GL_DEPTH_COMPONENT24,size,size);
+        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_COMPARE_MODE,GL_NONE);
+        glGenFramebuffers(1,&d.fbo);glBindFramebuffer(GL_FRAMEBUFFER,d.fbo);
+        glFramebufferTexture2D(GL_FRAMEBUFFER,GL_DEPTH_ATTACHMENT,GL_TEXTURE_2D,d.tex,0);
+        const GLenum none=GL_NONE;glDrawBuffers(1,&none);glReadBuffer(GL_NONE);
+        if(!d.tex||!d.fbo||glCheckFramebufferStatus(GL_FRAMEBUFFER)!=GL_FRAMEBUFFER_COMPLETE||
+           glGetError()!=GL_NO_ERROR){releaseDepth(d);return false;}
+        d.width=d.height=size;d.format=GL_DEPTH_COMPONENT24;d.bytes=pixels*4;
+        return true;
+    };
+    if(!depth(all)||!depth(solid)){error="Cannot allocate Java shadow depth targets";return finish(false);}
+    for(unsigned i=0;i<2;++i){
+        auto& d=depthFrame.colors[kBuffers+i];
+        if(!colors[i]){releaseColor(d);continue;}
+        if(d.tex&&d.width==size&&d.height==size&&d.format.internal==GL_RGBA8)continue;
+        releaseColor(d);
+        d.format=resolveColorFormat("RGBA8");
+        if(!allocateTexture(d.tex,size,size,d.format)){
+            releaseColor(d);error="Cannot allocate Java shadow color target";return finish(false);
+        }
+        d.width=d.height=size;d.bytes=pixels*4;
+    }
+    glGenFramebuffers(1,&work);glBindFramebuffer(GL_FRAMEBUFFER,work);
+    glFramebufferTexture2D(GL_FRAMEBUFFER,GL_DEPTH_ATTACHMENT,GL_TEXTURE_2D,all.tex,0);
+    glDisable(GL_BLEND);glDisable(GL_SCISSOR_TEST);glDisable(GL_STENCIL_TEST);
+    glDisable(GL_CULL_FACE);glDisable(GL_RASTERIZER_DISCARD);
+    glEnable(GL_DEPTH_TEST);glDepthMask(GL_TRUE);glDepthFunc(GL_LEQUAL);glDepthRangef(0,1);
+    glColorMask(GL_TRUE,GL_TRUE,GL_TRUE,GL_TRUE);
+    const GLfloat farDepth=1;
+    // Clear each owned color attachment once. Default white is the empty
+    // light transmission value, not a fabricated finished shadow map.
+    const GLfloat white[4]={1,1,1,1};
+    const GLenum first=GL_COLOR_ATTACHMENT0;
+    glDrawBuffers(1,&first);glReadBuffer(first);
+    for(unsigned i=0;i<2;++i)if(colors[i]){
+        glFramebufferTexture2D(GL_FRAMEBUFFER,first,GL_TEXTURE_2D,depthFrame.colors[kBuffers+i].tex,0);
+        if(glCheckFramebufferStatus(GL_FRAMEBUFFER)!=GL_FRAMEBUFFER_COMPLETE){
+            error="Incomplete shadow color framebuffer";return finish(false);
+        }
+        glClearBufferfv(GL_COLOR,0,white);
+    }
+    glClearBufferfv(GL_DEPTH,0,&farDepth);
+    if(!work||glGetError()!=GL_NO_ERROR){error="Cannot clear Java shadow targets";return finish(false);}
+    auto render=[&](std::vector<GeometryDraw> const& draws){
+        for(auto draw:draws){
+            GeometryHandle g;
+            if(!acquireGeometryProgram(draw.program,g,error))return false;
+            glBindFramebuffer(GL_FRAMEBUFFER,work);
+            for(unsigned slot=0;slot<2;++slot){
+                GLuint texture=slot<g.targets.size()?depthFrame.colors[kBuffers+g.targets[slot]].tex:0;
+                glFramebufferTexture2D(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0+slot,GL_TEXTURE_2D,texture,0);
+            }
+            glReadBuffer(GL_COLOR_ATTACHMENT0);
+            draw.framebuffer=work;draw.width=draw.height=size;
+            auto matrix=[&](char const* name,shaderbridge::camera::Matrix const& m){
+                draw.uniforms.erase(std::remove_if(draw.uniforms.begin(),draw.uniforms.end(),
+                    [&](auto const& u){return u.name==name;}),draw.uniforms.end());
+                WorldUniform u;u.name=name;u.glType=GL_FLOAT_MAT4;u.floats=m;
+                draw.uniforms.push_back(std::move(u));
+            };
+            // Mesh input coordinates must already be camera-relative; a
+            // separate native chunk-local transform must be applied by caller.
+            matrix("optModelView",light.view);matrix("optProjection",light.projection);
+            matrix("optModelViewProjection",shaderbridge::camera::multiply(light.projection,light.view));
+            WorldUniform normal;normal.name="optNormalMatrix";normal.glType=GL_FLOAT_MAT3;
+            for(unsigned c=0;c<3;++c)for(unsigned r=0;r<3;++r)normal.floats[c*3+r]=light.view[c*4+r];
+            draw.uniforms.erase(std::remove_if(draw.uniforms.begin(),draw.uniforms.end(),
+                [](auto const& u){return u.name=="optNormalMatrix";}),draw.uniforms.end());
+            draw.uniforms.push_back(normal);
+            if(!drawGeometry(draw,error))return false;
+        }
+        return true;
+    };
+    if(!render(opaque))return finish(false);
+    // shadowtex1 excludes translucent casters; shadowtex0 includes them.
+    glBindFramebuffer(GL_READ_FRAMEBUFFER,all.fbo);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER,solid.fbo);
+    glBlitFramebuffer(0,0,size,size,0,0,size,size,GL_DEPTH_BUFFER_BIT,GL_NEAREST);
+    if(glGetError()!=GL_NO_ERROR){error="Cannot preserve opaque shadow depth";return finish(false);}
+    if(!render(translucent))return finish(false);
+    all.fresh=solid.fresh=true;
+    for(unsigned i=0;i<2;++i)if(colors[i])depthFrame.colors[kBuffers+i].fresh=true;
+    return finish(true);
+}
+
 bool drawTerrainQuads(GeometryDraw const& draw,std::vector<TerrainQuad> const& faces,std::string& error){
     if(faces.empty()||faces.size()>16384||draw.instances!=1){
         error="Unsupported terrain batch size or instancing";return false;

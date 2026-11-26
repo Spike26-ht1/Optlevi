@@ -128,6 +128,11 @@ struct GeometryDraw {
 // draws if their programs need viewport built-ins.
 bool beginJavaFrame(int width,int height,std::string& error);
 bool drawGeometry(GeometryDraw const& draw,std::string& error);
+// Inputs are mapped Java camera-relative world meshes, not screen quads.
+// Owns light-space attachments and performs the opaque/translucent split.
+// Per-draw material uniforms and textures must describe the supplied mesh.
+bool renderShadowScene(std::vector<GeometryDraw> const& opaque,
+                       std::vector<GeometryDraw> const& translucent,std::string& error);
 // Actual block state must already be normalized to Java names/properties.
 bool translateTerrainQuad(std::string const& canonicalName,mesh::State const& states,
     std::array<mesh::NativeVertex,4> const& vertices,mesh::V3 center,
