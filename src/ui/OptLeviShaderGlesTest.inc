@@ -922,6 +922,7 @@ static bool optBuildJavaPipeline(
     std::string properties;
     std::vector<std::pair<std::string,std::string>> enabledRules,alphaRules;
     std::vector<modmenu::android::shaderworld::BufferScale> scales;
+    bool nativeTerrainPhase=false;
     if(optReadJavaMember(pack,"shaders/shaders.properties",properties)){
         std::istringstream input(properties);std::string line;
         while(std::getline(input,line)){
@@ -931,6 +932,11 @@ static bool optBuildJavaPipeline(
             if(eq!=std::string::npos){
                 auto last=line.find_last_not_of(" \t\r",eq-1);
                 auto key=line.substr(at,last-at+1);
+                if(key=="optlevi.nativeTerrainPhase"){
+                    std::istringstream value(line.substr(eq+1));std::string mode,extra;
+                    if(!(value>>mode)||mode!="true"||value>>extra){error="Invalid native terrain phase property";return false;}
+                    nativeTerrainPhase=true;continue;
+                }
                 if(key.rfind("size.buffer.colortex",0)==0){
                     auto suffix=key.substr(std::string("size.buffer.colortex").size());
                     unsigned index=0;bool valid=!suffix.empty();
@@ -1107,6 +1113,10 @@ static bool optBuildJavaPipeline(
     }
     passes.front().colorFormats=std::move(colorFormats);
     passes.front().bufferScales=std::move(scales);
+    passes.front().nativeTerrainPhase=nativeTerrainPhase;
+    if(nativeTerrainPhase&&(!passes.front().geometryPrograms.empty()||std::any_of(passes.begin(),passes.end(),[](auto const& p){return p.deferred;}))){
+        error="Native terrain phase is only available to explicit fullscreen terrain effects";return false;
+    }
     passes.front().customUniforms=std::move(calculated);
     if(!optLoadCompositeTextures(pack,properties,passes.front().packTextures,error)){
         passes.clear();return false;

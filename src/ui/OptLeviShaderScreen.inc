@@ -318,9 +318,9 @@ static void drawOptLeviShadersScreen(ImVec2 display) {
     if(!gOptPreviewReport.empty()||world.failed||!gOptSavedSelection.empty()) {
         // Keep the verified native-layout diagnostic accessible even when
         // the postprocess compiles successfully.
-        if(ofButton("##iris_compilelog","Renderer log",
+        if(ofButton("##iris_compilelog","Log",
                     {left+5*u,bottom-35*u},
-                    {150*u,29*u},u))
+                    {190*u,29*u},u))
             ImGui::OpenPopup("##iris_compile_details");
         if(ImGui::BeginPopup("##iris_compile_details")){
             ImGui::TextWrapped("%s",gOptPreviewFile.c_str());

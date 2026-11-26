@@ -49,6 +49,8 @@ struct Pass {
     std::vector<mesh::BlockRule> blockRules;
     std::vector<custom::Rule> customUniforms;
     std::optional<shaderbridge::camera::ShadowSettings> shadowSettings;
+    // Explicit first-party/native terrain framebuffer effect; not Iris G-buffer semantics.
+    bool nativeTerrainPhase=false;
     // Clear=false history is reflected via enabledProbe; no history buffer
     // is usable without an actual writer in the graph.
 };
@@ -71,6 +73,10 @@ Status status();
 // Remains true for a selected pack awaiting native resources, even if its
 // first compilation was rejected. False when Off or Disable is selected.
 bool captureRequested();
+bool nativeTerrainRequested();
+// Called before leaving a recognized native terrain framebuffer. Requires
+// the actual single-sample color/depth attachment, never a fabricated depth.
+bool renderNativeTerrainPhase(unsigned framebuffer,int width,int height,std::string& error);
 // Called on the game render thread by a phase-aware renderer adapter, with
 // a completed, single-sample depth attachment. Never infer phases at swap.
 enum class DepthPhase : unsigned { Complete=0, BeforeTranslucent=1, BeforeHand=2 };

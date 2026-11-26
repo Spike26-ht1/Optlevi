@@ -27,7 +27,12 @@ struct DeferredSampler { GLuint program; GLint location; unsigned index; };
 struct Frame {
     EGLContext context=EGL_NO_CONTEXT;
     EGLSurface surface=EGL_NO_SURFACE;
-    bool inPresent=false;
+    bool inPresent=false,inTerrainEffect=false;
+    bool terrainCandidate=false;
+    GLuint terrainFramebuffer=0;
+    int terrainWidth=0,terrainHeight=0;
+    std::vector<GLuint> terrainPrograms;
+    std::string terrainEffectReport;
     std::array<GLuint,128> seen{};
     unsigned seenCount=0,markerCount=0,captureCount=0,terrainCount=0;
     std::string details;
@@ -77,7 +82,7 @@ struct Resource {
     std::string name;
 };
 void captureBeforeDraw(){
-    if(frame.inPresent||frame.context==EGL_NO_CONTEXT||!captureRequested())return;
+    if(frame.inPresent||frame.inTerrainEffect||frame.context==EGL_NO_CONTEXT||!captureRequested())return;
     if(eglGetCurrentContext()!=frame.context||eglGetCurrentSurface(EGL_DRAW)!=frame.surface)return;
     GLint program=0;
     glGetIntegerv(GL_CURRENT_PROGRAM,&program);
@@ -132,6 +137,8 @@ void captureBeforeDraw(){
     // Record the real VAO layout of the first recognized terrain draw.
     // This is needed to build the future native mesh adapter without
     // hardcoding offsets for a different Minecraft build. It makes no draw.
+    if(terrainAtlas&&viewProjection>=0&&frame.terrainPrograms.size()<128)
+        frame.terrainPrograms.push_back(GLuint(program));
     if(terrainAtlas&&viewProjection>=0&&frame.firstTerrainLayout.empty()){
         GLint count=0,vao=0,elementBuffer=0;
         glGetProgramiv(GLuint(program),GL_ACTIVE_ATTRIBUTES,&count);
@@ -154,7 +161,7 @@ void captureBeforeDraw(){
             glGetVertexAttribiv(GLuint(location),GL_VERTEX_ATTRIB_ARRAY_STRIDE,&stride);
             glGetVertexAttribiv(GLuint(location),GL_VERTEX_ATTRIB_ARRAY_BUFFER_BINDING,&buffer);
             glGetVertexAttribiv(GLuint(location),GL_VERTEX_ATTRIB_ARRAY_DIVISOR,&divisor);
-            info+="\\n  "+std::string(raw,size_t(size))+" at "+std::to_string(location)+
+            info+="\n  "+std::string(raw,size_t(size))+" at "+std::to_string(location)+
                   " enabled="+std::to_string(enabled)+
                   " comps="+std::to_string(components)+
                   " type="+std::to_string(componentType)+
@@ -235,7 +242,7 @@ struct DeferredInputs {
     std::vector<Saved> saved;
     GLint active=GL_TEXTURE0;
     DeferredInputs(){
-        if(drawNesting!=1||frame.inPresent||frame.deferredSamplers.empty()||
+        if(drawNesting!=1||frame.inPresent||frame.inTerrainEffect||frame.deferredSamplers.empty()||
             !captureRequested()||frame.context!=eglGetCurrentContext()||
             frame.surface!=eglGetCurrentSurface(EGL_DRAW))return;
         GLint program=0,maxUnits=0;
@@ -274,13 +281,51 @@ struct DeferredInputs {
         if(!saved.empty())glActiveTexture(GLenum(active));
     }
 };
+void noteTerrainDraw(){
+    if(!nativeTerrainRequested()||frame.inPresent||frame.inTerrainEffect||
+       frame.context!=eglGetCurrentContext()||frame.surface!=eglGetCurrentSurface(EGL_DRAW))return;
+    GLint p=0;glGetIntegerv(GL_CURRENT_PROGRAM,&p);
+    if(std::find(frame.terrainPrograms.begin(),frame.terrainPrograms.end(),GLuint(p))==frame.terrainPrograms.end())return;
+    GLboolean write=GL_FALSE;glGetBooleanv(GL_DEPTH_WRITEMASK,&write);
+    if(!write||!glIsEnabled(GL_DEPTH_TEST)||glIsEnabled(GL_BLEND))return;
+    GLint viewport[4]{},fbo=0;glGetIntegerv(GL_VIEWPORT,viewport);
+    glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING,&fbo);
+    if(viewport[0]||viewport[1]||viewport[2]<=0||viewport[3]<=0)return;
+    frame.terrainCandidate=true;frame.terrainFramebuffer=GLuint(fbo);
+    frame.terrainWidth=viewport[2];frame.terrainHeight=viewport[3];
+}
+void flushTerrain(){
+    if(!frame.terrainCandidate||frame.inTerrainEffect||!nativeTerrainRequested())return;
+    frame.terrainCandidate=false;
+    frame.inTerrainEffect=true;
+    std::string error;
+    bool ok=renderNativeTerrainPhase(frame.terrainFramebuffer,frame.terrainWidth,frame.terrainHeight,error);
+    frame.inTerrainEffect=false;
+    frame.terrainEffectReport=ok?"Native terrain phase processed actual color and depth":
+        "Native terrain phase: "+error;
+}
 template<class Fn,class... Args>
 void draw(Fn original,Args... args){
     struct Guard { Guard(){++drawNesting;} ~Guard(){--drawNesting;} } guard;
     if(drawNesting==1)captureBeforeDraw();
     DeferredInputs inputs;
     original(args...);
+    if(drawNesting==1)noteTerrainDraw();
 }
+
+using BindFramebufferFn=void(*)(GLenum,GLuint);
+BindFramebufferFn BindFramebufferOriginal[2]{};
+void bindFramebuffer(BindFramebufferFn original,GLenum target,GLuint id){
+    if(!drawNesting&&!frame.inPresent&&!frame.inTerrainEffect&&frame.terrainCandidate&&
+       frame.context==eglGetCurrentContext()&&frame.surface==eglGetCurrentSurface(EGL_DRAW)&&
+       (target==GL_FRAMEBUFFER||target==GL_DRAW_FRAMEBUFFER)&&id!=frame.terrainFramebuffer){
+        GLint current=0;glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING,&current);
+        if(GLuint(current)==frame.terrainFramebuffer)flushTerrain();
+    }
+    original(target,id);
+}
+void BindFramebufferDirect(GLenum target,GLuint id){bindFramebuffer(BindFramebufferOriginal[0],target,id);}
+void BindFramebufferResolved(GLenum target,GLuint id){bindFramebuffer(BindFramebufferOriginal[1],target,id);}
 
 // Both the public GLES export and the resolved EGL dispatch address may
 // be used by a native renderer. Hook each distinct address once.
@@ -325,6 +370,7 @@ bool install(){
     count+=hookEntry(library,"glDrawArrays",DrawArraysDirect,DrawArraysResolved,DrawArraysOriginal);
     count+=hookEntry(library,"glDrawElementsInstanced",DrawElementsInstancedDirect,DrawElementsInstancedResolved,DrawElementsInstancedOriginal);
     count+=hookEntry(library,"glDrawArraysInstanced",DrawArraysInstancedDirect,DrawArraysInstancedResolved,DrawArraysInstancedOriginal);
+    count+=hookEntry(library,"glBindFramebuffer",BindFramebufferDirect,BindFramebufferResolved,BindFramebufferOriginal);
     hookCount.store(count);
     std::lock_guard lock(reportMu);
     lastReport="Native GLES draw hook entrypoints: "+std::to_string(count);
@@ -334,6 +380,12 @@ bool install(){
 PresentGuard::PresentGuard(){
     frame.inPresent=true;
     auto ctx=eglGetCurrentContext();auto surface=eglGetCurrentSurface(EGL_DRAW);
+    // Default-framebuffer terrain has no departure hook. Its effect runs
+    // here, after native draws and before OptLevi's own overlay.
+    if(frame.context==ctx&&frame.surface==surface&&frame.terrainCandidate){
+        GLint current=0;glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING,&current);
+        if(GLuint(current)==frame.terrainFramebuffer)flushTerrain();
+    }
     if(captureRequested()&&frame.context==ctx&&frame.surface==surface){
         std::string current="Native GLES draw hook entrypoints: "+std::to_string(hookCount.load())+
             "\nPrograms observed: "+std::to_string(frame.seenCount)+
@@ -341,13 +393,15 @@ PresentGuard::PresentGuard(){
             "\nWorld resources captured: "+std::to_string(frame.captureCount);
         if(!frame.markerCount)current+="\nNo verified OptLevi phase-marker material was observed.";
         if(!frame.firstTerrainLayout.empty())current+="\n"+frame.firstTerrainLayout;
+        if(!frame.terrainEffectReport.empty())current+="\n"+frame.terrainEffectReport;
         if(!frame.details.empty())current+="\n"+frame.details;
         std::lock_guard lock(reportMu);lastReport=std::move(current);
     }
     if(frame.context!=ctx||frame.surface!=surface)frame.firstTerrainLayout.clear();
     frame.context=ctx;frame.surface=surface;
     frame.seenCount=frame.markerCount=frame.captureCount=frame.terrainCount=0;
-    frame.details.clear();frame.deferredSamplers.clear();
+    frame.details.clear();frame.deferredSamplers.clear();frame.terrainPrograms.clear();
+    frame.terrainCandidate=false;frame.terrainEffectReport.clear();
 }
 PresentGuard::~PresentGuard(){frame.inPresent=false;}
 std::string report(){std::lock_guard lock(reportMu);return lastReport;}

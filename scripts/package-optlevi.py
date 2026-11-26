@@ -27,6 +27,8 @@ FONT = ROOT / "build/font/monocraft.ttf"
 FONT_LICENSE = ROOT / "build/font/OFL.txt"
 LAB_WORLD_FX = ROOT / "build/lab-shaders/OptLevi-Lab-WorldFX-0.2.zip"
 LAB_PACK_PATH = "OptLevi/shaderpacks/OptLevi-Lab-WorldFX-0.2.zip"
+LAB_TERRAIN = ROOT / "build/lab-shaders/OptLevi-Lab-Terrain-0.1.zip"
+LAB_TERRAIN_PATH = "OptLevi/shaderpacks/OptLevi-Lab-Terrain-0.1.zip"
 
 def load_embedded_atlas():
     code = ATLAS_HEADER.read_text(encoding="utf-8")
@@ -44,7 +46,7 @@ def package(native=NATIVE, resource=UI, output=OUTPUT, reference=None, high_res_
     assert native.is_file(), native
     assert FONT.is_file() and FONT_LICENSE.is_file(), 'OFL pixel font not staged'
     assert resource.is_file(), resource
-    assert LAB_WORLD_FX.is_file(), "Run python3 scripts/build-lab-shaders.py before packaging"
+    assert LAB_WORLD_FX.is_file() and LAB_TERRAIN.is_file(), "Run python3 scripts/build-lab-shaders.py before packaging"
     output.parent.mkdir(parents=True, exist_ok=True)
     reference_icon = None
     reference_font = None
@@ -63,7 +65,7 @@ def package(native=NATIVE, resource=UI, output=OUTPUT, reference=None, high_res_
         manifest["icon"] = "icon.png"
         manifest["overwrite_folders"] = ["resources/minecraft_resource_packs"]
         # Keep actual override entries synchronized with the files stored in the ZIP.
-        manifest["overwrite_files"] = ["icon.png", "shaderpacks/OptLevi-Lab-WorldFX-0.2.zip"]
+        manifest["overwrite_files"] = ["icon.png", "shaderpacks/OptLevi-Lab-WorldFX-0.2.zip", "shaderpacks/OptLevi-Lab-Terrain-0.1.zip"]
         if reference_font:
             manifest["overwrite_files"].append("resources/minecraft.ttf")
         icon = reference_icon or n.read("OptLevi/icon.png")
@@ -93,6 +95,7 @@ def package(native=NATIVE, resource=UI, output=OUTPUT, reference=None, high_res_
             assert "shaders/final.fsh" in lab.namelist()
             assert "shaders/composite1.fsh" in lab.namelist()
         out.writestr(LAB_PACK_PATH, LAB_WORLD_FX.read_bytes())
+        out.writestr(LAB_TERRAIN_PATH, LAB_TERRAIN.read_bytes())
         out.writestr("OptLevi/resources/monocraft.ttf", FONT.read_bytes())
         out.writestr("OptLevi/resources/monocraft-OFL.txt", FONT_LICENSE.read_bytes())
         if reference_font:
@@ -106,7 +109,8 @@ def package(native=NATIVE, resource=UI, output=OUTPUT, reference=None, high_res_
         names = set(z.namelist())
         assert "OptLevi/libOptLevi.so" in names
         assert ATLAS_IN_PACK in names
-        assert LAB_PACK_PATH in names
+        assert LAB_PACK_PATH in names and LAB_TERRAIN_PATH in names
+        assert z.read(LAB_TERRAIN_PATH) == LAB_TERRAIN.read_bytes()
         with ZipFile(LAB_WORLD_FX) as lab:
             assert z.read(LAB_PACK_PATH) == LAB_WORLD_FX.read_bytes()
         assert z.read(ATLAS_IN_PACK) == load_embedded_atlas()

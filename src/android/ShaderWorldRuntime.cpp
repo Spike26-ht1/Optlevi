@@ -24,6 +24,8 @@ std::string lastStatus="No world shader active";
 int pendingAction=0; // 0 none, 1 enable, 2 disable
 std::atomic<bool> requestedActive{false};
 std::atomic<bool> wantsNativeCapture{false};
+std::atomic<bool> wantsNativeTerrain{false};
+bool nativeTerrainRendered=false;
 bool failed=false;
 RenderMetrics renderMetrics;
 
@@ -88,7 +90,7 @@ struct SceneColorSnapshot {
 struct DepthFrame {
     EGLContext ctx=EGL_NO_CONTEXT;
     EGLSurface surface=EGL_NO_SURFACE;
-    std::array<DepthSnapshot,5> images{}; // scene 0..2, shadow 3..4
+    std::array<DepthSnapshot,6> images{}; // scene 0..2, shadow 3..4, native terrain 5
     std::array<SceneColorSnapshot,kBuffers+2> colors{}; // scene and shadow
     std::vector<WorldUniform> uniforms,derived,previousCamera,customValues,shadowValues;
     custom::Smooth smoothPrevious,smoothNext;
@@ -198,6 +200,7 @@ int depthIndex(std::string const& name){
     if(name=="depthtex2")return 2;
     if(name=="shadowtex0")return 3;
     if(name=="shadowtex1")return 4;
+    if(name=="optNativeTerrainDepth")return 5;
     return -1;
 }
 int uniformComponents(unsigned type){
@@ -526,7 +529,7 @@ void main() {
             if(packGpu[k].sampler==uniform){packIndex=int(k);break;}
         int depth=depthIndex(uniform);
         int shadowColor=uniform=="shadowcolor0"?int(kBuffers):uniform=="shadowcolor1"?int(kBuffers+1):-1;
-        if(depth>=0&&arraySize==1&&(type==GL_SAMPLER_2D||(type==GL_SAMPLER_2D_SHADOW&&depth>=3))){
+        if(depth>=0&&arraySize==1&&(type==GL_SAMPLER_2D||(type==GL_SAMPLER_2D_SHADOW&&depth>=3&&depth<5))){
             if(!stagedGraph&&!depthFrame.images[unsigned(depth)].fresh){
                 reportMissing(uniform+" (depth phase)");continue;
             }
@@ -951,9 +954,9 @@ bool validateStage(bool deferred,int width,int height,std::string& error){
     for(auto const& pass:pipeline)if(pass.deferred==deferred)for(auto const& binding:pass.samplers){
         if(binding.depth>=0){
             auto const& d=depthFrame.images[unsigned(binding.depth)];
-            bool scene=binding.depth<3;
+            bool scene=binding.depth<3||binding.depth==5;
             if(!d.fresh||(scene&&(d.width!=width||d.height!=height))){
-                auto name=scene?"depthtex"+std::to_string(binding.depth):
+                auto name=binding.depth==5?"optNativeTerrainDepth":scene?"depthtex"+std::to_string(binding.depth):
                     "shadowtex"+std::to_string(binding.depth-3);
                 error="Missing or mismatched current-frame "+name+" in "+pass.name;return false;
             }
@@ -1069,7 +1072,7 @@ bool renderOpaqueStage(int width,int height,std::string& error){
     if(!drawStage(true,width,height,error))return false;
     deferredReady=true;return true;
 }
-bool renderPipeline(int width,int height,std::string& error){
+bool renderPipeline(int width,int height,std::string& error,GLuint destination=0){
     bool staged=hasDeferred();
     if(staged&&(!deferredReady||width!=textureWidth||height!=textureHeight)){
         error="Missing current-frame opaque deferred phase";return false;
@@ -1106,7 +1109,7 @@ bool renderPipeline(int width,int height,std::string& error){
     // Only publish the output after the final pass succeeds.
     glBindFramebuffer(GL_READ_FRAMEBUFFER,passFbo);
     glReadBuffer(GL_COLOR_ATTACHMENT0);
-    glBindFramebuffer(GL_DRAW_FRAMEBUFFER,0);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER,destination);
     glBlitFramebuffer(0,0,width,height,0,0,width,height,GL_COLOR_BUFFER_BIT,GL_NEAREST);
     if(glGetError()!=GL_NO_ERROR){error="Cannot present Java composite output";return false;}
     frameCounter=(frameCounter+1)%720720;
@@ -1134,6 +1137,7 @@ void requestPipeline(std::vector<Pass> passes,std::string label) {
         }
         if(p.customUniforms.size()>256)badImages=true;
         if(p.shadowSettings&&(i!=0||!shaderbridge::camera::validShadowSettings(*p.shadowSettings)))badImages=true;
+        if(p.nativeTerrainPhase&&(i!=0||!p.geometryPrograms.empty()||p.shadowSettings))badImages=true;
         for(auto const& rule:p.customUniforms)if(rule.nodes.empty()||rule.nodes.size()>512)badImages=true;
         if(p.blockRules.size()>32768)badImages=true;
         if(p.geometryPrograms.size()>24)badImages=true;
@@ -1165,6 +1169,7 @@ void requestPipeline(std::vector<Pass> passes,std::string label) {
         return;
     }
     wantsNativeCapture=true;
+    wantsNativeTerrain=passes.front().nativeTerrainPhase;
     pendingPasses=std::move(passes);
     pendingLabel=std::move(label);
     pendingAction=1;lastStatus="Compiling ordered Java composite graph";
@@ -1176,6 +1181,7 @@ void requestEnable(std::string fragment,std::string label) {
 }
 
 void requestDisable() {
+    wantsNativeTerrain=false;
     wantsNativeCapture=false;
     requestedActive=false;
     std::lock_guard lock(mu);
@@ -1184,6 +1190,7 @@ void requestDisable() {
 }
 
 bool captureRequested(){return wantsNativeCapture.load(std::memory_order_relaxed);}
+bool nativeTerrainRequested(){return wantsNativeTerrain.load(std::memory_order_relaxed)&&captureRequested();}
 
 Status status() {
     std::lock_guard lock(mu);
@@ -1399,6 +1406,84 @@ static bool captureDepthAttachment(unsigned n,unsigned framebuffer,unsigned inte
     if(glGetError()!=GL_NO_ERROR)return finish(false,"Real scene depth copy failed");
     d.fresh=true;
     return finish(true,"");
+}
+
+// Infer only a format supported by the actual bound depth attachment.
+// No phase guesses or fake Java depth aliases are made here.
+bool renderNativeTerrainPhase(unsigned framebuffer,int width,int height,std::string& error){
+    if(!nativeTerrainRequested()||selectedSource.empty()||!selectedSource.front().nativeTerrainPhase||
+       nativeTerrainRendered||eglGetCurrentContext()!=context||
+       eglGetCurrentSurface(EGL_DRAW)!=pipelineSurface){
+        error="Native terrain shader is not ready on this surface";return false;
+    }
+    {std::lock_guard lock(mu);if(pendingAction){error="Shader selection changing";return false;}}
+    if(width<=0||height<=0||width>4096||height>4096){error="Invalid native viewport";return false;}
+    syncDepthContext();
+    SavedState saved;
+    auto finish=[&](bool ok){
+        saved.restore();
+        if(!ok){
+            depthFrame.images[5].fresh=false;depthFrame.colors[0].fresh=false;
+            std::lock_guard lock(mu);++renderMetrics.failedFrames;
+            failed=true;lastStatus="Native terrain phase: "+error;
+        }
+        return ok;
+    };
+    glBindFramebuffer(GL_FRAMEBUFFER,framebuffer);
+    GLint samples=0,draw=0,bits=0,stencilBits=0,component=0,red=0;
+    glGetIntegerv(GL_SAMPLES,&samples);glGetIntegerv(GL_DRAW_BUFFER0,&draw);
+    GLenum color=framebuffer?GL_COLOR_ATTACHMENT0:GL_BACK;
+    if(samples||draw!=GLint(color)||glCheckFramebufferStatus(GL_FRAMEBUFFER)!=GL_FRAMEBUFFER_COMPLETE){
+        error="Native terrain framebuffer is not a single-sample color target";return finish(false);
+    }
+    // Reject additional draw outputs: a framebuffer blit must not overwrite
+    // normals or other native attachments.
+    GLint maxDraw=0;glGetIntegerv(GL_MAX_DRAW_BUFFERS,&maxDraw);
+    for(int i=1;i<maxDraw;++i){GLint out=0;glGetIntegerv(GL_DRAW_BUFFER0+i,&out);
+        if(out!=GL_NONE){error="Native terrain framebuffer has multiple active color targets";return finish(false);}}
+    GLenum attachment=framebuffer?GL_DEPTH_ATTACHMENT:GL_DEPTH;
+    glGetFramebufferAttachmentParameteriv(GL_FRAMEBUFFER,attachment,GL_FRAMEBUFFER_ATTACHMENT_DEPTH_SIZE,&bits);
+    glGetFramebufferAttachmentParameteriv(GL_FRAMEBUFFER,attachment,GL_FRAMEBUFFER_ATTACHMENT_COMPONENT_TYPE,&component);
+    glGetFramebufferAttachmentParameteriv(GL_FRAMEBUFFER,framebuffer?GL_STENCIL_ATTACHMENT:GL_STENCIL,
+        GL_FRAMEBUFFER_ATTACHMENT_STENCIL_SIZE,&stencilBits);
+    glGetFramebufferAttachmentParameteriv(GL_FRAMEBUFFER,color,GL_FRAMEBUFFER_ATTACHMENT_RED_SIZE,&red);
+    // Restrict the first-party pack to normalized 8-bit RGBA/RGB targets.
+    GLint colorType=0;
+    glGetFramebufferAttachmentParameteriv(GL_FRAMEBUFFER,color,GL_FRAMEBUFFER_ATTACHMENT_COMPONENT_TYPE,&colorType);
+    if(glGetError()!=GL_NO_ERROR||red!=8||colorType!=GL_UNSIGNED_NORMALIZED){
+        error="Native terrain color/depth attachment inspection failed";return finish(false);
+    }
+    GLenum format=0;
+    if(bits==16&&!stencilBits)format=GL_DEPTH_COMPONENT16;
+    else if(bits==24)format=stencilBits?GL_DEPTH24_STENCIL8:GL_DEPTH_COMPONENT24;
+    else if(bits==32&&component==GL_FLOAT)format=stencilBits?GL_DEPTH32F_STENCIL8:GL_DEPTH_COMPONENT32F;
+    if(!format){error="Unsupported actual native depth format";return finish(false);}
+    // The native terrain shader is a distinct contract. Never expose this
+    // snapshot as Java depthtex0, depthtex1 or a light-space shadow map.
+    if(!captureDepthAttachment(5,framebuffer,format,width,height,error)||
+       !captureSceneColor(0,framebuffer,0,"RGBA8",width,height,error))return finish(false);
+    if(!beginJavaFrame(width,height,error))return finish(false);
+    refreshCustomUniforms();
+    if(!preparePackResources(error))return finish(false);
+    if(waitingForResources||pipeline.empty()){
+        discardGpu();
+        if(!compilePipeline(selectedSource,error)){discardGpu();waitingForResources=true;return finish(false);}
+        waitingForResources=false;activeLabel=selectedLabel;requestedActive=true;
+    }
+    if(hasDeferred()){error="Native terrain effect cannot run a Java deferred graph";return finish(false);}
+    auto started=std::chrono::steady_clock::now();
+    if(!renderPipeline(width,height,error,framebuffer))return finish(false);
+    float ms=std::chrono::duration<float,std::milli>(std::chrono::steady_clock::now()-started).count();
+    nativeTerrainRendered=true;
+    {
+        std::lock_guard lock(mu);
+        auto& m=renderMetrics;m.width=width;m.height=height;
+        ++m.presentedFrames;m.lastCpuMs=ms;
+        m.averageCpuMs=m.presentedFrames==1?ms:m.averageCpuMs*0.9f+ms*0.1f;
+        failed=false;
+        lastStatus="Native terrain depth effect rendered: "+activeLabel+" (screen-space contact shading)";
+    }
+    return finish(true);
 }
 
 bool captureSceneDepth(DepthPhase phase,unsigned framebuffer,unsigned internalFormat,
@@ -2091,7 +2176,7 @@ void beforeSwap(int width,int height) {
     syncDepthContext();
     ConsumeDepthFrame consumeDepth;
     struct EndDeferredFrame {
-        ~EndDeferredFrame(){deferredReady=false;worldSceneRendered=false;frameClockReady=false;frameViewWidth=frameViewHeight=0;}
+        ~EndDeferredFrame(){deferredReady=false;worldSceneRendered=false;nativeTerrainRendered=false;frameClockReady=false;frameViewWidth=frameViewHeight=0;}
     } endDeferredFrame;
     if(context!=now||pipelineSurface!=surface){
         if(context!=now)abandonContext();else{discardGeometry();discardGpu();}
@@ -2125,6 +2210,14 @@ void beforeSwap(int width,int height) {
         depthFrame.smoothPrevious.clear();depthFrame.previousTime={};depthFrame.frameTime={};
         selectedSource=std::move(passes);selectedLabel=std::move(label);
         waitingForResources=true;attemptedResources=false;
+    }
+    if(!selectedSource.empty()&&selectedSource.front().nativeTerrainPhase){
+        consumeDepth.rendered=nativeTerrainRendered;
+        if(!nativeTerrainRendered){
+            std::lock_guard lock(mu);++renderMetrics.waitingFrames;
+            if(!failed)lastStatus="Waiting for recognized native terrain color and depth; vanilla preserved";
+        }
+        return;
     }
     if(!selectedSource.empty()){
         std::string error;
@@ -2228,8 +2321,10 @@ void beforeSwap(int width,int height) {
             }
         }else if(!renderedFrame){
             renderedFrame=true;
-            statusMessage(true,"Java composite world graph rendered: "+activeLabel+
-                         " ("+std::to_string(pipeline.size())+" passes)");
+            statusMessage(true,(worldSceneRendered?std::string("Java mapped world rendered: "):
+                         sceneNeeded[0]?std::string("Native supplied color composite rendered: "):
+                         std::string("Fullscreen postprocess rendered (no Java terrain/shadows): "))+
+                         activeLabel+" ("+std::to_string(pipeline.size())+" passes)");
         }
     }
 }

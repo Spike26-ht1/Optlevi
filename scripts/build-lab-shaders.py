@@ -5,7 +5,7 @@ from zipfile import ZipFile, ZipInfo, ZIP_DEFLATED
 root = Path(__file__).resolve().parents[1]
 out = root / "build" / "lab-shaders"
 out.mkdir(parents=True, exist_ok=True)
-for name in ("OptLevi-Lab-Lite", "OptLevi-Lab-World", "OptLevi-Lab-WorldFX"):
+for name in ("OptLevi-Lab-Lite", "OptLevi-Lab-World", "OptLevi-Lab-WorldFX", "OptLevi-Lab-Terrain"):
     folder = root / "shaderpacks" / name
     target = out / (name + ("-0.2.zip" if name.endswith("WorldFX") else "-0.1.zip"))
     with ZipFile(target, "w") as z:
