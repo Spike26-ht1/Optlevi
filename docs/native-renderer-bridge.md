@@ -102,3 +102,7 @@ The shader screen reports successful frame presentations, waiting-for-opaque-sta
 ## Native geometry layout discovery (read-only)
 
 The draw hook now records the active vertex attributes, element buffer, VAO identity, component sizes/types, normalization, stride, VBO and instance divisors for the first linked GLES program that actually declares `u_viewProj` plus `s_MatTexture`. The report persists across frames for that EGL context and can be read in the Shader screen's Renderer log even after successful compilation. It is **diagnostic only**: it neither replays arbitrary pointers nor assumes an attribute name implies Java semantics, and it makes no guesses about a missing shader material. This is the evidence needed to implement the remaining native Bedrock geometry provider safely on the user's tested version.
+
+## Scaled Java intermediate color buffers
+
+The engine supports bounded `size.buffer.colortexN=widthScale heightScale` properties (0.125..1.0, colortex 1..15). It allocates each intermediate ping-pong texture at its actual size, adjusts stage viewports, and preserves Iris's full-screen viewWidth/viewHeight uniforms. MRT passes with different dimensions and scaled external geometry are rejected rather than silently distorted. WorldFX bloom extraction and blur run at half resolution; the final pass still presents the full-sized scene. This reduces intermediate color storage and shaded pixels without reducing Minecraft's render resolution. Memory estimates reflect the actual scaled allocations. No material binary changes.

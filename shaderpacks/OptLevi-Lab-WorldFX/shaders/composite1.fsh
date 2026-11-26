@@ -5,7 +5,7 @@ uniform sampler2D colortex1;
 uniform float viewWidth;
 uniform float viewHeight;
 void main(){
-    vec2 px=1.0/vec2(viewWidth,viewHeight);
+    vec2 px=1.0/vec2(textureSize(colortex1,0));
     vec3 blur=texture2D(colortex1,uv).rgb*0.24;
     blur+=texture2D(colortex1,uv+vec2(px.x,0.0)).rgb*0.16;
     blur+=texture2D(colortex1,uv-vec2(px.x,0.0)).rgb*0.16;

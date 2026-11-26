@@ -37,6 +37,15 @@ struct FormatInfo {
     unsigned bytes=4;
 };
 std::array<FormatInfo,kBuffers> colorFormats{};
+std::array<std::array<float,2>,kBuffers> bufferScales{};
+std::array<int,kBuffers> targetWidths{},targetHeights{};
+void resetBufferScales(){
+    for(auto& scale:bufferScales)scale={1,1};
+    targetWidths={};targetHeights={};
+}
+int scaledWidth(unsigned n,int width){return std::max(1,int(std::lround(width*bufferScales[n][0])));}
+int scaledHeight(unsigned n,int height){return std::max(1,int(std::lround(height*bufferScales[n][1])));}
+
 FormatInfo resolveColorFormat(std::string const& name){
     // Memory accounting conservatively rounds RGB storage to four channels.
     if(name=="RGBA"||name=="RGBA8")return {};
@@ -358,7 +367,7 @@ void abandonContext() {
     geometryHandles.clear();geometryNames.clear();
     pipeline.clear();
     packGpu.clear();packGpuBytes=0;packResourcesReady=false;frameCounter=0;
-    textures={};front={};needed={};mipNeeded={};historyNeeded={};sceneNeeded={};deferredInputs={};deferredOutputs={};deferredReady=false;mipValid={};colorFormats={};triangleVao=passFbo=outputTex=shadowCompareSampler=0;
+    textures={};front={};needed={};mipNeeded={};historyNeeded={};sceneNeeded={};deferredInputs={};deferredOutputs={};deferredReady=false;mipValid={};colorFormats={};resetBufferScales();triangleVao=passFbo=outputTex=shadowCompareSampler=0;
     textureWidth=textureHeight=0;colorTargetBytes=0;
     renderedFrame=false;
     requestedActive=false;
@@ -377,7 +386,7 @@ void discardGpu() {
     pipeline.clear();
     frameCounter=0;
     for(auto& pair:textures) glDeleteTextures(2,pair.data());
-    textures={};front={};needed={};mipNeeded={};historyNeeded={};sceneNeeded={};deferredInputs={};deferredOutputs={};deferredReady=false;mipValid={};colorFormats={};
+    textures={};front={};needed={};mipNeeded={};historyNeeded={};sceneNeeded={};deferredInputs={};deferredOutputs={};deferredReady=false;mipValid={};colorFormats={};resetBufferScales();
     if(outputTex){glDeleteTextures(1,&outputTex);outputTex=0;}
     if(passFbo){glDeleteFramebuffers(1,&passFbo);passFbo=0;}
     if(triangleVao){glDeleteVertexArrays(1,&triangleVao);triangleVao=0;}
@@ -643,6 +652,13 @@ bool compilePipeline(std::vector<Pass> const& passes,std::string& error) {
         if(entry.first>=kBuffers){error="Invalid colortex format index";return false;}
         colorFormats[entry.first]=resolveColorFormat(entry.second);
     }
+    for(auto const& size:passes.front().bufferScales){
+        if(size.index>=kBuffers||!std::isfinite(size.width)||!std::isfinite(size.height)||
+           size.width<0.125f||size.width>1.0f||size.height<0.125f||size.height>1.0f){
+            error="Unsupported Java buffer scaling directive";return false;
+        }
+        bufferScales[size.index]={size.width,size.height};
+    }
     // Collect metadata from all active programs before validating graph
     // dependencies: temporal resources can be read before their first writer.
     struct Metadata { bool enabled=true; std::uint32_t mip=0,history=0; };
@@ -718,6 +734,10 @@ bool compilePipeline(std::vector<Pass> const& passes,std::string& error) {
         }
         if(!p.finalPass)for(auto t:p.targets){available[t]=true;needed[t]=true;produced[t]=true;if(p.deferred)deferredOutputs[t]=true;}
         pipeline.push_back(std::move(p));
+    }
+    for(unsigned i=0;i<kBuffers;++i)if(sceneNeeded[i]&&
+       (bufferScales[i][0]!=1.0f||bufferScales[i][1]!=1.0f)){
+        error="Scaled external geometry colortex"+std::to_string(i)+" is not yet supported";return false;
     }
     for(unsigned i=0;i<kBuffers;++i)if(historyNeeded[i]&&depthFrame.colors[i].fresh){
         error="Native scene input and persistent history conflict at colortex"+std::to_string(i);return false;
@@ -839,20 +859,24 @@ bool ensureTargets(int width,int height,std::string& error) {
     if(outputTex){glDeleteTextures(1,&outputTex);outputTex=0;}
     textureWidth=textureHeight=0;colorTargetBytes=0;mipValid={};front={};
     if(width<=0||height<=0||width>4096||height>4096){error="Unsupported viewport size";return false;}
-    std::uint64_t basePixels=std::uint64_t(width)*height,chainPixels=basePixels;
-    for(int w=width,h=height;w>1||h>1;){
-        w=std::max(1,w/2);h=std::max(1,h/2);
-        chainPixels+=std::uint64_t(w)*h;
-    }
+    std::uint64_t basePixels=std::uint64_t(width)*height;
     std::uint64_t bytes=basePixels*4+packGpuBytes;
-    for(unsigned i=0;i<kBuffers;++i)if(needed[i])
-        bytes+=2*(mipNeeded[i]?chainPixels:basePixels)*colorFormats[i].bytes;
+    for(unsigned i=0;i<kBuffers;++i)if(needed[i]){
+        targetWidths[i]=scaledWidth(i,width);targetHeights[i]=scaledHeight(i,height);
+        std::uint64_t pixels=std::uint64_t(targetWidths[i])*targetHeights[i];
+        std::uint64_t chain=pixels;
+        if(mipNeeded[i])for(int w=targetWidths[i],h=targetHeights[i];w>1||h>1;){
+            w=std::max(1,w/2);h=std::max(1,h/2);chain+=std::uint64_t(w)*h;
+        }
+        bytes+=2*(mipNeeded[i]?chain:pixels)*colorFormats[i].bytes;
+    }
     if(bytes+depthBytes()>kMemoryLimit){error="Cannot allocate independent GLES3 targets within 128 MiB budget";return false;}
     glActiveTexture(GL_TEXTURE0);
     glBindBuffer(GL_PIXEL_UNPACK_BUFFER,0);
     glPixelStorei(GL_UNPACK_ALIGNMENT,1);
     for(unsigned i=0;i<kBuffers;++i)if(needed[i]){
-        for(auto& t:textures[i])if(!allocateTexture(t,width,height,colorFormats[i])){
+        for(auto& t:textures[i])
+            if(!allocateTexture(t,targetWidths[i],targetHeights[i],colorFormats[i])){
             error="Driver cannot allocate declared color format for colortex"+std::to_string(i);return false;
         }
     }
@@ -990,6 +1014,17 @@ bool drawStage(bool deferred,int width,int height,std::string& error){
         if(pass.deferred!=deferred)continue;
         // Attach write-side texture(s) distinct from every sampled read-side.
         // MRT locations index the directive list, not the colortex number.
+        int passWidth=width,passHeight=height;
+        if(!pass.finalPass){
+            passWidth=targetWidths[pass.targets[0]];
+            passHeight=targetHeights[pass.targets[0]];
+            for(auto index:pass.targets)if(targetWidths[index]!=passWidth||
+                targetHeights[index]!=passHeight){
+                error=pass.name+": scaled MRT targets have incompatible sizes";
+                return false;
+            }
+        }
+        glViewport(0,0,passWidth,passHeight);
         GLint maxDraw=0,maxColor=0;
         glGetIntegerv(GL_MAX_DRAW_BUFFERS,&maxDraw);
         glGetIntegerv(GL_MAX_COLOR_ATTACHMENTS,&maxColor);
@@ -1086,7 +1121,17 @@ void requestPipeline(std::vector<Pass> passes,std::string label) {
     for(size_t i=0;i<passes.size();++i){
         auto const& p=passes[i];
         total+=p.fragment.size()+p.vertex.size()+p.enabledProbe.size();
-        if(i!=0&&(!p.packTextures.empty()||!p.colorFormats.empty()||!p.geometryPrograms.empty()||!p.blockRules.empty()||!p.customUniforms.empty()))badImages=true;
+        if(i!=0&&(!p.packTextures.empty()||!p.colorFormats.empty()||!p.bufferScales.empty()||
+                 !p.geometryPrograms.empty()||!p.blockRules.empty()||!p.customUniforms.empty()))badImages=true;
+        if(p.bufferScales.size()>kBuffers)badImages=true;
+        std::array<bool,kBuffers> scalesSeen{};
+        for(auto const& scale:p.bufferScales){
+            if(scale.index>=kBuffers){badImages=true;continue;}
+            if(scalesSeen[scale.index]||scale.index==0||
+                !std::isfinite(scale.width)||!std::isfinite(scale.height)||
+                scale.width<0.125f||scale.width>1.0f||scale.height<0.125f||scale.height>1.0f)badImages=true;
+            scalesSeen[scale.index]=true;
+        }
         if(p.customUniforms.size()>256)badImages=true;
         if(p.shadowSettings&&(i!=0||!shaderbridge::camera::validShadowSettings(*p.shadowSettings)))badImages=true;
         for(auto const& rule:p.customUniforms)if(rule.nodes.empty()||rule.nodes.size()>512)badImages=true;
@@ -1855,7 +1900,8 @@ bool renderJavaWorldScene(WorldScene const& scene,std::string& error){
             if(!acquireGeometryProgram(batch.geometry.program,g,error))return false;
             if(g.shadow){error="Shadow program in main geometry stage";return false;}
             for(auto i:g.targets){
-                if(i>=kBuffers||!formats[i].bytes||historyNeeded[i]){
+                if(i>=kBuffers||!formats[i].bytes||historyNeeded[i]||
+                   bufferScales[i][0]!=1.0f||bufferScales[i][1]!=1.0f){
                     error="Unsupported main geometry output or temporal conflict";return false;
                 }
                 used[i]=true;

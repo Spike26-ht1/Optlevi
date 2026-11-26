@@ -23,6 +23,7 @@ struct GeometryProgram {
     bool shadow=false;
     std::string enabledProbe;
 };
+struct BufferScale { unsigned index=0;float width=1,height=1; };
 struct Pass {
     std::string name;
     std::string fragment;
@@ -39,6 +40,8 @@ struct Pass {
     std::string enabledProbe;
     // Pack-wide attachment formats, present only on the first graph pass.
     std::vector<std::pair<unsigned,std::string>> colorFormats;
+    // Iris size.buffer.colortexN, sampled with normalized UV coordinates.
+    std::vector<BufferScale> bufferScales;
     // Deferred programs run at the opaque/translucent boundary, not at swap.
     bool deferred=false;
     // Selected pack geometry/shadow source pairs, shared on first pass.
