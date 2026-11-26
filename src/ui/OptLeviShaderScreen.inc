@@ -1,5 +1,5 @@
-// OptLevi 0.11: Android shaderpack import, GLES3 test preview, and opt-in
-// single-pass world postprocess. Full Java/Iris multi-pass rendering is not supported.
+// OptLevi Java shader pipeline: embedded first-party WorldFX and optional
+// experimental Java world materials. The current fallback is a screen pass.
 #include "OptLeviShaderCatalog.inc"
 #include "OptLeviShaderGlesTest.inc"
 
@@ -111,7 +111,28 @@ static void drawOptLeviShadersScreen(ImVec2 display) {
                 {right-refreshW,barY},{refreshW,line},u))
         ofScanShaderpacks();
 
-    float listTop=barY+line+7*u;
+    // One-click first-party pack: the actual Java parser and world renderer
+    // are used, not the independent synthetic GLES thumbnail preview.
+    if(ofButton("##lab_world_fx","Play with Lab World FX (Balanced)",
+                {left,barY+line+4*u},{w,30*u},u)){
+        std::string file="OptLevi-Lab-WorldFX-0.2.zip";
+        auto target=ofShaderpacksPath()/file;
+        OptPackInfo pack;pack.path=target;pack.folder=false;
+        std::vector<modmenu::android::shaderworld::Pass> passes;
+        std::string error;
+        if(std::filesystem::is_regular_file(target)&&
+           optBuildJavaPipeline(pack,passes,error,"BALANCED")){
+            modmenu::android::shaderworld::requestPipeline(std::move(passes),file+" [BALANCED]");
+            gOptShadersSelection=file;gOptSavedSelection=file;
+            gOptProfile="BALANCED";gOptSavedProfile="BALANCED";
+            gOptProfilePack.clear();gOptPreviewEnabled=gOptSavedEnabled=true;
+            gOptImportStatus="Java World FX requested; enter a world to verify live rendering";
+        }else{
+            gOptImportStatus=error.empty()?
+                "Embedded Lab World FX missing from mod shaderpacks folder":error;
+        }
+    }
+    float listTop=barY+2*line+11*u;
     dl->AddRectFilled({left,listTop},{right,bottom},ofc(0x161A1E,192));
     ofNineSprite(dl,OptSprite::PanelDark,{left,listTop},{right,bottom},u,
                  IM_COL32(115,123,133,220));

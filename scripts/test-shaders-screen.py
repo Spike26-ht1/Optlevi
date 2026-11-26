@@ -55,6 +55,8 @@ assert 'optReadZipShader' in gl
 assert 'optTranslateFinal' in gl
 assert "Full Java shader loader" not in ui
 assert "shaderworld::requestPipeline(" in ui
+assert "Play with Lab World FX (Balanced)" in ui
+assert "OptLevi-Lab-WorldFX-0.2.zip" in ui
 assert "shaderworld::requestDisable()" in ui
 assert 'optEnds(name,".zip")' in catalog and "optInspectZip" in catalog
 assert "reloadMaterial(" not in ui and "glDrawArrays" not in ui
