@@ -524,6 +524,25 @@ void main(){color=vec4(texture(colortex0,texcoord).rgb,1.0);}
     actual=pixel();require(std::abs(int(actual[0])-204)<=2&&std::abs(int(actual[1])-102)<=2&&
         std::abs(int(actual[2])-51)<=2,"Late geometry did not replace deferred buffer");
     glDeleteFramebuffers(1,&opaqueFbo);glDeleteTextures(1,&opaqueTex);
+    // Version-conditional pack material IDs and packed RenderChunk faces.
+    std::vector<mesh::BlockRule> rules;
+    require(mesh::parseBlockRules("#if MC_VERSION >= 11300\nblock.20000= \\\n minecraft:water minecraft:flowing_water\nblock.10500=minecraft:oak_leaves\nblock.15014=minecraft:campfire:lit=true\n#elif MC_VERSION >= 10800\nblock.15000=minecraft:water\n#else\nblock.10000=minecraft:water\n#endif\n",rules,captureError),"Block rules parse failed");
+    int block=0;
+    require(mesh::blockId(rules,"minecraft:water",{},block)&&block==20000,"Wrong water ID");
+    require(mesh::blockId(rules,"minecraft:oak_leaves",{},block)&&block==10500,"Wrong leaf ID");
+    require(mesh::blockId(rules,"minecraft:campfire",{{"lit","true"}},block)&&block==15014,"Wrong lit block ID");
+    require(!mesh::blockId(rules,"minecraft:campfire",{{"lit","false"}},block),"Wrong state accepted");
+    std::array<mesh::NativeVertex,4> face{};
+    face[0].position={0,0,0};face[1].position={1,0,0};face[2].position={1,1,0};face[3].position={0,1,0};
+    face[0].packedUV={0.1f,0.1f};face[1].packedUV={0.2f,0.1f};
+    face[2].packedUV={0.2f,0.2f};face[3].packedUV={0.1f,0.2f};
+    for(auto& vertex:face){vertex.color={1,1,1,1};vertex.packedLight=0;}
+    std::array<mesh::JavaVertex,4> mapped{};
+    require(mesh::translateQuad(face,{0.5f,0.5f,0.5f},20000,mapped,captureError),"Packed terrain face conversion failed");
+    require(mapped[0].normal[2]>0.999f&&mapped[0].tangent[0]>0.999f&&mapped[0].entity[0]==20000&&
+        mapped[0].midBlock[0]==32&&std::abs(mapped[0].midUV[0]-0.3f)<0.001f,"Translated terrain attributes wrong");
+    face[2].position[2]=0.5f;
+    require(!mesh::translateQuad(face,{0.5f,0.5f,0.5f},20000,mapped,captureError),"Nonplanar terrain face accepted");
     // A mapped indexed mesh runs a selected geometry vertex+fragment
     // pair into real MRT/depth attachments, without writing the backbuffer.
     Pass meshPack=end;

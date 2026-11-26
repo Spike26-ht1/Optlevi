@@ -978,7 +978,8 @@ void requestPipeline(std::vector<Pass> passes,std::string label) {
     for(size_t i=0;i<passes.size();++i){
         auto const& p=passes[i];
         total+=p.fragment.size()+p.vertex.size()+p.enabledProbe.size();
-        if(i!=0&&(!p.packTextures.empty()||!p.colorFormats.empty()||!p.geometryPrograms.empty()))badImages=true;
+        if(i!=0&&(!p.packTextures.empty()||!p.colorFormats.empty()||!p.geometryPrograms.empty()||!p.blockRules.empty()))badImages=true;
+        if(p.blockRules.size()>32768)badImages=true;
         if(p.geometryPrograms.size()>24)badImages=true;
         std::vector<std::string> names;
         for(auto const& g:p.geometryPrograms){
@@ -1309,6 +1310,21 @@ bool acquireGeometryProgram(std::string const& name,GeometryHandle& result,std::
     for(auto i:routes){if(i<0)gap=true;else{if(gap)return fail("Noncontiguous geometry route");g.targets.push_back(unsigned(i));}}
     if(g.targets.empty())return fail("No reflected geometry output");
     geometryNames.push_back(name);geometryHandles.push_back(g);result=std::move(g);return true;
+}
+
+bool translateTerrainQuad(std::string const& canonicalName,mesh::State const& states,
+    std::array<mesh::NativeVertex,4> const& vertices,mesh::V3 center,
+    std::array<mesh::JavaVertex,4>& output,std::string& error){
+    if(eglGetCurrentContext()==EGL_NO_CONTEXT||eglGetCurrentContext()!=context||
+       eglGetCurrentSurface(EGL_DRAW)!=pipelineSurface||!captureRequested()||selectedSource.empty()){
+        error="No selected Java terrain graph";return false;
+    }
+    {std::lock_guard lock(mu);if(pendingAction!=0){error="Java shader selection changing";return false;}}
+    int id=0;
+    if(!mesh::blockId(selectedSource.front().blockRules,canonicalName,states,id)){
+        error="Unmapped or ambiguous Java block state: "+canonicalName;return false;
+    }
+    return mesh::translateQuad(vertices,center,id,output,error);
 }
 
 bool drawGeometry(GeometryDraw const& draw,std::string& error){

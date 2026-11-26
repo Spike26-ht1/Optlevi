@@ -960,6 +960,12 @@ static bool optBuildJavaPipeline(
         if(total>12*1024*1024){error="Java geometry source budget exceeded";return false;}
         passes.front().geometryPrograms.push_back(std::move(program));
     }
+    std::string blockProperties;
+    if(optReadJavaMember(pack,"shaders/block.properties",blockProperties)){
+        if(!modmenu::android::shaderworld::mesh::parseBlockRules(blockProperties,passes.front().blockRules,error)){
+            error="block.properties: "+error;return false;
+        }
+    }
     passes.front().colorFormats=std::move(colorFormats);
     if(!optLoadCompositeTextures(pack,properties,passes.front().packTextures,error)){
         passes.clear();return false;

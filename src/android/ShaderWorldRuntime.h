@@ -4,6 +4,7 @@
 #include <vector>
 #include <utility>
 #include <array>
+#include "ShaderMeshMapping.h"
 
 namespace modmenu::android::shaderworld {
 // Ordered fullscreen pass graph. Only buffers actually produced by a pass
@@ -38,6 +39,7 @@ struct Pass {
     bool deferred=false;
     // Selected pack geometry/shadow source pairs, shared on first pass.
     std::vector<GeometryProgram> geometryPrograms;
+    std::vector<mesh::BlockRule> blockRules;
     // Clear=false history is reflected via enabledProbe; no history buffer
     // is usable without an actual writer in the graph.
 };
@@ -113,6 +115,10 @@ struct GeometryDraw {
     std::vector<std::pair<std::string,unsigned>> textures2D;
 };
 bool drawGeometry(GeometryDraw const& draw,std::string& error);
+// Actual block state must already be normalized to Java names/properties.
+bool translateTerrainQuad(std::string const& canonicalName,mesh::State const& states,
+    std::array<mesh::NativeVertex,4> const& vertices,mesh::V3 center,
+    std::array<mesh::JavaVertex,4>& output,std::string& error);
 void beforeSwap(int width,int height);
 void stop();
 } // namespace modmenu::android::shaderworld
