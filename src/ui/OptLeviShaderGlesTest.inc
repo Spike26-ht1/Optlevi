@@ -811,10 +811,19 @@ static bool optLoadCompositeTextures(
     return true;
 }
 
+static bool optReadJavaProfiles(OptPackInfo const& pack,std::vector<std::string>& names,std::string& error){
+    using namespace modmenu::android::shaderworld;
+    std::string properties;profiles::Definitions definitions;
+    names.clear();
+    if(!optReadJavaMember(pack,"shaders/shaders.properties",properties))return true;
+    if(!profiles::read(properties,definitions,error))return false;
+    for(auto const& entry:definitions)names.push_back(entry.first);
+    return true;
+}
 static bool optBuildJavaPipeline(
     OptPackInfo const& pack,
     std::vector<modmenu::android::shaderworld::Pass>& passes,
-    std::string& error) {
+    std::string& error,std::string const& profile={}) {
     using modmenu::android::shaderworld::Pass;
     OptJavaArchiveScope archiveScope;
     passes.clear();
@@ -861,6 +870,14 @@ static bool optBuildJavaPipeline(
             }
         }
     }
+    modmenu::android::shaderworld::profiles::Definitions definitions;
+    modmenu::android::shaderworld::profiles::Settings settings;
+    std::set<std::string> applied;
+    if(!profile.empty()&&(!modmenu::android::shaderworld::profiles::read(properties,definitions,error)||
+        !modmenu::android::shaderworld::profiles::resolve(definitions,profile,settings,error)))return false;
+    auto applyProfile=[&](std::string& source){
+        return modmenu::android::shaderworld::profiles::apply(source,settings,applied,error);
+    };
     std::vector<modmenu::android::shaderworld::custom::Rule> calculated;
     if(!modmenu::android::shaderworld::custom::parse(properties,calculated,error))return false;
     size_t total=0;
@@ -875,6 +892,7 @@ static bool optBuildJavaPipeline(
         if(!optExpandJavaMember(pack,member,expanded,stack,bytes,0)){
             error=gOptJavaSourceError;return false;
         }
+        if(!applyProfile(expanded)){error=member+": "+error;return false;}
         if(!optReadColorFormats(expanded,colorFormats,error)){error=member+": "+error;return false;}
         std::string expression,probe;
         bool hasRule=false;
@@ -903,6 +921,7 @@ static bool optBuildJavaPipeline(
             if(!optExpandJavaMember(pack,vertexMember,vertexExpanded,vertexStack,vertexBytes,0)){
                 error=gOptJavaSourceError;return false;
             }
+            if(!applyProfile(vertexExpanded)){error=vertexMember+": "+error;return false;}
             if(!optReadColorFormats(vertexExpanded,colorFormats,error)){error=vertexMember+": "+error;return false;}
             vertex=optTranslateFullscreenVertex(std::move(vertexExpanded));
         }
@@ -952,6 +971,7 @@ static bool optBuildJavaPipeline(
         if(!optExpandJavaMember(pack,vertexMember,vertexSource,stack,bytes,0)){
             error=vertexMember+": "+gOptJavaSourceError;return false;
         }
+        if(!applyProfile(vertexSource)||!applyProfile(fragmentSource)){error=member+": "+error;return false;}
         modmenu::android::shaderworld::GeometryProgram program;
         program.name=name;program.shadow=program.name.rfind("shadow",0)==0;
         program.vertex=optTranslateGeometryVertex(std::move(vertexSource));
@@ -961,6 +981,9 @@ static bool optBuildJavaPipeline(
         total+=program.vertex.size()+program.fragment.size();
         if(total>12*1024*1024){error="Java geometry source budget exceeded";return false;}
         passes.front().geometryPrograms.push_back(std::move(program));
+    }
+    for(auto const& entry:settings)if(!applied.count(entry.first)){
+        error="Profile option not found in selected programs: "+entry.first;return false;
     }
     std::string blockProperties;
     if(optReadJavaMember(pack,"shaders/block.properties",blockProperties)){

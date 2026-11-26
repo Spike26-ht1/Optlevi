@@ -17,7 +17,7 @@ def once(path,old,new):
     path.write_text(data.replace(old,new),encoding="utf-8")
 
 def main():
-    for name in ("ShaderWorldRuntime.cpp","ShaderWorldRuntime.h","ShaderRenderBridge.cpp","ShaderRenderBridge.h","ShaderCameraMath.h","ShaderMeshMapping.h","ShaderPackUniforms.h"):
+    for name in ("ShaderWorldRuntime.cpp","ShaderWorldRuntime.h","ShaderRenderBridge.cpp","ShaderRenderBridge.h","ShaderCameraMath.h","ShaderMeshMapping.h","ShaderPackUniforms.h","ShaderPackProfiles.h"):
         shutil.copy2(ROOT/"src/android"/name,NATIVE/"src"/name)
     once(NATIVE/"CMakeLists.txt","    src/ShaderImportBridge.cpp\n",
          "    src/ShaderImportBridge.cpp\n    src/ShaderWorldRuntime.cpp\n    src/ShaderRenderBridge.cpp\n")

@@ -12,6 +12,9 @@ static std::string gOptShadersError;
 static std::string gOptShadersSelection;  // pending in UI, not Minecraft render state
 static std::string gOptSavedSelection;    // last accepted TEST choice, not world effects
 static std::string gOptImportStatus;
+static std::string gOptProfile,gOptSavedProfile;
+static std::string gOptProfilePack;
+static std::vector<std::string> gOptProfileNames;
 
 static std::filesystem::path ofShaderpacksPath() {
     return paths::selfDir()/"shaderpacks";
@@ -38,6 +41,7 @@ static void ofScanShaderpacks() {
        std::none_of(gOptShaderFiles.begin(),gOptShaderFiles.end(),
             [](auto const& p){return p.path.filename().string()==gOptShadersSelection;}))
        gOptShadersSelection.clear();
+    gOptProfilePack.clear();
     gOptShadersScanned=true;
 }
 
@@ -73,7 +77,7 @@ static void drawOptLeviShadersScreen(ImVec2 display) {
     float left=display.x*0.20f,right=display.x*0.80f;
     float w=right-left;
     float top=10*u,barY=74*u;
-    float bottom=display.y-175*u;
+    float bottom=display.y-205*u;
     float line=32*u;
     if(w<240*u||bottom<barY+100*u){
         ofText(dl,fonts::bold(),{20*u,20*u},"Shaders: enlarge the screen",
@@ -152,7 +156,7 @@ static void drawOptLeviShadersScreen(ImVec2 display) {
     if(gOptShaderFiles.empty())ImGui::TextDisabled("No shader packs. Choose Import.");
     ImGui::EndChild();
 
-    float infoY=bottom+4*u;
+    float infoY=bottom+34*u;
     std::string label=gOptShadersSelection.empty()?
         "Vanilla (no Java shader selected)" : gOptShadersSelection;
     auto world=modmenu::android::shaderworld::status();
@@ -161,6 +165,26 @@ static void drawOptLeviShadersScreen(ImVec2 display) {
         [](OptPackInfo const& p){
             return p.path.filename().string()==gOptShadersSelection;
         });
+    if(gOptProfilePack!=gOptShadersSelection){
+        gOptProfilePack=gOptShadersSelection;gOptProfileNames.clear();gOptProfile.clear();
+        if(gOptShadersSelection==gOptSavedSelection)gOptProfile=gOptSavedProfile;
+        if(picked!=gOptShaderFiles.end()){
+            std::string error;
+            if(!optReadJavaProfiles(*picked,gOptProfileNames,error))gOptImportStatus=error;
+            if(std::find(gOptProfileNames.begin(),gOptProfileNames.end(),gOptProfile)==gOptProfileNames.end())gOptProfile.clear();
+        }
+    }
+    if(!gOptProfileNames.empty()){
+        std::string profileLabel="Profile: "+(gOptProfile.empty()?std::string("Pack default"):gOptProfile);
+        if(ofButton("##iris_profile",profileLabel.c_str(),{left,bottom+2*u},{w,29*u},u))
+            ImGui::OpenPopup("##iris_profile_choices");
+        if(ImGui::BeginPopup("##iris_profile_choices")){
+            if(ImGui::Selectable("Pack default",gOptProfile.empty()))gOptProfile.clear();
+            for(auto const& p:gOptProfileNames)
+                if(ImGui::Selectable(p.c_str(),gOptProfile==p))gOptProfile=p;
+            ImGui::EndPopup();
+        }
+    }
     if(picked!=gOptShaderFiles.end()){
         label += " | ";
         label += optPackLabel(picked->type);
@@ -204,6 +228,7 @@ static void drawOptLeviShadersScreen(ImVec2 display) {
         gOptPreviewReport.clear();
         gOptShadersSelection=gOptSavedSelection;
         gOptPreviewEnabled=gOptSavedEnabled;
+        gOptProfile=gOptSavedProfile;gOptProfilePack.clear();
         gOptImportStatus="Selection reverted (world effect unchanged)";
     }
     if(ofButton("##iris_apply","Apply",{left+third+gap,by2},
@@ -213,7 +238,7 @@ static void drawOptLeviShadersScreen(ImVec2 display) {
         if(!gOptPreviewEnabled||gOptShadersSelection.empty()) {
             modmenu::android::shaderworld::requestDisable();
             gOptSavedSelection=gOptShadersSelection;
-            gOptSavedEnabled=gOptPreviewEnabled;
+            gOptSavedEnabled=gOptPreviewEnabled;gOptSavedProfile=gOptProfile;
             gOptImportStatus="Experimental world postprocess disabled";
         }else{
             auto selected=std::find_if(gOptShaderFiles.begin(),gOptShaderFiles.end(),
@@ -223,11 +248,12 @@ static void drawOptLeviShadersScreen(ImVec2 display) {
             std::vector<modmenu::android::shaderworld::Pass> passes;
             std::string error;
             if(selected!=gOptShaderFiles.end() &&
-               optBuildJavaPipeline(*selected,passes,error)) {
+               optBuildJavaPipeline(*selected,passes,error,gOptProfile)) {
                 modmenu::android::shaderworld::requestPipeline(
-                    std::move(passes),selected->path.filename().string());
+                    std::move(passes),selected->path.filename().string()+
+                    (gOptProfile.empty()?std::string{}:" ["+gOptProfile+"]"));
                 gOptSavedSelection=gOptShadersSelection;
-                gOptSavedEnabled=gOptPreviewEnabled;
+                gOptSavedEnabled=gOptPreviewEnabled;gOptSavedProfile=gOptProfile;
                 gOptImportStatus.clear();
             }else {
                 modmenu::android::shaderworld::requestDisable();

@@ -6,6 +6,7 @@
 #include <array>
 #include "ShaderMeshMapping.h"
 #include "ShaderPackUniforms.h"
+#include "ShaderPackProfiles.h"
 
 namespace modmenu::android::shaderworld {
 // Ordered fullscreen pass graph. Only buffers actually produced by a pass

@@ -48,7 +48,7 @@ for symbol in (
 for symbol in (
     "shaderworld::requestPipeline",
     "shaderworld::requestDisable",
-    "optBuildJavaPipeline(*selected,passes,error)",
+    "optBuildJavaPipeline(*selected,passes,error,gOptProfile)",
     "Experimental world postprocess disabled",
 ):
     assert symbol in ui,symbol

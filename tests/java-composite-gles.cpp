@@ -653,6 +653,25 @@ void main(){color=vec4(timeBrightness,blindFactor,isCold,1.0);}
     require(custom::parse("variable.float.a=b\nuniform.float.b=a\n",cyclic,captureError),"Cycle fixture parse failed");
     custom::Evaluation cycle{cyclic,[](std::string const&)->custom::Number{return {};},previous,0};
     require(!cycle.get("b"),"Cyclic custom uniform accepted");
+    // Shader-pack quality profiles inherit settings, then override only
+    // recognized declarations with valid option values.
+    profiles::Definitions profileDefs;profiles::Settings profileSettings;
+    require(profiles::read("profile.MINIMUM=!AO !SHADOW shadowMapResolution=512\n"
+        "profile.LOW=profile.MINIMUM SHADOW shadowMapResolution=1024\n",
+        profileDefs,captureError),"Profile parse failed");
+    require(profiles::resolve(profileDefs,"LOW",profileSettings,captureError),"Profile inheritance failed");
+    require(profileSettings["AO"]=="false"&&profileSettings["SHADOW"]=="true"&&
+        profileSettings["shadowMapResolution"]=="1024","Profile overrides incorrect");
+    std::string optionSource="#define AO\n// #define SHADOW\nconst int shadowMapResolution = 2048; //[512 1024 2048]\n";
+    std::set<std::string> appliedOptions;
+    require(profiles::apply(optionSource,profileSettings,appliedOptions,captureError),"Profile rewrite failed");
+    require(optionSource.find("// #define AO")!=std::string::npos&&
+        optionSource.find("\n#define SHADOW")!=std::string::npos&&
+        optionSource.find("= 1024;")!=std::string::npos&&appliedOptions.size()==3,"Profile declarations incorrect");
+    profileSettings["shadowMapResolution"]="999";
+    require(!profiles::apply(optionSource,profileSettings,appliedOptions,captureError),"Invalid profile value accepted");
+    profileDefs["MINIMUM"]={"profile.LOW"};
+    require(!profiles::resolve(profileDefs,"LOW",profileSettings,captureError),"Profile cycle accepted");
     // Missing geometry input must not turn into a fake color sampler.
     clearScene();
     Pass unavailable{"final",fragment(R"(
