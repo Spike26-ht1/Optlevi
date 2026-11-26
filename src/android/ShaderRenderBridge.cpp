@@ -28,7 +28,7 @@ struct Frame {
     EGLContext context=EGL_NO_CONTEXT;
     EGLSurface surface=EGL_NO_SURFACE;
     bool inPresent=false,inTerrainEffect=false;
-    bool terrainCandidate=false;
+    bool terrainCandidate=false,terrainEffectDone=false;
     GLuint terrainFramebuffer=0;
     int terrainWidth=0,terrainHeight=0;
     std::vector<GLuint> terrainPrograms;
@@ -282,7 +282,7 @@ struct DeferredInputs {
     }
 };
 void noteTerrainDraw(){
-    if(!nativeTerrainRequested()||frame.inPresent||frame.inTerrainEffect||
+    if(!nativeTerrainRequested()||frame.inPresent||frame.inTerrainEffect||frame.terrainEffectDone||
        frame.context!=eglGetCurrentContext()||frame.surface!=eglGetCurrentSurface(EGL_DRAW))return;
     GLint p=0;glGetIntegerv(GL_CURRENT_PROGRAM,&p);
     if(std::find(frame.terrainPrograms.begin(),frame.terrainPrograms.end(),GLuint(p))==frame.terrainPrograms.end())return;
@@ -300,7 +300,7 @@ void flushTerrain(){
     frame.inTerrainEffect=true;
     std::string error;
     bool ok=renderNativeTerrainPhase(frame.terrainFramebuffer,frame.terrainWidth,frame.terrainHeight,error);
-    frame.inTerrainEffect=false;
+    frame.inTerrainEffect=false;frame.terrainEffectDone=ok;
     frame.terrainEffectReport=ok?"Native terrain phase processed actual color and depth":
         "Native terrain phase: "+error;
 }
@@ -401,7 +401,7 @@ PresentGuard::PresentGuard(){
     frame.context=ctx;frame.surface=surface;
     frame.seenCount=frame.markerCount=frame.captureCount=frame.terrainCount=0;
     frame.details.clear();frame.deferredSamplers.clear();frame.terrainPrograms.clear();
-    frame.terrainCandidate=false;frame.terrainEffectReport.clear();
+    frame.terrainCandidate=false;frame.terrainEffectDone=false;frame.terrainEffectReport.clear();
 }
 PresentGuard::~PresentGuard(){frame.inPresent=false;}
 std::string report(){std::lock_guard lock(reportMu);return lastReport;}

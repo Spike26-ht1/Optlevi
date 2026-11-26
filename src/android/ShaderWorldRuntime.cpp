@@ -1444,8 +1444,14 @@ bool renderNativeTerrainPhase(unsigned framebuffer,int width,int height,std::str
     GLenum attachment=framebuffer?GL_DEPTH_ATTACHMENT:GL_DEPTH;
     glGetFramebufferAttachmentParameteriv(GL_FRAMEBUFFER,attachment,GL_FRAMEBUFFER_ATTACHMENT_DEPTH_SIZE,&bits);
     glGetFramebufferAttachmentParameteriv(GL_FRAMEBUFFER,attachment,GL_FRAMEBUFFER_ATTACHMENT_COMPONENT_TYPE,&component);
+    // Query stencil size only if a stencil attachment exists. Some GLES
+    // drivers reject parameter queries on a missing attachment.
+    GLint stencilObject=0;
     glGetFramebufferAttachmentParameteriv(GL_FRAMEBUFFER,framebuffer?GL_STENCIL_ATTACHMENT:GL_STENCIL,
-        GL_FRAMEBUFFER_ATTACHMENT_STENCIL_SIZE,&stencilBits);
+        GL_FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE,&stencilObject);
+    if(stencilObject!=GL_NONE)
+        glGetFramebufferAttachmentParameteriv(GL_FRAMEBUFFER,framebuffer?GL_STENCIL_ATTACHMENT:GL_STENCIL,
+            GL_FRAMEBUFFER_ATTACHMENT_STENCIL_SIZE,&stencilBits);
     glGetFramebufferAttachmentParameteriv(GL_FRAMEBUFFER,color,GL_FRAMEBUFFER_ATTACHMENT_RED_SIZE,&red);
     // Restrict the first-party pack to normalized 8-bit RGBA/RGB targets.
     GLint colorType=0;

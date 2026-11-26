@@ -64,6 +64,57 @@ int main(int argc,char** argv){
     check(status().active&&quality[2]>=balanced[2],
           "WorldFX quality profile did not execute");
         // Actual pack geometry consumes a real atlas texture and mapped VAO.
+    // Native terrain mode must write back to the real source framebuffer,
+    // not paint over an unrelated swap image. A controlled host depth
+    // attachment has a depth step at x=16, from real GPU draw calls.
+    load("OptLevi-Lab-Terrain-0.1.zip","");
+    check(!status().active,"Native terrain effect ran without terrain");
+    GLuint nativeFbo=0,nativeColor=0,nativeDepth=0,nativeVao=0;
+    glGenFramebuffers(1,&nativeFbo);glBindFramebuffer(GL_FRAMEBUFFER,nativeFbo);
+    glGenTextures(1,&nativeColor);glBindTexture(GL_TEXTURE_2D,nativeColor);
+    glTexStorage2D(GL_TEXTURE_2D,1,GL_RGBA8,32,32);
+    glFramebufferTexture2D(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_TEXTURE_2D,nativeColor,0);
+    glGenRenderbuffers(1,&nativeDepth);glBindRenderbuffer(GL_RENDERBUFFER,nativeDepth);
+    glRenderbufferStorage(GL_RENDERBUFFER,GL_DEPTH_COMPONENT24,32,32);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER,GL_DEPTH_ATTACHMENT,GL_RENDERBUFFER,nativeDepth);
+    check(glCheckFramebufferStatus(GL_FRAMEBUFFER)==GL_FRAMEBUFFER_COMPLETE,"Native FBO incomplete");
+    const char* nativeVs="#version 300 es\nuniform float z;void main(){vec2 uv=vec2(float((gl_VertexID<<1)&2),float(gl_VertexID&2));gl_Position=vec4(uv*2.0-1.0,z,1);}";
+    const char* nativeFs="#version 300 es\nprecision highp float;out vec4 color;void main(){color=vec4(0.8,0.8,0.8,1);}";
+    auto stage=[&](GLenum type,char const* source){
+        GLuint shader=glCreateShader(type);glShaderSource(shader,1,&source,nullptr);glCompileShader(shader);
+        GLint ok=0;glGetShaderiv(shader,GL_COMPILE_STATUS,&ok);check(ok,"Native fixture shader compilation");return shader;
+    };
+    GLuint vs=stage(GL_VERTEX_SHADER,nativeVs),fs=stage(GL_FRAGMENT_SHADER,nativeFs);
+    GLuint nativeProgram=glCreateProgram();glAttachShader(nativeProgram,vs);glAttachShader(nativeProgram,fs);
+    glLinkProgram(nativeProgram);glDeleteShader(vs);glDeleteShader(fs);glUseProgram(nativeProgram);
+    GLint linked=0;glGetProgramiv(nativeProgram,GL_LINK_STATUS,&linked);check(linked,"Native fixture link");
+    glGenVertexArrays(1,&nativeVao);glBindVertexArray(nativeVao);
+    glViewport(0,0,32,32);glEnable(GL_DEPTH_TEST);glDepthMask(GL_TRUE);glDepthFunc(GL_LEQUAL);
+    glDisable(GL_BLEND);glDisable(GL_CULL_FACE);glDisable(GL_SCISSOR_TEST);
+    glClearDepthf(1);glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);
+    glUniform1f(glGetUniformLocation(nativeProgram,"z"),0.5f);glDrawArrays(GL_TRIANGLES,0,3);
+    glEnable(GL_SCISSOR_TEST);glScissor(0,0,16,32);
+    glUniform1f(glGetUniformLocation(nativeProgram,"z"),0.0f);glDrawArrays(GL_TRIANGLES,0,3);
+    glDisable(GL_SCISSOR_TEST);
+    auto projection=matrix("gbufferProjectionInverse",GL_FLOAT_MAT4);
+    bool nativeOk=publishWorldUniforms({projection},error);
+    check(nativeOk,"Native projection publish: "+error);
+    nativeOk=renderNativeTerrainPhase(nativeFbo,32,32,error);
+    check(nativeOk,"Native terrain phase: "+error);
+    std::array<unsigned char,4> edge{},farPixel{};
+    glReadPixels(17,16,1,1,GL_RGBA,GL_UNSIGNED_BYTE,edge.data());
+    glReadPixels(30,16,1,1,GL_RGBA,GL_UNSIGNED_BYTE,farPixel.data());
+    check(edge[0]+10<farPixel[0]&&std::abs(int(farPixel[0])-204)<=3,
+          "Native depth contact shading did not darken geometry edge");
+    clearFrame();beforeSwap(32,32);p=readPixel();
+    check(status().active&&metrics().presentedFrames==1&&std::abs(int(p[0])-51)<=2,
+          "Native terrain phase incorrectly repainted swap framebuffer");
+    clearFrame();beforeSwap(32,32);
+    check(metrics().waitingFrames>0,"Missing native terrain phase was not reported");
+    glUseProgram(0);glBindVertexArray(0);
+    glDeleteProgram(nativeProgram);glDeleteVertexArrays(1,&nativeVao);
+    glDeleteRenderbuffers(1,&nativeDepth);glDeleteTextures(1,&nativeColor);glDeleteFramebuffers(1,&nativeFbo);
+    glDisable(GL_DEPTH_TEST);
     // The mesh is deliberately controlled; no claim of Bedrock gameplay.
     GLuint vao=0,vbo=0,atlas=0;
     glGenVertexArrays(1,&vao);glBindVertexArray(vao);
