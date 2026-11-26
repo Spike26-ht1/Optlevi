@@ -118,6 +118,9 @@ struct GeometryDraw {
     std::vector<WorldUniform> uniforms;
     std::vector<std::pair<std::string,unsigned>> textures2D;
 };
+// Actual world viewport (not shadow-map dimensions). Call before shadow
+// draws if their programs need viewport built-ins.
+bool beginJavaFrame(int width,int height,std::string& error);
 bool drawGeometry(GeometryDraw const& draw,std::string& error);
 // Actual block state must already be normalized to Java names/properties.
 bool translateTerrainQuad(std::string const& canonicalName,mesh::State const& states,

@@ -590,11 +590,11 @@ void main(){color=texture(colortex3,texcoord);}
     auto& terrain=meshPack.geometryPrograms.front().fragment;
     auto at=terrain.find("in vec4 tint;");
     require(at!=std::string::npos,"Geometry fixture source missing");
-    terrain.insert(at,"uniform sampler2D noisetex;\n");
+    terrain.insert(at,"uniform sampler2D noisetex;\nuniform float viewWidth;\nuniform float viewHeight;\nuniform int frameCounter;\n");
     at=terrain.find("optRouteTarget0=tint;");
     require(at!=std::string::npos,"Geometry fixture output missing");
     terrain.replace(at,std::string("optRouteTarget0=tint;").size(),
-        "optRouteTarget0=tint*texture(noisetex,vec2(0.5));");
+        "optRouteTarget0=tint*texture(noisetex,vec2(0.5))*vec4(viewWidth/32.0,viewHeight/32.0,frameCounter==0?1.0:0.0,1.0);");
     requestPipeline({meshPack},"Mapped geometry fixture");
     clearScene();beforeSwap(32,32);
     require(!status().active&&status().message.find("Missing real input colortex3")!=std::string::npos,

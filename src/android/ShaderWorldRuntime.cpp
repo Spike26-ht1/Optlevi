@@ -252,6 +252,9 @@ std::array<std::uint64_t,kBuffers> opaqueSerial{};
 std::uint64_t snapshotSerial=0;
 bool deferredReady=false;
 float frameTime=0,frameDelta=0;
+bool frameClockReady=false;
+int frameViewWidth=0,frameViewHeight=0;
+void beginFrameTiming();
 std::array<std::array<bool,2>,kBuffers> mipValid{};
 GLuint triangleVao=0,passFbo=0,outputTex=0,shadowCompareSampler=0;
 int textureWidth=0,textureHeight=0;
@@ -260,6 +263,21 @@ bool renderedFrame=false;
 // Render-thread-owned selected source; retain it across temporary absence
 // of native world resources, but never render with stale attachments.
 std::vector<Pass> selectedSource;
+// Built-ins belong to the shader engine, not the native material ABI.
+std::optional<WorldUniform> frameBuiltin(std::string const& name){
+    WorldUniform u;u.name=name;u.glType=GL_FLOAT;
+    if(name=="frameCounter"){u.glType=GL_INT;u.ints[0]=int(frameCounter);}
+    else if(name=="framemod8")u.floats[0]=float(frameCounter%8);
+    else if(name=="framemod2")u.floats[0]=float(frameCounter%2);
+    else if(name=="frameTime"&&frameClockReady)u.floats[0]=frameDelta;
+    else if(name=="frameTimeCounter"&&frameClockReady)u.floats[0]=frameTime;
+    else if(name=="viewWidth"&&frameViewWidth>0)u.floats[0]=float(frameViewWidth);
+    else if(name=="viewHeight"&&frameViewHeight>0)u.floats[0]=float(frameViewHeight);
+    else if(name=="aspectRatio"&&frameViewWidth>0&&frameViewHeight>0)
+        u.floats[0]=float(frameViewWidth)/float(frameViewHeight);
+    else return {};
+    return u;
+}
 void refreshCustomUniforms(){
     depthFrame.customValues.clear();depthFrame.smoothNext.clear();
     if(selectedSource.empty()||selectedSource.front().customUniforms.empty())return;
@@ -268,7 +286,8 @@ void refreshCustomUniforms(){
     double ticks=depthFrame.previousTime==std::chrono::steady_clock::time_point{}?0:
         20*std::chrono::duration<double>(depthFrame.frameTime-depthFrame.previousTime).count();
     auto lookup=[](std::string const& key)->custom::Number{
-        if(key=="frameCounter")return double(frameCounter);
+        if(auto builtin=frameBuiltin(key))
+            return builtin->glType==GL_INT?double(builtin->ints[0]):double(builtin->floats[0]);
         auto dot=key.find('.');auto name=key.substr(0,dot);
         auto v=named(depthFrame.uniforms,name);if(!v)v=named(depthFrame.derived,name);
         if(!v)return {};
@@ -790,7 +809,7 @@ bool ensureTargets(int width,int height,std::string& error) {
     if(width==textureWidth&&height==textureHeight&&outputTex)return true;
     for(auto& pair:textures){glDeleteTextures(2,pair.data());pair={};}
     if(outputTex){glDeleteTextures(1,&outputTex);outputTex=0;}
-    textureWidth=textureHeight=0;colorTargetBytes=0;mipValid={};front={};frameCounter=0;
+    textureWidth=textureHeight=0;colorTargetBytes=0;mipValid={};front={};
     if(width<=0||height<=0||width>4096||height>4096){error="Unsupported viewport size";return false;}
     std::uint64_t basePixels=std::uint64_t(width)*height,chainPixels=basePixels;
     for(int w=width,h=height;w>1||h>1;){
@@ -924,11 +943,14 @@ bool seedScene(unsigned index,int width,int height,std::string& error){
     mipValid[index][front[index]]=false;return true;
 }
 void beginFrameTiming(){
+    if(frameClockReady)return;
     static const auto started=std::chrono::steady_clock::now();
     static auto last=started;
     auto now=std::chrono::steady_clock::now();
     frameTime=std::chrono::duration<float>(now-started).count();
     frameDelta=std::chrono::duration<float>(now-last).count();last=now;
+    frameClockReady=true;
+    depthFrame.frameTime=now;
 }
 bool drawStage(bool deferred,int width,int height,std::string& error){
     glDisable(GL_BLEND);glDisable(GL_DEPTH_TEST);glDisable(GL_STENCIL_TEST);
@@ -1396,7 +1418,6 @@ bool translateTerrainQuad(std::string const& canonicalName,mesh::State const& st
 bool drawGeometry(GeometryDraw const& draw,std::string& error){
     GeometryHandle g;
     if(!acquireGeometryProgram(draw.program,g,error))return false;
-    refreshCustomUniforms();
     if(!draw.vao||!glIsVertexArray(draw.vao)||!draw.framebuffer||
        !glIsFramebuffer(draw.framebuffer)||draw.width<=0||draw.height<=0||
        draw.width>4096||draw.height>4096||draw.count<=0||draw.first<0||draw.instances<=0||
@@ -1406,6 +1427,9 @@ bool drawGeometry(GeometryDraw const& draw,std::string& error){
     if(draw.uniforms.size()>128||draw.textures2D.size()>16){
         error="Native geometry binding budget exceeded";return false;
     }
+    if(!g.shadow&&!beginJavaFrame(draw.width,draw.height,error))return false;
+    beginFrameTiming();
+    refreshCustomUniforms();
     SavedState saved;
     std::vector<GLenum> oldDraws;
     bool changed=false;
@@ -1506,7 +1530,8 @@ bool drawGeometry(GeometryDraw const& draw,std::string& error){
                 return finish(false,"Missing or feedback geometry texture "+std::string(name));
             inputs.push_back({loc,object,type});
         }else{
-            auto value=named(draw.uniforms,name);
+            auto builtin=frameBuiltin(name);
+            auto value=builtin?&*builtin:named(draw.uniforms,name);
             if(!value)value=findWorldUniform(name);
             int components=uniformComponents(type);
             if(!value||value->glType!=type||!components)return finish(false,"Missing geometry uniform "+std::string(name));
@@ -1603,11 +1628,27 @@ bool drawTerrainQuads(GeometryDraw const& draw,std::vector<TerrainQuad> const& f
     return ok;
 }
 
+bool beginJavaFrame(int width,int height,std::string& error){
+    if(eglGetCurrentContext()==EGL_NO_CONTEXT||eglGetCurrentContext()!=context||
+       eglGetCurrentSurface(EGL_DRAW)!=pipelineSurface||selectedSource.empty()){
+        error="No selected Java frame on this EGL surface";return false;
+    }
+    if(width<=0||height<=0||width>4096||height>4096){
+        error="Invalid Java frame viewport";return false;
+    }
+    if(frameViewWidth>0&&(width!=frameViewWidth||height!=frameViewHeight)){
+        error="Java frame viewport changed during rendering";return false;
+    }
+    frameViewWidth=width;frameViewHeight=height;
+    beginFrameTiming();
+    return true;
+}
 bool renderDeferred(int width,int height,std::string& error){
     if(eglGetCurrentContext()==EGL_NO_CONTEXT||eglGetCurrentContext()!=context||
         eglGetCurrentSurface(EGL_DRAW)!=pipelineSurface||!requestedActive.load()){
         error="Deferred graph is not prepared for this EGL surface";return false;
     }
+    if(!beginJavaFrame(width,height,error))return false;
     refreshCustomUniforms();
     // Preserve native GL bindings. No deferred result is presented here.
     SavedState saved;
@@ -1626,7 +1667,9 @@ void beforeSwap(int width,int height) {
     auto surface=eglGetCurrentSurface(EGL_DRAW);
     syncDepthContext();
     ConsumeDepthFrame consumeDepth;
-    struct EndDeferredFrame { ~EndDeferredFrame(){deferredReady=false;} } endDeferredFrame;
+    struct EndDeferredFrame {
+        ~EndDeferredFrame(){deferredReady=false;frameClockReady=false;frameViewWidth=frameViewHeight=0;}
+    } endDeferredFrame;
     if(context!=now||pipelineSurface!=surface){
         if(context!=now)abandonContext();else{discardGeometry();discardGpu();}
         pipelineSurface=surface;
@@ -1657,6 +1700,12 @@ void beforeSwap(int width,int height) {
         depthFrame.smoothPrevious.clear();depthFrame.previousTime={};depthFrame.frameTime={};
         selectedSource=std::move(passes);selectedLabel=std::move(label);
         waitingForResources=true;attemptedResources=false;
+    }
+    if(!selectedSource.empty()){
+        std::string error;
+        if(!beginJavaFrame(width,height,error)){
+            statusMessage(false,error+"; vanilla preserved");return;
+        }
     }
     refreshCustomUniforms();
     if(!selectedSource.empty()&&!packResourcesReady){
