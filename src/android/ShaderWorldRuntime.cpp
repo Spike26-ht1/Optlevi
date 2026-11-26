@@ -416,7 +416,7 @@ int bufferIndex(std::string const& name) {
     return -1;
 }
 bool compileProgram(Pass const& pass,std::array<bool,kBuffers> const& available,
-                    CompiledPass& result,std::string& error) {
+                    CompiledPass& result,std::string& error,bool stagedGraph) {
     static char const* vertex=R"(#version 300 es
 precision highp float;
 out vec2 texcoord;
@@ -471,7 +471,7 @@ void main() {
         int depth=depthIndex(uniform);
         int shadowColor=uniform=="shadowcolor0"?int(kBuffers):uniform=="shadowcolor1"?int(kBuffers+1):-1;
         if(depth>=0&&arraySize==1&&(type==GL_SAMPLER_2D||(type==GL_SAMPLER_2D_SHADOW&&depth>=3))){
-            if(!depthFrame.images[unsigned(depth)].fresh){
+            if(!stagedGraph&&!depthFrame.images[unsigned(depth)].fresh){
                 reportMissing(uniform+" (depth phase)");continue;
             }
             if(result.samplers.size()>=kBuffers)
@@ -479,7 +479,7 @@ void main() {
             result.samplers.push_back({glGetUniformLocation(linked,name),-1,-1,
                                         unsigned(result.samplers.size()),depth,-1,type==GL_SAMPLER_2D_SHADOW});
         }else if(type==GL_SAMPLER_2D&&shadowColor>=0&&arraySize==1){
-            if(!depthFrame.colors[unsigned(shadowColor)].fresh){
+            if(!stagedGraph&&!depthFrame.colors[unsigned(shadowColor)].fresh){
                 reportMissing(uniform+" (shadow color)");continue;
             }
             if(result.samplers.size()>=kBuffers)
@@ -487,7 +487,7 @@ void main() {
             result.samplers.push_back({glGetUniformLocation(linked,name),-1,-1,
                                          unsigned(result.samplers.size()),-1,shadowColor});
         }else if(type==GL_SAMPLER_2D&&(index>=0||packIndex>=0)&&arraySize==1){
-            if(packIndex<0&&!available[unsigned(index)]){
+            if(!stagedGraph&&packIndex<0&&!available[unsigned(index)]){
                 reportMissing(uniform+" (geometry buffer)");continue;
             }
             if(result.samplers.size()>=kBuffers)
@@ -503,8 +503,8 @@ void main() {
             // Actual viewport, timing and pack-declared frame modulo values.
         }else if(arraySize==1&&uniformComponents(type)){
             auto const* value=findWorldUniform(uniform);
-            if(!value){reportMissing(uniform+" (world uniform)");continue;}
-            if(value->glType!=type){reportMissing(uniform+" (world uniform type mismatch)");continue;}
+            if(!value&&!stagedGraph){reportMissing(uniform+" (world uniform)");continue;}
+            if(value&&value->glType!=type){reportMissing(uniform+" (world uniform type mismatch)");continue;}
             GLint location=glGetUniformLocation(linked,name);
             if(location<0){reportMissing(uniform+" (uniform block unsupported)");continue;}
             result.worldUniforms.push_back({uniform,type,location});
@@ -644,7 +644,7 @@ bool compilePipeline(std::vector<Pass> const& passes,std::string& error) {
             unique[target]=true;
         }
         CompiledPass p;
-        if(!compileProgram(pass,available,p,error)){
+        if(!compileProgram(pass,available,p,error,stagedGraph)){
             error=pass.name+": "+error;return false;
         }
         if(p.targets.empty()||p.targets.size()>size_t(std::min(maxDraw,maxColor))||
@@ -656,7 +656,10 @@ bool compilePipeline(std::vector<Pass> const& passes,std::string& error) {
         for(auto const& binding:p.samplers)if(binding.depth<0&&binding.shadowColor<0&&binding.packTexture<0){
             unsigned n=unsigned(binding.buffer);
             if(mipmapInputs&(std::uint32_t(1)<<n))mipNeeded[n]=true;
-            if(!produced[n]&&!historyNeeded[n]&&depthFrame.colors[n].fresh){
+            if(!produced[n]&&!historyNeeded[n]&&(stagedGraph||depthFrame.colors[n].fresh)){
+                // A stage may declare an external input before its actual
+                // geometry/depth producer runs. No texture is considered
+                // initialized until the corresponding stage validates it.
                 sceneNeeded[n]=true;needed[n]=true;
                 if(p.deferred)deferredInputs[n]=true;
             }
@@ -1707,16 +1710,30 @@ void beforeSwap(int width,int height) {
         consumeDepth.rendered=ok;
         saved.restore();
         if(!ok){
-            discardGpu();
+            bool staged=hasDeferred();
             bool transient=error.rfind("Missing current-frame ",0)==0||
                 error.rfind("Missing or mismatched current-frame ",0)==0||
                 error.rfind("Missing or mismatched native scene ",0)==0;
-            if(transient&&!selectedSource.empty()){
+            if(transient&&staged&&!selectedSource.empty()){
+                // Keep linked programs ready for the next opaque phase.
+                // Discard potentially partially written textures/history.
+                for(auto& pair:textures){glDeleteTextures(2,pair.data());pair={};}
+                if(outputTex){glDeleteTextures(1,&outputTex);outputTex=0;}
+                textureWidth=textureHeight=0;colorTargetBytes=0;
+                front={};mipValid={};frameCounter=0;renderedFrame=false;
+                statusMessage(false,"Waiting for verified world resources: "+error+"; vanilla restored");
+            }else if(transient&&!selectedSource.empty()){
+                discardGpu();
                 waitingForResources=true;attemptedResources=true;
                 lastResourceSignature=resourceSignature();
+                // A staged graph compiles before its live input set is complete.
+                // Rebuild it on the next swap even when that set is unchanged,
+                // so the next opaque callback can run instead of deadlocking.
+                if(std::any_of(selectedSource.begin(),selectedSource.end(),[](auto const& p){return p.deferred;}))
+                    attemptedResources=false;
                 statusMessage(false,"Waiting for verified world resources: "+error+"; vanilla restored");
             }else{
-                discardGeometry();discardPackResources();
+                discardGpu();discardGeometry();discardPackResources();
                 selectedSource.clear();waitingForResources=false;wantsNativeCapture=false;
                 statusMessage(false,error+"; vanilla restored");
             }

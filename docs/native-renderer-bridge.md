@@ -66,3 +66,7 @@ The shader menu discovers `profile.*` definitions in `shaders.properties`, resol
 ## Independent pack resource lifecycle
 
 Pack-owned PNG textures are initialized before compiling the fullscreen graph and remain available across missing-world-input retries. Geometry programs can draw while composite is waiting, avoiding a circular dependency on G-buffer generation. Geometry sampler reflection also resolves current-frame depth/shadow snapshots and deferred output or native colortex snapshots where available. Material atlas aliases are never treated as scene color in geometry. Pack resources are released when selection changes, on permanent failure, or when disabled; an EGL context change invalidates old names. No Custom Buffers or material binaries are modified.
+
+## Phase-specific readiness
+
+Enabled deferred graphs link without requiring future-frame native inputs to already exist at link time. External color targets, shadow/depth attachments and typed world uniforms are validated at the phase that actually consumes them. Missing late composite data preserves the vanilla presentation and resets potentially partially written GPU history without discarding the linked deferred graph. The existing standalone fullscreen diagnostic graphs still validate initial input availability during compilation. This change does not provide native world inputs by itself.

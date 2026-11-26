@@ -498,12 +498,22 @@ uniform sampler2D colortex0;
 layout(location=0) out vec4 color;
 void main(){color=vec4(texture(colortex0,texcoord).rgb,1.0);}
 )"),{0},true};
+    // The final stage needs a uniform that is not available until after
+    // the opaque callback. The linked graph must be ready at that boundary.
+    stagedEnd.fragment=fragment(R"(
+uniform sampler2D colortex0;
+uniform float lateSceneValue;
+layout(location=0) out vec4 color;
+void main(){color=vec4(texture(colortex0,texcoord).rgb*lateSceneValue,1.0);}
+)");
+    WorldUniform late;late.name="lateSceneValue";late.glType=GL_FLOAT;late.floats[0]=1;
     requestPipeline({deferred,stagedEnd},"Opaque phase fixture");
     clearScene();beforeSwap(32,32);
     actual=pixel();require(std::abs(int(actual[0])-51)<=2,"Deferred ran at presentation");
     require(captureSceneColor(0,opaqueFbo,0,"RGBA8",32,32,captureError),"Next opaque capture failed");
     require(renderDeferred(32,32,captureError),"Deferred phase execution failed");
     require(deferredTexture(0)!=0,"Deferred output not exposed to translucent stage");
+    require(publishWorldUniforms({late},captureError),"Late composite uniform publish failed");
     clearScene();beforeSwap(32,32);
     require(status().active&&!status().failed,"Composite after deferred failed");
     actual=pixel();require(std::abs(int(actual[0])-51)<=2&&std::abs(int(actual[1])-26)<=2&&
@@ -519,10 +529,20 @@ void main(){color=vec4(texture(colortex0,texcoord).rgb,1.0);}
     const GLfloat translucentColor[4]={0.8f,0.4f,0.2f,1.0f};
     glClearBufferfv(GL_COLOR,0,translucentColor);
     require(captureSceneColor(0,opaqueFbo,0,"RGBA8",32,32,captureError),"Late geometry capture failed");
+    require(publishWorldUniforms({late},captureError),"Returning late uniform publish failed");
     clearScene();beforeSwap(32,32);
     require(status().active&&!status().failed,"Updated geometry not accepted");
     actual=pixel();require(std::abs(int(actual[0])-204)<=2&&std::abs(int(actual[1])-102)<=2&&
         std::abs(int(actual[2])-51)<=2,"Late geometry did not replace deferred buffer");
+    require(captureSceneColor(0,opaqueFbo,0,"RGBA8",32,32,captureError),"Failure-frame opaque capture failed");
+    require(renderDeferred(32,32,captureError),"Failure-frame deferred phase failed");
+    clearScene();beforeSwap(32,32);
+    require(!status().active&&status().failed,"Missing late composite input accepted");
+    require(captureSceneColor(0,opaqueFbo,0,"RGBA8",32,32,captureError),"Recovery opaque capture failed");
+    require(renderDeferred(32,32,captureError),"Graph lost readiness after missing late input");
+    require(publishWorldUniforms({late},captureError),"Recovery late uniform failed");
+    clearScene();beforeSwap(32,32);
+    require(status().active&&!status().failed,"Staged graph did not recover");
     glDeleteFramebuffers(1,&opaqueFbo);glDeleteTextures(1,&opaqueTex);
     // Version-conditional pack material IDs and packed RenderChunk faces.
     std::vector<mesh::BlockRule> rules;
