@@ -54,6 +54,13 @@ struct Status {
     bool failed=false;
     std::string message;
 };
+struct RenderMetrics {
+    std::uint64_t presentedFrames=0,failedFrames=0,waitingFrames=0;
+    // CPU-side GLES submission time, not GPU elapsed time or total FPS.
+    float lastCpuMs=0,averageCpuMs=0;
+    int width=0,height=0;
+};
+RenderMetrics metrics();
 void requestPipeline(std::vector<Pass> passes,std::string label);
 void requestEnable(std::string translatedFragment,std::string sourceLabel);
 void requestDisable();

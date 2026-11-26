@@ -25,6 +25,7 @@ int pendingAction=0; // 0 none, 1 enable, 2 disable
 std::atomic<bool> requestedActive{false};
 std::atomic<bool> wantsNativeCapture{false};
 bool failed=false;
+RenderMetrics renderMetrics;
 
 // GPU state is touched exclusively from the selected game's EGL swap thread.
 EGLContext context=EGL_NO_CONTEXT;
@@ -1143,6 +1144,10 @@ Status status() {
     std::lock_guard lock(mu);
     return {requestedActive.load()&&!failed,failed,lastStatus};
 }
+RenderMetrics metrics(){
+    std::lock_guard lock(mu);
+    return renderMetrics;
+}
 
 static bool captureColorAttachment(unsigned colortex,unsigned framebuffer,unsigned attachment,
                        std::string const& format,int width,int height,std::string& error){
@@ -2059,6 +2064,7 @@ void beforeSwap(int width,int height) {
         if(action==1){passes=std::move(pendingPasses);label=std::move(pendingLabel);}
     }
     if(action==2){
+        {std::lock_guard lock(mu);renderMetrics={};}
         discardGeometry();discardGpu();discardPackResources();
         for(auto& d:depthFrame.images)releaseDepth(d);
         for(auto& d:depthFrame.colors)releaseColor(d);
@@ -2067,6 +2073,7 @@ void beforeSwap(int width,int height) {
         return;
     }
     if(action==1){
+        {std::lock_guard lock(mu);renderMetrics={};}
         discardGeometry();discardGpu();discardPackResources();
         depthFrame.previousCamera.clear();deriveCamera();
         depthFrame.smoothPrevious.clear();depthFrame.previousTime={};depthFrame.frameTime={};
@@ -2121,13 +2128,28 @@ void beforeSwap(int width,int height) {
     }
     if(requestedActive.load()&&!pipeline.empty()){
         if(hasDeferred()&&!deferredReady){
+            {std::lock_guard lock(mu);++renderMetrics.waitingFrames;}
             renderedFrame=false;
             statusMessage(false,"Waiting for verified opaque deferred phase; vanilla preserved");
             return;
         }
         SavedState saved;
         std::string error;
+        auto started=std::chrono::steady_clock::now();
         bool ok=renderPipeline(width,height,error);
+        auto elapsed=std::chrono::duration<float,std::milli>(
+            std::chrono::steady_clock::now()-started).count();
+        {
+            std::lock_guard lock(mu);
+            renderMetrics.width=width;renderMetrics.height=height;
+            if(ok){
+                ++renderMetrics.presentedFrames;
+                renderMetrics.lastCpuMs=elapsed;
+                if(renderMetrics.presentedFrames==1)renderMetrics.averageCpuMs=elapsed;
+                else renderMetrics.averageCpuMs=
+                    renderMetrics.averageCpuMs*0.9f+elapsed*0.1f;
+            }else ++renderMetrics.failedFrames;
+        }
         consumeDepth.rendered=ok;
         saved.restore();
         if(!ok){

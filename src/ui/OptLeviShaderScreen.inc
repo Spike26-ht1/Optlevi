@@ -220,6 +220,17 @@ static void drawOptLeviShadersScreen(ImVec2 display) {
     float textSize=font->FontSize*0.78f;
     dl->AddText(font,textSize,{left+5*u,infoY+22*u},ofc(world.failed?0xFFD0A0:0xD7D7D7),
                 status.c_str(),nullptr,w-10*u);
+    auto perf=modmenu::android::shaderworld::metrics();
+    if(perf.presentedFrames||perf.failedFrames||perf.waitingFrames){
+        auto milli=std::to_string(perf.averageCpuMs);
+        if(milli.size()>5)milli.resize(5);
+        std::string line="Frames "+std::to_string(perf.presentedFrames)+
+            " | waiting "+std::to_string(perf.waitingFrames)+
+            " | errors "+std::to_string(perf.failedFrames)+
+            " | avg CPU "+milli+"ms (not GPU/FPS)";
+        dl->AddText(font,font->FontSize*0.65f,{left+5*u,infoY+44*u},
+                    ofc(0xACC5C8),line.c_str(),nullptr,w-10*u);
+    }
     dl->PopClipRect();
 
     const float gap=7*u,buttonH=30*u;
