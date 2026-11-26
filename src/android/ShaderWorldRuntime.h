@@ -146,6 +146,22 @@ struct TerrainQuad {
 // The native adapter supplies verified faces and per-draw inputs. Uses
 // the selected geometry/shadow program with a generated mapped VAO.
 bool drawTerrainQuads(GeometryDraw const& draw,std::vector<TerrainQuad> const& faces,std::string& error);
+// All batches must use real, mapped Java-convention vertices and actual
+// per-draw uniforms/textures. The engine owns the world FBOs and phase order.
+// The provider supplies draw state (including whether a batch is translucent).
+struct WorldBatch {
+    GeometryDraw geometry;
+    bool blend=false,depthWrite=true,depthTest=true,cull=false;
+};
+struct WorldScene {
+    int width=0,height=0;
+    std::array<float,4> fogClear{};
+    std::vector<WorldBatch> opaque,hand,translucent;
+    std::vector<GeometryDraw> shadowOpaque,shadowTranslucent;
+};
+// Prepares the current world frame, without presenting or replacing the HUD.
+// Composite/final are executed by beforeSwap after this succeeds.
+bool renderJavaWorldScene(WorldScene const& scene,std::string& error);
 void beforeSwap(int width,int height);
 void stop();
 } // namespace modmenu::android::shaderworld

@@ -812,6 +812,57 @@ void main(){optRouteTarget0=tint;}
     clearScene();beforeSwap(32,32);require(!status().active,"Generated shadow textures reused without world draw");
     glBindVertexArray(0);glBindBuffer(GL_ARRAY_BUFFER,0);
     glDeleteVertexArrays(1,&shadowMeshVao);glDeleteBuffers(1,&shadowMeshVbo);
+    // Engine-owned world coordinator: opaque, hand, deferred, translucent
+    // and final execute in order using real rendered MRT/depth attachments.
+    Pass sceneDeferred{"deferred",fragment(R"(
+uniform sampler2D colortex0;
+layout(location=0) out vec4 color;
+void main(){color=texture(colortex0,texcoord)*0.5;}
+)"),{0},false};sceneDeferred.deferred=true;
+    Pass sceneFinal{"final",fragment(R"(
+uniform sampler2D colortex0;
+uniform sampler2D depthtex0;
+uniform sampler2D depthtex1;
+uniform sampler2D depthtex2;
+layout(location=0) out vec4 color;
+void main(){color=vec4(texture(colortex0,texcoord).r,
+texture(depthtex0,texcoord).r,texture(depthtex1,texcoord).r,texture(depthtex2,texcoord).r);}
+)"),{0},true};
+    GeometryProgram sceneTerrain{"gbuffers_terrain",R"(#version 300 es
+in vec4 optPosition;in vec4 optColor;out vec4 tint;
+void main(){gl_Position=optPosition;tint=optColor;}
+)",R"(#version 300 es
+precision highp float;in vec4 tint;
+layout(location=0) out vec4 optRouteTarget0;
+void main(){optRouteTarget0=tint;}
+)",false};
+    sceneDeferred.geometryPrograms.push_back(sceneTerrain);
+    requestPipeline({sceneDeferred,sceneFinal},"Complete world phase coordinator fixture");
+    clearScene();beforeSwap(32,32);
+    GLuint sceneVao=0,sceneVbo=0;
+    glGenVertexArrays(1,&sceneVao);glBindVertexArray(sceneVao);
+    glGenBuffers(1,&sceneVbo);glBindBuffer(GL_ARRAY_BUFFER,sceneVbo);
+    std::vector<float> sceneVerts;
+    for(float z:{0.5f,0.0f,-0.5f})for(auto xy:std::array<std::array<float,2>,3>{{{-1,-1},{3,-1},{-1,3}}}){
+        for(float v:std::array<float,8>{xy[0],xy[1],z,1,0.8f,0.2f,0.4f,1})sceneVerts.push_back(v);
+    }
+    glBufferData(GL_ARRAY_BUFFER,GLsizeiptr(sceneVerts.size()*sizeof(float)),sceneVerts.data(),GL_STATIC_DRAW);
+    glVertexAttribPointer(0,4,GL_FLOAT,GL_FALSE,8*sizeof(float),nullptr);glEnableVertexAttribArray(0);
+    glVertexAttribPointer(1,4,GL_FLOAT,GL_FALSE,8*sizeof(float),reinterpret_cast<void*>(4*sizeof(float)));glEnableVertexAttribArray(1);
+    WorldScene worldScene;worldScene.width=worldScene.height=32;worldScene.fogClear={0.2f,0.3f,0.4f,1};
+    WorldBatch worldOpaque;worldOpaque.geometry.program="gbuffers_terrain";worldOpaque.geometry.vao=sceneVao;
+    worldOpaque.geometry.count=3;
+    auto worldHand=worldOpaque;worldHand.geometry.first=3;
+    auto worldTranslucent=worldOpaque;worldTranslucent.geometry.first=6;
+    worldScene.opaque={worldOpaque};worldScene.hand={worldHand};worldScene.translucent={worldTranslucent};
+    require(renderJavaWorldScene(worldScene,captureError),"World phase coordinator failed");
+    require(!renderJavaWorldScene(worldScene,captureError),"Duplicate world scene accepted");
+    clearScene();beforeSwap(32,32);actual=pixel();
+    require(status().active&&std::abs(int(actual[0])-204)<=2&&std::abs(int(actual[1])-64)<=2&&
+        std::abs(int(actual[2])-128)<=2&&std::abs(int(actual[3])-191)<=2,"World geometry phase order incorrect");
+    clearScene();beforeSwap(32,32);require(!status().active,"Stale world frame reused");
+    glBindVertexArray(0);glBindBuffer(GL_ARRAY_BUFFER,0);
+    glDeleteVertexArrays(1,&sceneVao);glDeleteBuffers(1,&sceneVbo);
     // Missing geometry input must not turn into a fake color sampler.
     clearScene();
     Pass unavailable{"final",fragment(R"(

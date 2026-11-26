@@ -252,7 +252,7 @@ std::array<bool,kBuffers> needed{},mipNeeded{},historyNeeded{},sceneNeeded{};
 std::array<bool,kBuffers> deferredInputs{},deferredOutputs{};
 std::array<std::uint64_t,kBuffers> opaqueSerial{};
 std::uint64_t snapshotSerial=0;
-bool deferredReady=false;
+bool deferredReady=false,worldSceneRendered=false;
 float frameTime=0,frameDelta=0;
 bool frameClockReady=false;
 int frameViewWidth=0,frameViewHeight=0;
@@ -1833,6 +1833,188 @@ bool beginJavaFrame(int width,int height,std::string& error){
     beginFrameTiming();
     return true;
 }
+bool renderJavaWorldScene(WorldScene const& scene,std::string& error){
+    if(worldSceneRendered){error="Java world scene already executed this frame";return false;}
+    if(scene.opaque.empty()||scene.opaque.size()+scene.hand.size()+scene.translucent.size()>65536){
+        error="No supplied opaque world geometry or excessive batch count";return false;
+    }
+    for(float v:scene.fogClear)if(!std::isfinite(v)){error="Invalid world fog clear color";return false;}
+    if(!beginJavaFrame(scene.width,scene.height,error))return false;
+    syncDepthContext();
+    std::array<bool,kBuffers> used{};
+    std::array<FormatInfo,kBuffers> formats{};
+    for(auto const& entry:selectedSource.front().colorFormats)formats[entry.first]=resolveColorFormat(entry.second);
+    auto inspect=[&](std::vector<WorldBatch> const& draws){
+        for(auto const& batch:draws){
+            GeometryHandle g;
+            if(!acquireGeometryProgram(batch.geometry.program,g,error))return false;
+            if(g.shadow){error="Shadow program in main geometry stage";return false;}
+            for(auto i:g.targets){
+                if(i>=kBuffers||!formats[i].bytes||historyNeeded[i]){
+                    error="Unsupported main geometry output or temporal conflict";return false;
+                }
+                used[i]=true;
+            }
+        }
+        return true;
+    };
+    // The set is taken from the linked, active geometry programs, not
+    // arbitrary requested samplers that would turn into fake buffers.
+    if(!inspect(scene.opaque)||!inspect(scene.hand)||!inspect(scene.translucent))return false;
+    if(!used[0]){error="No actual main scene color producer";return false;}
+    SavedState saved;
+    GLint oldDepthFunc=GL_LESS,srcRgb=0,dstRgb=0,srcAlpha=0,dstAlpha=0,eqRgb=0,eqAlpha=0;
+    GLfloat oldRange[2]{};
+    glGetIntegerv(GL_DEPTH_FUNC,&oldDepthFunc);glGetFloatv(GL_DEPTH_RANGE,oldRange);
+    glGetIntegerv(GL_BLEND_SRC_RGB,&srcRgb);glGetIntegerv(GL_BLEND_DST_RGB,&dstRgb);
+    glGetIntegerv(GL_BLEND_SRC_ALPHA,&srcAlpha);glGetIntegerv(GL_BLEND_DST_ALPHA,&dstAlpha);
+    glGetIntegerv(GL_BLEND_EQUATION_RGB,&eqRgb);glGetIntegerv(GL_BLEND_EQUATION_ALPHA,&eqAlpha);
+    GLuint work=0,read=0;
+    auto invalidate=[&](){
+        for(unsigned i=0;i<3;++i)depthFrame.images[i].fresh=false;
+        for(unsigned i=0;i<kBuffers;++i)depthFrame.colors[i].fresh=false;
+        deferredReady=false;
+    };
+    auto finish=[&](bool ok){
+        if(work)glDeleteFramebuffers(1,&work);
+        if(read)glDeleteFramebuffers(1,&read);
+        glDepthFunc(GLenum(oldDepthFunc));glDepthRangef(oldRange[0],oldRange[1]);
+        glBlendFuncSeparate(GLenum(srcRgb),GLenum(dstRgb),GLenum(srcAlpha),GLenum(dstAlpha));
+        glBlendEquationSeparate(GLenum(eqRgb),GLenum(eqAlpha));
+        saved.restore();
+        if(!ok)invalidate();
+        worldSceneRendered=ok;return ok;
+    };
+    invalidate();
+    if(glGetError()!=GL_NO_ERROR){error="Pre-existing GLES error at Java world stage";return finish(false);}
+    if(!scene.shadowOpaque.empty()||!scene.shadowTranslucent.empty()){
+        if(!renderShadowScene(scene.shadowOpaque,scene.shadowTranslucent,error))return finish(false);
+    }
+    auto& depth=depthFrame.images[0];
+    auto pixels=std::uint64_t(scene.width)*scene.height;
+    std::uint64_t oldBytes=0,bytes=pixels*12; // complete, pre-hand, pre-translucent
+    for(unsigned i=0;i<3;++i)oldBytes+=depthFrame.images[i].bytes;
+    for(unsigned i=0;i<kBuffers;++i){
+        oldBytes+=depthFrame.colors[i].bytes;
+        if(used[i])bytes+=pixels*formats[i].bytes;
+    }
+    if(colorTargetBytes+packGpuBytes+depthBytes()-oldBytes+bytes>kMemoryLimit){
+        error="Java world geometry targets exceed GPU memory budget";return finish(false);
+    }
+    glActiveTexture(GL_TEXTURE0);glBindSampler(0,0);glBindBuffer(GL_PIXEL_UNPACK_BUFFER,0);
+    if(!depth.tex||!depth.fbo||depth.width!=scene.width||depth.height!=scene.height||
+       depth.format!=GL_DEPTH_COMPONENT24){
+        releaseDepth(depth);
+        glGenTextures(1,&depth.tex);glBindTexture(GL_TEXTURE_2D,depth.tex);
+        glTexStorage2D(GL_TEXTURE_2D,1,GL_DEPTH_COMPONENT24,scene.width,scene.height);
+        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_COMPARE_MODE,GL_NONE);
+        glGenFramebuffers(1,&depth.fbo);glBindFramebuffer(GL_FRAMEBUFFER,depth.fbo);
+        glFramebufferTexture2D(GL_FRAMEBUFFER,GL_DEPTH_ATTACHMENT,GL_TEXTURE_2D,depth.tex,0);
+        const GLenum none=GL_NONE;glDrawBuffers(1,&none);glReadBuffer(GL_NONE);
+        if(!depth.tex||!depth.fbo||glCheckFramebufferStatus(GL_FRAMEBUFFER)!=GL_FRAMEBUFFER_COMPLETE||
+            glGetError()!=GL_NO_ERROR){
+            releaseDepth(depth);error="Cannot allocate main geometry depth";return finish(false);
+        }
+        depth.width=scene.width;depth.height=scene.height;depth.format=GL_DEPTH_COMPONENT24;depth.bytes=pixels*4;
+    }
+    glDisable(GL_SCISSOR_TEST);glDisable(GL_STENCIL_TEST);glDisable(GL_RASTERIZER_DISCARD);
+    glColorMask(GL_TRUE,GL_TRUE,GL_TRUE,GL_TRUE);glDepthMask(GL_TRUE);
+    glDepthFunc(GL_LEQUAL);glDepthRangef(0,1);
+    const GLfloat farDepth=1;
+    glBindFramebuffer(GL_FRAMEBUFFER,depth.fbo);glClearBufferfv(GL_DEPTH,0,&farDepth);
+    const GLenum first=GL_COLOR_ATTACHMENT0;
+    for(unsigned i=0;i<kBuffers;++i){
+        auto& d=depthFrame.colors[i];
+        if(!used[i]){releaseColor(d);continue;}
+        if(!d.tex||!d.fbo||d.width!=scene.width||d.height!=scene.height||d.format.internal!=formats[i].internal){
+            releaseColor(d);d.format=formats[i];
+            if(!allocateTexture(d.tex,scene.width,scene.height,d.format)){
+                releaseColor(d);error="Cannot allocate geometry colortex"+std::to_string(i);return finish(false);
+            }
+            glGenFramebuffers(1,&d.fbo);glBindFramebuffer(GL_FRAMEBUFFER,d.fbo);
+            glFramebufferTexture2D(GL_FRAMEBUFFER,first,GL_TEXTURE_2D,d.tex,0);
+            glDrawBuffers(1,&first);glReadBuffer(first);
+            if(!d.fbo||glCheckFramebufferStatus(GL_FRAMEBUFFER)!=GL_FRAMEBUFFER_COMPLETE||
+                glGetError()!=GL_NO_ERROR){
+                releaseColor(d);error="Incomplete geometry color target";return finish(false);
+            }
+            d.width=scene.width;d.height=scene.height;d.bytes=pixels*d.format.bytes;
+        }
+        glBindFramebuffer(GL_FRAMEBUFFER,d.fbo);
+        const GLfloat white[4]={1,1,1,1},black[4]={0,0,0,0};
+        glClearBufferfv(GL_COLOR,0,i==0?scene.fogClear.data():i==1?white:black);
+    }
+    glGenFramebuffers(1,&work);glGenFramebuffers(1,&read);
+    if(!work||!read||glGetError()!=GL_NO_ERROR){error="Cannot initialize world geometry FBOs";return finish(false);}
+    glBindFramebuffer(GL_FRAMEBUFFER,work);
+    glFramebufferTexture2D(GL_FRAMEBUFFER,GL_DEPTH_ATTACHMENT,GL_TEXTURE_2D,depth.tex,0);
+    GLint maxColor=0,maxDraw=0;
+    glGetIntegerv(GL_MAX_COLOR_ATTACHMENTS,&maxColor);glGetIntegerv(GL_MAX_DRAW_BUFFERS,&maxDraw);
+    unsigned slots=unsigned(std::min({maxColor,maxDraw,int(kBuffers)}));
+    auto drawStage=[&](std::vector<WorldBatch> const& draws,bool updateSerial){
+        for(auto const& batch:draws){
+            auto draw=batch.geometry;GeometryHandle g;
+            if(!acquireGeometryProgram(draw.program,g,error))return false;
+            if(g.targets.size()>slots){error="Geometry outputs exceed driver limits";return false;}
+            glBindFramebuffer(GL_FRAMEBUFFER,work);
+            for(unsigned i=0;i<slots;++i){
+                GLuint tex=i<g.targets.size()?depthFrame.colors[g.targets[i]].tex:0;
+                glFramebufferTexture2D(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0+i,GL_TEXTURE_2D,tex,0);
+            }
+            glReadBuffer(first);
+            if(batch.blend)glEnable(GL_BLEND);else glDisable(GL_BLEND);
+            if(batch.depthTest)glEnable(GL_DEPTH_TEST);else glDisable(GL_DEPTH_TEST);
+            if(batch.cull)glEnable(GL_CULL_FACE);else glDisable(GL_CULL_FACE);
+            glDepthMask(batch.depthWrite?GL_TRUE:GL_FALSE);
+            glBlendEquationSeparate(GL_FUNC_ADD,GL_FUNC_ADD);
+            glBlendFuncSeparate(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA,GL_ONE,GL_ONE_MINUS_SRC_ALPHA);
+            draw.framebuffer=work;draw.width=scene.width;draw.height=scene.height;
+            if(!drawGeometry(draw,error))return false;
+            if(updateSerial)for(auto i:g.targets)depthFrame.colors[i].serial=++snapshotSerial;
+        }
+        return true;
+    };
+    if(!drawStage(scene.opaque,false))return finish(false);
+    // Iris 1.21: depthtex2 excludes hand AND translucent geometry.
+    if(!captureSceneDepth(DepthPhase::BeforeHand,depth.fbo,GL_DEPTH_COMPONENT24,scene.width,scene.height,error))
+        return finish(false);
+    if(!drawStage(scene.hand,false))return finish(false);
+    if(!captureSceneDepth(DepthPhase::BeforeTranslucent,depth.fbo,GL_DEPTH_COMPONENT24,scene.width,scene.height,error))
+        return finish(false);
+    for(unsigned i=0;i<kBuffers;++i)if(used[i]){
+        auto& d=depthFrame.colors[i];d.fresh=true;d.serial=++snapshotSerial;
+    }
+    // depthtex0 is the currently rendered main depth texture; at the
+    // opaque boundary it contains the same geometry as depthtex1.
+    depth.fresh=true;
+    if(hasDeferred()){
+        if(!renderDeferred(scene.width,scene.height,error))return finish(false);
+        // Preserve deferred output as the destination for later geometry.
+        // The separate deferred texture remains the sampled source.
+        for(unsigned i=0;i<kBuffers;++i)if(used[i]&&deferredOutputs[i]){
+            GLuint src=deferredTexture(i);
+            if(!src){error="Missing deferred output for geometry";return finish(false);}
+            glBindFramebuffer(GL_READ_FRAMEBUFFER,read);
+            glFramebufferTexture2D(GL_READ_FRAMEBUFFER,first,GL_TEXTURE_2D,src,0);glReadBuffer(first);
+            glBindFramebuffer(GL_DRAW_FRAMEBUFFER,depthFrame.colors[i].fbo);
+            if(glCheckFramebufferStatus(GL_READ_FRAMEBUFFER)!=GL_FRAMEBUFFER_COMPLETE){
+                error="Incomplete deferred output source";return finish(false);
+            }
+            glBlitFramebuffer(0,0,scene.width,scene.height,0,0,scene.width,scene.height,GL_COLOR_BUFFER_BIT,GL_NEAREST);
+            if(glGetError()!=GL_NO_ERROR){error="Cannot seed translucent geometry from deferred output";return finish(false);}
+            depthFrame.colors[i].serial=++snapshotSerial;
+        }
+    }
+    if(!drawStage(scene.translucent,true))return finish(false);
+    // The same owned depth attachment now includes translucent geometry.
+    depth.fresh=true;
+    return finish(true);
+}
+
 bool renderDeferred(int width,int height,std::string& error){
     if(eglGetCurrentContext()==EGL_NO_CONTEXT||eglGetCurrentContext()!=context||
         eglGetCurrentSurface(EGL_DRAW)!=pipelineSurface||!requestedActive.load()){
@@ -1858,7 +2040,7 @@ void beforeSwap(int width,int height) {
     syncDepthContext();
     ConsumeDepthFrame consumeDepth;
     struct EndDeferredFrame {
-        ~EndDeferredFrame(){deferredReady=false;frameClockReady=false;frameViewWidth=frameViewHeight=0;}
+        ~EndDeferredFrame(){deferredReady=false;worldSceneRendered=false;frameClockReady=false;frameViewWidth=frameViewHeight=0;}
     } endDeferredFrame;
     if(context!=now||pipelineSurface!=surface){
         if(context!=now)abandonContext();else{discardGeometry();discardGpu();}
