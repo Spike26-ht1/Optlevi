@@ -2222,6 +2222,7 @@ void beforeSwap(int width,int height) {
         if(!nativeTerrainRendered){
             std::lock_guard lock(mu);++renderMetrics.waitingFrames;
             if(!failed)lastStatus="Waiting for recognized native terrain color and depth; vanilla preserved";
+            failed=true;
         }
         return;
     }

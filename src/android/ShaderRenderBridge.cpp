@@ -32,7 +32,7 @@ struct Frame {
     GLuint terrainFramebuffer=0;
     int terrainWidth=0,terrainHeight=0;
     std::vector<GLuint> terrainPrograms;
-    std::string terrainEffectReport;
+    std::string terrainEffectReport,programSignatures;
     std::array<GLuint,128> seen{};
     unsigned seenCount=0,markerCount=0,captureCount=0,terrainCount=0;
     std::string details;
@@ -98,6 +98,7 @@ void captureBeforeDraw(){
     std::vector<UniformMapping> uniforms;
     GLint viewProjection=-1,viewPosition=-1;
     bool terrainAtlas=false;
+    std::string signature;
     GLint deferredMarker=-1;
     for(GLint i=0;i<count;++i){
         GLchar raw[256]{};
@@ -105,6 +106,7 @@ void captureBeforeDraw(){
         glGetActiveUniform(GLuint(program),GLuint(i),sizeof(raw),&length,&size,&type,raw);
         if(length<=0||size!=1)continue;
         std::string name(raw,size_t(length));
+        if(signature.size()<280){if(!signature.empty())signature+=", ";signature+=name;}
         if(name=="u_viewProj"&&type==GL_FLOAT_MAT4)viewProjection=glGetUniformLocation(GLuint(program),raw);
         if(name=="ViewPositionAndTime"&&type==GL_FLOAT_VEC4)viewPosition=glGetUniformLocation(GLuint(program),raw);
         terrainAtlas|=name=="s_MatTexture";
@@ -133,6 +135,9 @@ void captureBeforeDraw(){
         if(add("OptLeviColor",16,Resource::Kind::SceneColor,GL_INT_VEC4))continue;
         if(add("OptLeviShadowDepth",2,Resource::Kind::ShadowDepth,GL_INT_VEC3))continue;
         add("OptLeviShadowColor",2,Resource::Kind::ShadowColor,GL_INT_VEC4);
+    }
+    if(frame.programSignatures.size()<1500){
+        frame.programSignatures+="\nProgram "+std::to_string(program)+": "+signature;
     }
     // Record the real VAO layout of the first recognized terrain draw.
     // This is needed to build the future native mesh adapter without
@@ -390,10 +395,13 @@ PresentGuard::PresentGuard(){
         std::string current="Native GLES draw hook entrypoints: "+std::to_string(hookCount.load())+
             "\nPrograms observed: "+std::to_string(frame.seenCount)+
             "\nExplicit phase marker programs: "+std::to_string(frame.markerCount)+
-            "\nWorld resources captured: "+std::to_string(frame.captureCount);
+            "\nWorld resources captured: "+std::to_string(frame.captureCount)+
+            "\nRecognized terrain programs: "+std::to_string(frame.terrainPrograms.size());
         if(!frame.markerCount)current+="\nNo verified OptLevi phase-marker material was observed.";
         if(!frame.firstTerrainLayout.empty())current+="\n"+frame.firstTerrainLayout;
         if(!frame.terrainEffectReport.empty())current+="\n"+frame.terrainEffectReport;
+        if(frame.terrainPrograms.empty()&&!frame.programSignatures.empty())
+            current+="\nObserved native shader uniforms (unclassified):"+frame.programSignatures;
         if(!frame.details.empty())current+="\n"+frame.details;
         std::lock_guard lock(reportMu);lastReport=std::move(current);
     }
@@ -402,6 +410,7 @@ PresentGuard::PresentGuard(){
     frame.seenCount=frame.markerCount=frame.captureCount=frame.terrainCount=0;
     frame.details.clear();frame.deferredSamplers.clear();frame.terrainPrograms.clear();
     frame.terrainCandidate=false;frame.terrainEffectDone=false;frame.terrainEffectReport.clear();
+    frame.programSignatures.clear();
 }
 PresentGuard::~PresentGuard(){frame.inPresent=false;}
 std::string report(){std::lock_guard lock(reportMu);return lastReport;}

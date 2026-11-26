@@ -330,6 +330,10 @@ static void drawOptLeviShadersScreen(ImVec2 display) {
             ImGui::Separator();
             auto nativeReport=modmenu::android::shaderbridge::report();
             ImGui::TextWrapped("%s",nativeReport.c_str());
+            if(ImGui::Button("Copy renderer log")){
+                auto report=world.message+"\n"+nativeReport;
+                ImGui::SetClipboardText(report.c_str());
+            }
             ImGui::EndPopup();
         }
     }
