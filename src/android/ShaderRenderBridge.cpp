@@ -11,6 +11,7 @@
 #include <array>
 #include <atomic>
 #include <charconv>
+#include <cstdint>
 #include <mutex>
 #include <string>
 #include <string_view>
@@ -30,6 +31,8 @@ struct Frame {
     std::array<GLuint,128> seen{};
     unsigned seenCount=0,markerCount=0,captureCount=0,terrainCount=0;
     std::string details;
+    // Saved across frames until EGL context/surface replacement.
+    std::string firstTerrainLayout;
     std::vector<DeferredSampler> deferredSamplers;
 };
 thread_local Frame frame;
@@ -125,6 +128,42 @@ void captureBeforeDraw(){
         if(add("OptLeviColor",16,Resource::Kind::SceneColor,GL_INT_VEC4))continue;
         if(add("OptLeviShadowDepth",2,Resource::Kind::ShadowDepth,GL_INT_VEC3))continue;
         add("OptLeviShadowColor",2,Resource::Kind::ShadowColor,GL_INT_VEC4);
+    }
+    // Record the real VAO layout of the first recognized terrain draw.
+    // This is needed to build the future native mesh adapter without
+    // hardcoding offsets for a different Minecraft build. It makes no draw.
+    if(terrainAtlas&&viewProjection>=0&&frame.firstTerrainLayout.empty()){
+        GLint count=0,vao=0,elementBuffer=0;
+        glGetProgramiv(GLuint(program),GL_ACTIVE_ATTRIBUTES,&count);
+        glGetIntegerv(GL_VERTEX_ARRAY_BINDING,&vao);
+        glGetIntegerv(GL_ELEMENT_ARRAY_BUFFER_BINDING,&elementBuffer);
+        std::string info="Verified native terrain VAO="+std::to_string(vao)+
+            " elementBuffer="+std::to_string(elementBuffer);
+        for(GLint i=0;i<count&&i<12&&info.size()<1800;++i){
+            GLchar raw[128]{};GLsizei size=0;GLint elements=0;GLenum type=0;
+            glGetActiveAttrib(GLuint(program),GLuint(i),sizeof(raw),&size,&elements,&type,raw);
+            if(size<=0)continue;
+            GLint location=glGetAttribLocation(GLuint(program),raw);
+            if(location<0)continue;
+            GLint enabled=0,components=0,componentType=0,normalized=0,stride=0,
+                  buffer=0,divisor=0;
+            glGetVertexAttribiv(GLuint(location),GL_VERTEX_ATTRIB_ARRAY_ENABLED,&enabled);
+            glGetVertexAttribiv(GLuint(location),GL_VERTEX_ATTRIB_ARRAY_SIZE,&components);
+            glGetVertexAttribiv(GLuint(location),GL_VERTEX_ATTRIB_ARRAY_TYPE,&componentType);
+            glGetVertexAttribiv(GLuint(location),GL_VERTEX_ATTRIB_ARRAY_NORMALIZED,&normalized);
+            glGetVertexAttribiv(GLuint(location),GL_VERTEX_ATTRIB_ARRAY_STRIDE,&stride);
+            glGetVertexAttribiv(GLuint(location),GL_VERTEX_ATTRIB_ARRAY_BUFFER_BINDING,&buffer);
+            glGetVertexAttribiv(GLuint(location),GL_VERTEX_ATTRIB_ARRAY_DIVISOR,&divisor);
+            info+="\\n  "+std::string(raw,size_t(size))+" at "+std::to_string(location)+
+                  " enabled="+std::to_string(enabled)+
+                  " comps="+std::to_string(components)+
+                  " type="+std::to_string(componentType)+
+                  " normalized="+std::to_string(normalized)+
+                  " stride="+std::to_string(stride)+
+                  " VBO="+std::to_string(buffer)+
+                  " divisor="+std::to_string(divisor);
+        }
+        if(glGetError()==GL_NO_ERROR)frame.firstTerrainLayout=std::move(info);
     }
     // Recover only the projection component of the observed terrain draw.
     // A terrain draw is not a phase barrier, and native world coordinates
@@ -301,9 +340,11 @@ PresentGuard::PresentGuard(){
             "\nExplicit phase marker programs: "+std::to_string(frame.markerCount)+
             "\nWorld resources captured: "+std::to_string(frame.captureCount);
         if(!frame.markerCount)current+="\nNo verified OptLevi phase-marker material was observed.";
+        if(!frame.firstTerrainLayout.empty())current+="\n"+frame.firstTerrainLayout;
         if(!frame.details.empty())current+="\n"+frame.details;
         std::lock_guard lock(reportMu);lastReport=std::move(current);
     }
+    if(frame.context!=ctx||frame.surface!=surface)frame.firstTerrainLayout.clear();
     frame.context=ctx;frame.surface=surface;
     frame.seenCount=frame.markerCount=frame.captureCount=frame.terrainCount=0;
     frame.details.clear();frame.deferredSamplers.clear();

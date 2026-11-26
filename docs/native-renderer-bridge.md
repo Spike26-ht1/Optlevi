@@ -98,3 +98,7 @@ The host integration runner now compiles the generated WorldFX ZIP with PERFORMA
 ## Live frame metrics
 
 The shader screen reports successful frame presentations, waiting-for-opaque-stage frames, failed pipeline submissions and a smoothed CPU time spent issuing composite/final GLES commands. These numbers are reset on shader selection changes. CPU submission time is not GPU render time, end-to-end frame latency or game FPS; no blocking `glFinish` or synchronous GPU timer query is introduced. Use the game FPS counter to judge actual performance.
+
+## Native geometry layout discovery (read-only)
+
+The draw hook now records the active vertex attributes, element buffer, VAO identity, component sizes/types, normalization, stride, VBO and instance divisors for the first linked GLES program that actually declares `u_viewProj` plus `s_MatTexture`. The report persists across frames for that EGL context and can be read in the Shader screen's Renderer log even after successful compilation. It is **diagnostic only**: it neither replays arbitrary pointers nor assumes an attribute name implies Java semantics, and it makes no guesses about a missing shader material. This is the evidence needed to implement the remaining native Bedrock geometry provider safely on the user's tested version.

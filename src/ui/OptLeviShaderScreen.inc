@@ -315,10 +315,10 @@ static void drawOptLeviShadersScreen(ImVec2 display) {
         ofText(dl,font,{pt.x,pt.y+ph+4*u},"GLES3 test preview (not world)",
                ofc(0xFFFFFF),font->FontSize*0.72f,pw);
     }
-    if(!gOptPreviewReport.empty()||world.failed) {
-        // Compilation errors are not discarded. Use a scrollable popup to
-        // inspect the real driver log instead of pretending support.
-        if(ofButton("##iris_compilelog","Compiler log",
+    if(!gOptPreviewReport.empty()||world.failed||!gOptSavedSelection.empty()) {
+        // Keep the verified native-layout diagnostic accessible even when
+        // the postprocess compiles successfully.
+        if(ofButton("##iris_compilelog","Renderer log",
                     {left+5*u,bottom-35*u},
                     {150*u,29*u},u))
             ImGui::OpenPopup("##iris_compile_details");
