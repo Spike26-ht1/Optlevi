@@ -55,6 +55,7 @@ on:
       - "shaderpacks/**"
       - "scripts/build-lab-shaders.py"
       - "scripts/test-lab-shaders.py"
+      - "tests/lab-shaders-gles.cpp"
       - ".github/workflows/optlevi-android.yml"
       - "patches/modmenube/**"
   pull_request:
@@ -73,6 +74,7 @@ on:
       - "shaderpacks/**"
       - "scripts/build-lab-shaders.py"
       - "scripts/test-lab-shaders.py"
+      - "tests/lab-shaders-gles.cpp"
       - ".github/workflows/optlevi-android.yml"
       - "patches/modmenube/**"
   workflow_dispatch:
@@ -217,8 +219,8 @@ jobs:
           g++ -std=c++17 -O2 -pthread -I src/android tests/java-composite-gles.cpp src/android/ShaderWorldRuntime.cpp -lEGL -lGLESv2 -o /tmp/optlevi-java-composite
           EGL_PLATFORM=surfaceless LIBGL_ALWAYS_SOFTWARE=1 /tmp/optlevi-java-composite
 
-      - name: Package original OptLevi Lab shader packs
-        run: python3 scripts/build-lab-shaders.py
+      - name: Execute original OptLevi Lab ZIPs through Java loader and GLES
+        run: python3 scripts/test-lab-shaders.py
 
       - name: Upload OptLevi Lab shader packs
         uses: actions/upload-artifact@v4

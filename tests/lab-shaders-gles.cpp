@@ -1,0 +1,103 @@
+// End-to-end test of the actual original shader ZIPs, not copied GLSL.
+using namespace modmenu::android::shaderworld;
+static void check(bool ok,std::string const& message){
+    if(!ok){std::cerr<<message<<" | "<<status().message<<"\n";std::exit(1);}
+}
+static void clearFrame(){
+    glBindFramebuffer(GL_FRAMEBUFFER,0);glViewport(0,0,32,32);
+    glDisable(GL_SCISSOR_TEST);glColorMask(GL_TRUE,GL_TRUE,GL_TRUE,GL_TRUE);
+    glClearColor(0.2f,0.4f,0.6f,1);glClear(GL_COLOR_BUFFER_BIT);
+}
+static std::array<unsigned char,4> readPixel(){
+    std::array<unsigned char,4> p{};glBindFramebuffer(GL_FRAMEBUFFER,0);
+    glReadPixels(16,16,1,1,GL_RGBA,GL_UNSIGNED_BYTE,p.data());
+    check(glGetError()==GL_NO_ERROR,"Readback failed");return p;
+}
+static WorldUniform matrix(char const* name,unsigned type){
+    WorldUniform m;m.name=name;m.glType=type;
+    if(type==GL_FLOAT_MAT3)m.floats={1,0,0,0,1,0,0,0,1};
+    else m.floats={1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1};
+    return m;
+}
+int main(int argc,char** argv){
+    check(argc==2,"Missing shader ZIP folder");
+    EGLDisplay display=eglGetDisplay(EGL_DEFAULT_DISPLAY);
+    check(eglInitialize(display,nullptr,nullptr)&&eglBindAPI(EGL_OPENGL_ES_API),"EGL initialization");
+    const EGLint configAttrs[]={EGL_SURFACE_TYPE,EGL_PBUFFER_BIT,EGL_RENDERABLE_TYPE,0x40,
+        EGL_RED_SIZE,8,EGL_GREEN_SIZE,8,EGL_BLUE_SIZE,8,EGL_ALPHA_SIZE,8,EGL_NONE};
+    EGLConfig config{};EGLint n=0;
+    check(eglChooseConfig(display,configAttrs,&config,1,&n)&&n==1,"GLES configuration");
+    const EGLint surfaceAttrs[]={EGL_WIDTH,32,EGL_HEIGHT,32,EGL_NONE};
+    const EGLint contextAttrs[]={EGL_CONTEXT_CLIENT_VERSION,3,EGL_NONE};
+    EGLSurface surface=eglCreatePbufferSurface(display,config,surfaceAttrs);
+    EGLContext ctx=eglCreateContext(display,config,EGL_NO_CONTEXT,contextAttrs);
+    check(eglMakeCurrent(display,surface,surface,ctx),"GLES context");
+    std::filesystem::path folder=argv[1];
+    std::string error;
+    auto load=[&](char const* file,char const* profile){
+        OptPackInfo pack;pack.path=folder/file;
+        std::vector<Pass> passes;error.clear();
+        bool ok=optBuildJavaPipeline(pack,passes,error,profile);
+        check(ok,std::string(file)+" "+profile+": "+error);
+        requestPipeline(std::move(passes),file);
+        clearFrame();beforeSwap(32,32);
+    };
+    load("OptLevi-Lab-Lite-0.1.zip","NEUTRAL");
+    auto p=readPixel();
+    check(status().active&&std::abs(int(p[0])-51)<=2&&std::abs(int(p[1])-102)<=2&&
+          std::abs(int(p[2])-153)<=2,"Lite neutral failed");
+    load("OptLevi-Lab-Lite-0.1.zip","VIVID");
+    p=readPixel();
+    check(status().active&&p[2]>153&&p[0]<51,"Lite profile did not change actual frame");
+    // Actual pack geometry consumes a real atlas texture and mapped VAO.
+    // The mesh is deliberately controlled; no claim of Bedrock gameplay.
+    GLuint vao=0,vbo=0,atlas=0;
+    glGenVertexArrays(1,&vao);glBindVertexArray(vao);
+    glGenBuffers(1,&vbo);glBindBuffer(GL_ARRAY_BUFFER,vbo);
+    std::vector<float> vertices;
+    for(auto xy:std::array<std::array<float,2>,3>{{{-1,-1},{3,-1},{-1,3}}}){
+        for(float v:std::array<float,19>{xy[0],xy[1],0,1, 0.4f,0.4f,0.4f,1,
+                0,1,0, 0.5f,0.5f,0,1, 1,1,0,1})vertices.push_back(v);
+    }
+    glBufferData(GL_ARRAY_BUFFER,GLsizeiptr(vertices.size()*sizeof(float)),vertices.data(),GL_STATIC_DRAW);
+    const int counts[]={4,4,3,4,4},offsets[]={0,4,8,11,15};
+    for(unsigned i=0;i<5;++i){
+        glVertexAttribPointer(i,counts[i],GL_FLOAT,GL_FALSE,19*sizeof(float),
+            reinterpret_cast<void*>(std::uintptr_t(offsets[i]*sizeof(float))));
+        glEnableVertexAttribArray(i);
+    }
+    glGenTextures(1,&atlas);glBindTexture(GL_TEXTURE_2D,atlas);
+    const unsigned char white[]={255,255,255,255};
+    glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA8,1,1,0,GL_RGBA,GL_UNSIGNED_BYTE,white);
+    glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_NEAREST);
+    WorldBatch terrain;terrain.geometry.program="gbuffers_terrain";
+    terrain.geometry.vao=vao;terrain.geometry.count=3;
+    terrain.geometry.uniforms={matrix("optModelView",GL_FLOAT_MAT4),matrix("optProjection",GL_FLOAT_MAT4),
+        matrix("optNormalMatrix",GL_FLOAT_MAT3),matrix("optTextureMatrix0",GL_FLOAT_MAT4),
+        matrix("optTextureMatrix1",GL_FLOAT_MAT4)};
+    terrain.geometry.textures2D={{"optGeometryAtlas",atlas}};
+    WorldScene world;world.width=world.height=32;world.fogClear={0.1f,0.2f,0.3f,1};world.opaque={terrain};
+    load("OptLevi-Lab-World-0.1.zip","MINIMUM");
+    check(!status().active,"World pack must wait for actual geometry");
+    bool ok=renderJavaWorldScene(world,error);check(ok,"Lab world minimum: "+error);
+    clearFrame();beforeSwap(32,32);p=readPixel();
+    check(status().active&&std::abs(int(p[0])-110)<=3,"World terrain/deferred/final output incorrect");
+    load("OptLevi-Lab-World-0.1.zip","LOW");
+    WorldUniform sun;sun.name="sunAngle";sun.glType=GL_FLOAT;sun.floats[0]=0.25;
+    WorldUniform eye;eye.name="cameraPosition";eye.glType=GL_FLOAT_VEC3;
+    ok=publishWorldUniforms({sun,eye},error);check(ok,"World inputs: "+error);
+    GeometryDraw shadow=terrain.geometry;shadow.program="shadow";
+    world.shadowOpaque={shadow};
+    // Use the original water program on a second real draw, preserving depth.
+    auto water=terrain;water.geometry.program="gbuffers_water";water.blend=true;
+    water.depthWrite=false;world.translucent={water};
+    ok=renderJavaWorldScene(world,error);check(ok,"Lab world low: "+error);
+    clearFrame();beforeSwap(32,32);p=readPixel();
+    check(status().active&&p[2]>p[0],"World shadow/water/final path failed");
+    requestDisable();beforeSwap(32,32);
+    glDeleteTextures(1,&atlas);glDeleteBuffers(1,&vbo);glDeleteVertexArrays(1,&vao);
+    eglMakeCurrent(display,EGL_NO_SURFACE,EGL_NO_SURFACE,EGL_NO_CONTEXT);
+    eglDestroyContext(display,ctx);eglDestroySurface(display,surface);eglTerminate(display);
+    std::cout<<"Original Lab ZIPs: neutral/vivid, terrain/deferred, shadow/water execution OK\n";
+}
