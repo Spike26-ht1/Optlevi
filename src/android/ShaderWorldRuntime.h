@@ -5,6 +5,7 @@
 #include <utility>
 #include <array>
 #include "ShaderMeshMapping.h"
+#include "ShaderPackUniforms.h"
 
 namespace modmenu::android::shaderworld {
 // Ordered fullscreen pass graph. Only buffers actually produced by a pass
@@ -40,6 +41,7 @@ struct Pass {
     // Selected pack geometry/shadow source pairs, shared on first pass.
     std::vector<GeometryProgram> geometryPrograms;
     std::vector<mesh::BlockRule> blockRules;
+    std::vector<custom::Rule> customUniforms;
     // Clear=false history is reflected via enabledProbe; no history buffer
     // is usable without an actual writer in the graph.
 };

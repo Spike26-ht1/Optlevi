@@ -861,6 +861,8 @@ static bool optBuildJavaPipeline(
             }
         }
     }
+    std::vector<modmenu::android::shaderworld::custom::Rule> calculated;
+    if(!modmenu::android::shaderworld::custom::parse(properties,calculated,error))return false;
     size_t total=0;
     std::vector<std::pair<unsigned,std::string>> colorFormats;
     auto append=[&](std::string const& name,bool finalPass)->bool {
@@ -967,6 +969,7 @@ static bool optBuildJavaPipeline(
         }
     }
     passes.front().colorFormats=std::move(colorFormats);
+    passes.front().customUniforms=std::move(calculated);
     if(!optLoadCompositeTextures(pack,properties,passes.front().packTextures,error)){
         passes.clear();return false;
     }

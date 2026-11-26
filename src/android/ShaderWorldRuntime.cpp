@@ -80,7 +80,9 @@ struct DepthFrame {
     EGLSurface surface=EGL_NO_SURFACE;
     std::array<DepthSnapshot,5> images{}; // scene 0..2, shadow 3..4
     std::array<SceneColorSnapshot,kBuffers+2> colors{}; // scene and shadow
-    std::vector<WorldUniform> uniforms,derived,previousCamera;
+    std::vector<WorldUniform> uniforms,derived,previousCamera,customValues;
+    custom::Smooth smoothPrevious,smoothNext;
+    std::chrono::steady_clock::time_point previousTime{},frameTime{};
 };
 thread_local DepthFrame depthFrame;
 std::uint64_t colorTargetBytes=0;
@@ -148,7 +150,10 @@ struct ConsumeDepthFrame {
         }
         for(auto& d:depthFrame.images)d.fresh=false;
         for(auto& d:depthFrame.colors)d.fresh=false;
-        depthFrame.uniforms.clear();depthFrame.derived.clear();
+        depthFrame.uniforms.clear();depthFrame.derived.clear();depthFrame.customValues.clear();
+        if(rendered){depthFrame.smoothPrevious=std::move(depthFrame.smoothNext);depthFrame.previousTime=depthFrame.frameTime;}
+        else {depthFrame.smoothPrevious.clear();depthFrame.previousTime={};}
+        depthFrame.smoothNext.clear();depthFrame.frameTime={};
     }
 };
 std::string resourceSignature(){
@@ -170,6 +175,7 @@ std::string resourceSignature(){
     std::vector<std::string> uniforms;
     for(auto const& v:depthFrame.uniforms)uniforms.push_back(v.name+":"+std::to_string(v.glType));
     for(auto const& v:depthFrame.derived)uniforms.push_back(v.name+":"+std::to_string(v.glType));
+    for(auto const& v:depthFrame.customValues)uniforms.push_back(v.name+":"+std::to_string(v.glType));
     std::sort(uniforms.begin(),uniforms.end());
     for(auto const& u:uniforms)signature+="u"+u+";";
     return signature;
@@ -200,6 +206,7 @@ bool integerUniform(unsigned type){
         type==GL_BOOL||type==GL_BOOL_VEC2||type==GL_BOOL_VEC3||type==GL_BOOL_VEC4;
 }
 WorldUniform const* findWorldUniform(std::string const& name){
+    if(auto value=named(depthFrame.customValues,name))return value;
     if(auto value=named(depthFrame.uniforms,name))return value;
     return named(depthFrame.derived,name);
 }
@@ -252,6 +259,39 @@ bool renderedFrame=false;
 // Render-thread-owned selected source; retain it across temporary absence
 // of native world resources, but never render with stale attachments.
 std::vector<Pass> selectedSource;
+void refreshCustomUniforms(){
+    depthFrame.customValues.clear();depthFrame.smoothNext.clear();
+    if(selectedSource.empty()||selectedSource.front().customUniforms.empty())return;
+    if(depthFrame.frameTime==std::chrono::steady_clock::time_point{})
+        depthFrame.frameTime=std::chrono::steady_clock::now();
+    double ticks=depthFrame.previousTime==std::chrono::steady_clock::time_point{}?0:
+        20*std::chrono::duration<double>(depthFrame.frameTime-depthFrame.previousTime).count();
+    auto lookup=[](std::string const& key)->custom::Number{
+        if(key=="frameCounter")return double(frameCounter);
+        auto dot=key.find('.');auto name=key.substr(0,dot);
+        auto v=named(depthFrame.uniforms,name);if(!v)v=named(depthFrame.derived,name);
+        if(!v)return {};
+        unsigned i=0;
+        if(dot!=std::string::npos){
+            if(dot+2!=key.size())return {};
+            auto c=key[dot+1];if(c=='x'||c=='r')i=0;else if(c=='y'||c=='g')i=1;
+            else if(c=='z'||c=='b')i=2;else if(c=='w'||c=='a')i=3;else return {};
+        }
+        if(v->glType==GL_FLOAT_MAT2||v->glType==GL_FLOAT_MAT3||v->glType==GL_FLOAT_MAT4)return {};
+        int n=uniformComponents(v->glType);
+        if(int(i)>=n||(dot==std::string::npos&&n!=1))return {};
+        return integerUniform(v->glType)?double(v->ints[i]):double(v->floats[i]);
+    };
+    custom::Evaluation evaluation{selectedSource.front().customUniforms,lookup,depthFrame.smoothPrevious,ticks};
+    for(auto const& rule:selectedSource.front().customUniforms)if(rule.uniform){
+        auto n=evaluation.get(rule.name);
+        if(n&&std::isfinite(float(*n))){
+            WorldUniform v;v.name=rule.name;v.glType=GL_FLOAT;v.floats[0]=float(*n);
+            depthFrame.customValues.push_back(std::move(v));
+        }
+    }
+    depthFrame.smoothNext=std::move(evaluation.next);
+}
 std::vector<GeometryHandle> geometryHandles;
 std::vector<std::string> geometryNames;
 std::string selectedLabel,lastResourceSignature;
@@ -979,7 +1019,9 @@ void requestPipeline(std::vector<Pass> passes,std::string label) {
     for(size_t i=0;i<passes.size();++i){
         auto const& p=passes[i];
         total+=p.fragment.size()+p.vertex.size()+p.enabledProbe.size();
-        if(i!=0&&(!p.packTextures.empty()||!p.colorFormats.empty()||!p.geometryPrograms.empty()||!p.blockRules.empty()))badImages=true;
+        if(i!=0&&(!p.packTextures.empty()||!p.colorFormats.empty()||!p.geometryPrograms.empty()||!p.blockRules.empty()||!p.customUniforms.empty()))badImages=true;
+        if(p.customUniforms.size()>256)badImages=true;
+        for(auto const& rule:p.customUniforms)if(rule.nodes.empty()||rule.nodes.size()>512)badImages=true;
         if(p.blockRules.size()>32768)badImages=true;
         if(p.geometryPrograms.size()>24)badImages=true;
         std::vector<std::string> names;
@@ -1134,7 +1176,7 @@ bool publishWorldUniforms(std::vector<WorldUniform> const& values,std::string& e
         }else next.push_back(v);
         if(next.size()>128){error="Too many world uniforms in frame";return false;}
     }
-    depthFrame.uniforms=std::move(next);deriveCamera();
+    depthFrame.uniforms=std::move(next);deriveCamera();refreshCustomUniforms();
     return true;
 }
 
@@ -1336,6 +1378,7 @@ bool translateTerrainQuad(std::string const& canonicalName,mesh::State const& st
 bool drawGeometry(GeometryDraw const& draw,std::string& error){
     GeometryHandle g;
     if(!acquireGeometryProgram(draw.program,g,error))return false;
+    refreshCustomUniforms();
     if(!draw.vao||!glIsVertexArray(draw.vao)||!draw.framebuffer||
        !glIsFramebuffer(draw.framebuffer)||draw.width<=0||draw.height<=0||
        draw.width>4096||draw.height>4096||draw.count<=0||draw.first<0||draw.instances<=0||
@@ -1531,6 +1574,7 @@ bool renderDeferred(int width,int height,std::string& error){
         eglGetCurrentSurface(EGL_DRAW)!=pipelineSurface||!requestedActive.load()){
         error="Deferred graph is not prepared for this EGL surface";return false;
     }
+    refreshCustomUniforms();
     // Preserve native GL bindings. No deferred result is presented here.
     SavedState saved;
     bool ok=renderOpaqueStage(width,height,error);
@@ -1576,9 +1620,11 @@ void beforeSwap(int width,int height) {
     if(action==1){
         discardGeometry();
         depthFrame.previousCamera.clear();deriveCamera();
+        depthFrame.smoothPrevious.clear();depthFrame.previousTime={};depthFrame.frameTime={};
         selectedSource=std::move(passes);selectedLabel=std::move(label);
         waitingForResources=true;attemptedResources=false;
     }
+    refreshCustomUniforms();
     if(waitingForResources&&!selectedSource.empty()){
         auto signature=resourceSignature();
         if(!attemptedResources||signature!=lastResourceSignature){

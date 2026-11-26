@@ -613,6 +613,46 @@ void main(){optRouteTarget0=tint;}
     glDisable(GL_DEPTH_TEST);glBindFramebuffer(GL_FRAMEBUFFER,0);glBindVertexArray(0);
     glDeleteBuffers(1,&meshVbo);glDeleteBuffers(1,&meshEbo);glDeleteVertexArrays(1,&meshVao);
     glDeleteRenderbuffers(1,&meshDepth);glDeleteTextures(1,&meshColor);glDeleteFramebuffers(1,&meshFbo);
+    // Calculated Java uniforms are resolved from actual inputs, not native
+    // material-specific values. Missing dependencies stay unavailable.
+    Pass calculated{"final",fragment(R"(
+uniform float timeBrightness;
+uniform float blindFactor;
+uniform float isCold;
+layout(location=0) out vec4 color;
+void main(){color=vec4(timeBrightness,blindFactor,isCold,1.0);}
+)"),{0},true};
+    require(custom::parse("variable.float.phase=frac(sunAngle - 0.05)\n"
+        "uniform.float.timeBrightness=max(sin(phase * 6.28318530718),0.0)\n"
+        "uniform.float.blindFactor=clamp(blindness * 2.0 - 1.0,0.0,1.0)\n"
+        "#if MC_VERSION >= 11800\n"
+        "uniform.float.isCold=if(in(biome,BIOME_GROVE),1,0) * \\\n"
+        " if(cameraPosition.y >= 113,1,0)\n#else\nuniform.float.isCold=0\n#endif\n",
+        calculated.customUniforms,captureError),"Java uniform declarations failed");
+    WorldUniform sun;sun.name="sunAngle";sun.glType=GL_FLOAT;sun.floats[0]=0.30f;
+    WorldUniform blind;blind.name="blindness";blind.glType=GL_FLOAT;blind.floats[0]=0.75f;
+    WorldUniform biome;biome.name="biome";biome.glType=GL_INT;biome.ints[0]=7;
+    WorldUniform grove=biome;grove.name="BIOME_GROVE";
+    WorldUniform altitude;altitude.name="cameraPosition";altitude.glType=GL_FLOAT_VEC3;altitude.floats[1]=120;
+    require(publishWorldUniforms({sun,blind,biome,grove,altitude},captureError),"Calculated uniform input failed");
+    requestPipeline({calculated},"Custom Java uniform fixture");
+    clearScene();beforeSwap(32,32);actual=pixel();
+    require(status().active&&actual[0]>=253&&std::abs(int(actual[1])-128)<=2&&actual[2]>=253,
+        "Calculated uniform pixel incorrect");
+    clearScene();beforeSwap(32,32);require(!status().active,"Stale calculated values accepted");
+    std::vector<custom::Rule> smoothRules;
+    require(custom::parse("uniform.float.value=smooth(7,target,10,10)\n",smoothRules,captureError),"Smooth expression parse failed");
+    custom::Smooth previous{{7,0}};
+    custom::Evaluation eval{smoothRules,[](std::string const& name)->custom::Number{
+        return name=="target"?custom::Number{1}:custom::Number{};
+    },previous,10};
+    auto smooth=eval.get("value");
+    require(smooth&&std::abs(*smooth-0.5)<1e-6,"Smooth half-life incorrect");
+    require(eval.get("value")==smooth,"Repeated smooth evaluation changed result");
+    std::vector<custom::Rule> cyclic;
+    require(custom::parse("variable.float.a=b\nuniform.float.b=a\n",cyclic,captureError),"Cycle fixture parse failed");
+    custom::Evaluation cycle{cyclic,[](std::string const&)->custom::Number{return {};},previous,0};
+    require(!cycle.get("b"),"Cyclic custom uniform accepted");
     // Missing geometry input must not turn into a fake color sampler.
     clearScene();
     Pass unavailable{"final",fragment(R"(
