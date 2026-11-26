@@ -105,6 +105,7 @@ struct GeometryHandle {
     std::vector<std::pair<std::string,unsigned>> attributes;
     bool shadow=false;
 };
+// Pack textures remain available even while the composite graph waits for world data.
 bool acquireGeometryProgram(std::string const& name,GeometryHandle& result,std::string& error);
 // Explicit, mapped native mesh and dedicated G-buffer/light-space FBO.
 // Attachment slots must match the reflected GeometryHandle target list.

@@ -558,8 +558,27 @@ in vec4 tint;
 layout(location=0) out vec4 optRouteTarget0;
 void main(){optRouteTarget0=tint;}
 )",false});
+    // Geometry has to be able to sample pack-owned textures BEFORE the
+    // composite graph has any of its world resources. Otherwise there is
+    // a cyclic startup dependency.
+    meshPack.fragment=fragment(R"(
+uniform sampler2D colortex3;
+layout(location=0) out vec4 color;
+void main(){color=texture(colortex3,texcoord);}
+)");
+    meshPack.packTextures.push_back({"noisetex",1,1,true,{255,255,255,255}});
+    auto& terrain=meshPack.geometryPrograms.front().fragment;
+    auto at=terrain.find("in vec4 tint;");
+    require(at!=std::string::npos,"Geometry fixture source missing");
+    terrain.insert(at,"uniform sampler2D noisetex;\n");
+    at=terrain.find("optRouteTarget0=tint;");
+    require(at!=std::string::npos,"Geometry fixture output missing");
+    terrain.replace(at,std::string("optRouteTarget0=tint;").size(),
+        "optRouteTarget0=tint*texture(noisetex,vec2(0.5));");
     requestPipeline({meshPack},"Mapped geometry fixture");
     clearScene();beforeSwap(32,32);
+    require(!status().active&&status().message.find("Missing real input colortex3")!=std::string::npos,
+        "Expected composite to wait for geometry");
     GLuint meshFbo=0,meshColor=0,meshDepth=0,meshVao=0,meshVbo=0,meshEbo=0;
     glGenFramebuffers(1,&meshFbo);glBindFramebuffer(GL_FRAMEBUFFER,meshFbo);
     glGenTextures(1,&meshColor);glBindTexture(GL_TEXTURE_2D,meshColor);

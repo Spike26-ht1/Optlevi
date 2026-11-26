@@ -62,3 +62,7 @@ The loader parses scalar float `variable`/`uniform` declarations from `shaders.p
 ## Java shader pack quality profiles
 
 The shader menu discovers `profile.*` definitions in `shaders.properties`, resolves inherited settings and applies the selected profile to original expanded vertex/fragment source and pass-option probes. Numeric options must match the pack's declared allowed values. Cycles, unsupported options and missing declarations fail explicitly. The default profile preserves the original sources, and the selected profile is session-local (no file edits). The single-pass preview still uses the default source; Apply uses the chosen profile. This is independent of Custom Buffers and material binaries.
+
+## Independent pack resource lifecycle
+
+Pack-owned PNG textures are initialized before compiling the fullscreen graph and remain available across missing-world-input retries. Geometry programs can draw while composite is waiting, avoiding a circular dependency on G-buffer generation. Geometry sampler reflection also resolves current-frame depth/shadow snapshots and deferred output or native colortex snapshots where available. Material atlas aliases are never treated as scene color in geometry. Pack resources are released when selection changes, on permanent failure, or when disabled; an EGL context change invalidates old names. No Custom Buffers or material binaries are modified.

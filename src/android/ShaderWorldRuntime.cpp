@@ -230,6 +230,7 @@ void uploadWorldUniform(WorldBinding const& b,WorldUniform const& v){
 struct GpuPackTexture { std::string sampler; GLuint texture=0; };
 std::vector<GpuPackTexture> packGpu;
 std::uint64_t packGpuBytes=0;
+bool packResourcesReady=false;
 unsigned frameCounter=0;
 struct CompiledPass {
     GLuint program=0;
@@ -309,7 +310,7 @@ void abandonContext() {
     context=eglGetCurrentContext();
     geometryHandles.clear();geometryNames.clear();
     pipeline.clear();
-    packGpu.clear();packGpuBytes=0;frameCounter=0;
+    packGpu.clear();packGpuBytes=0;packResourcesReady=false;frameCounter=0;
     textures={};front={};needed={};mipNeeded={};historyNeeded={};sceneNeeded={};deferredInputs={};deferredOutputs={};deferredReady=false;mipValid={};colorFormats={};triangleVao=passFbo=outputTex=shadowCompareSampler=0;
     textureWidth=textureHeight=0;colorTargetBytes=0;
     renderedFrame=false;
@@ -320,11 +321,14 @@ void discardGeometry(){
     for(auto const& g:geometryHandles)if(g.program)glDeleteProgram(g.program);
     geometryHandles.clear();geometryNames.clear();
 }
+void discardPackResources(){
+    for(auto& p:packGpu)if(p.texture)glDeleteTextures(1,&p.texture);
+    packGpu.clear();packGpuBytes=0;packResourcesReady=false;
+}
 void discardGpu() {
     for(auto& p:pipeline) if(p.program)glDeleteProgram(p.program);
     pipeline.clear();
-    for(auto& p:packGpu)if(p.texture)glDeleteTextures(1,&p.texture);
-    packGpu.clear();packGpuBytes=0;frameCounter=0;
+    frameCounter=0;
     for(auto& pair:textures) glDeleteTextures(2,pair.data());
     textures={};front={};needed={};mipNeeded={};historyNeeded={};sceneNeeded={};deferredInputs={};deferredOutputs={};deferredReady=false;mipValid={};colorFormats={};
     if(outputTex){glDeleteTextures(1,&outputTex);outputTex=0;}
@@ -587,7 +591,7 @@ bool compilePipeline(std::vector<Pass> const& passes,std::string& error) {
     if(maxDraw<1||maxColor<1||maxUnits<int(kBuffers)){
         error="Insufficient GLES3 render targets or fragment texture units";return false;
     }
-    if(!uploadPackTextures(passes.front().packTextures,error))return false;
+    if(!packResourcesReady){error="Java pack textures not prepared";return false;}
     for(auto const& entry:passes.front().colorFormats){
         if(entry.first>=kBuffers){error="Invalid colortex format index";return false;}
         colorFormats[entry.first]=resolveColorFormat(entry.second);
@@ -769,6 +773,16 @@ bool allocateTexture(GLuint& texture,int w,int h,FormatInfo const& format) {
     return glGetError()==GL_NO_ERROR;
 }
 
+bool preparePackResources(std::string& error){
+    if(packResourcesReady)return true;
+    if(selectedSource.empty()){error="No selected Java pack";return false;}
+    SavedState saved;
+    bool ok=uploadPackTextures(selectedSource.front().packTextures,error);
+    saved.restore();
+    if(!ok){discardPackResources();return false;}
+    packResourcesReady=true;
+    return true;
+}
 bool ensureTargets(int width,int height,std::string& error) {
     if(width==textureWidth&&height==textureHeight&&outputTex)return true;
     for(auto& pair:textures){glDeleteTextures(2,pair.data());pair={};}
@@ -1309,6 +1323,7 @@ bool acquireGeometryProgram(std::string const& name,GeometryHandle& result,std::
     for(size_t i=0;i<geometryNames.size();++i)if(geometryNames[i]==name){
         result=geometryHandles[i];return true;
     }
+    if(!preparePackResources(error))return false;
     auto const& sources=selectedSource.front().geometryPrograms;
     auto source=std::find_if(sources.begin(),sources.end(),[&](auto const& g){return g.name==name;});
     if(source==sources.end()){error="Java geometry program unavailable: "+name;return false;}
@@ -1467,6 +1482,22 @@ bool drawGeometry(GeometryDraw const& draw,std::string& error){
                 auto pack=std::find_if(packGpu.begin(),packGpu.end(),[&](auto const& t){return t.sampler==name;});
                 if(pack!=packGpu.end())object=pack->texture;
             }
+            if(!object){
+                int depth=depthIndex(name);
+                if(depth>=0&&depthFrame.images[unsigned(depth)].fresh)
+                    object=depthFrame.images[unsigned(depth)].tex;
+                int shadow=std::string(name)=="shadowcolor0"?0:std::string(name)=="shadowcolor1"?1:-1;
+                if(shadow>=0&&depthFrame.colors[kBuffers+unsigned(shadow)].fresh)
+                    object=depthFrame.colors[kBuffers+unsigned(shadow)].tex;
+                int color=bufferIndex(name);
+                // "texture", "tex" and the translated atlas are material
+                // samplers, not aliases for the world color in geometry.
+                if(color>=0&&std::string(name)!="texture"&&std::string(name)!="tex"){
+                    unsigned n=unsigned(color);
+                    if(deferredReady&&deferredOutputs[n])object=textures[n][front[n]];
+                    else if(depthFrame.colors[n].fresh)object=depthFrame.colors[n].tex;
+                }
+            }
             if(!object||!glIsTexture(object)||inputs.size()>=kBuffers||
                std::find(attachedTextures.begin(),attachedTextures.end(),object)!=attachedTextures.end())
                 return finish(false,"Missing or feedback geometry texture "+std::string(name));
@@ -1610,7 +1641,7 @@ void beforeSwap(int width,int height) {
         if(action==1){passes=std::move(pendingPasses);label=std::move(pendingLabel);}
     }
     if(action==2){
-        discardGeometry();discardGpu();
+        discardGeometry();discardGpu();discardPackResources();
         for(auto& d:depthFrame.images)releaseDepth(d);
         for(auto& d:depthFrame.colors)releaseColor(d);
         selectedSource.clear();selectedLabel.clear();lastResourceSignature.clear();
@@ -1618,13 +1649,21 @@ void beforeSwap(int width,int height) {
         return;
     }
     if(action==1){
-        discardGeometry();
+        discardGeometry();discardGpu();discardPackResources();
         depthFrame.previousCamera.clear();deriveCamera();
         depthFrame.smoothPrevious.clear();depthFrame.previousTime={};depthFrame.frameTime={};
         selectedSource=std::move(passes);selectedLabel=std::move(label);
         waitingForResources=true;attemptedResources=false;
     }
     refreshCustomUniforms();
+    if(!selectedSource.empty()&&!packResourcesReady){
+        std::string error;
+        if(!preparePackResources(error)){
+            selectedSource.clear();waitingForResources=false;wantsNativeCapture=false;
+            statusMessage(false,"Java pack resource initialization failed: "+error);
+            return;
+        }
+    }
     if(waitingForResources&&!selectedSource.empty()){
         auto signature=resourceSignature();
         if(!attemptedResources||signature!=lastResourceSignature){
@@ -1643,7 +1682,8 @@ void beforeSwap(int width,int height) {
                 if(transient){
                     statusMessage(false,"Waiting for verified world resources: "+error);
                 }else{
-                    selectedSource.clear();waitingForResources=false;
+                    discardGeometry();discardPackResources();
+                    selectedSource.clear();waitingForResources=false;wantsNativeCapture=false;
                     statusMessage(false,"Java pipeline rejected: "+error);
                 }
                 return;
@@ -1676,7 +1716,8 @@ void beforeSwap(int width,int height) {
                 lastResourceSignature=resourceSignature();
                 statusMessage(false,"Waiting for verified world resources: "+error+"; vanilla restored");
             }else{
-                selectedSource.clear();waitingForResources=false;
+                discardGeometry();discardPackResources();
+                selectedSource.clear();waitingForResources=false;wantsNativeCapture=false;
                 statusMessage(false,error+"; vanilla restored");
             }
         }else if(!renderedFrame){
