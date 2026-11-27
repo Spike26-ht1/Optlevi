@@ -315,7 +315,7 @@ static void drawOptLeviShadersScreen(ImVec2 display) {
         ofText(dl,font,{pt.x,pt.y+ph+4*u},"GLES3 test preview (not world)",
                ofc(0xFFFFFF),font->FontSize*0.72f,pw);
     }
-    if(!gOptPreviewReport.empty()||world.failed||!gOptSavedSelection.empty()) {
+    { // Diagnostics must remain accessible even with shaders disabled.
         // Keep the verified native-layout diagnostic accessible even when
         // the postprocess compiles successfully.
         if(ofButton("##iris_compilelog","Log",
@@ -330,8 +330,15 @@ static void drawOptLeviShadersScreen(ImVec2 display) {
             ImGui::Separator();
             auto nativeReport=modmenu::android::shaderbridge::report();
             ImGui::TextWrapped("%s",nativeReport.c_str());
+            auto report=modmenu::android::shaderdiagnostics::snapshot()+
+                "\nCurrent shader: "+gOptSavedSelection+"\nProfile: "+gOptSavedProfile+
+                "\nWorld: "+world.message+"\n"+nativeReport+"\nCompiler: "+gOptPreviewReport;
+            if(report.size()>240*1024)report.resize(240*1024);
+            if(ImGui::Button("Save log to Downloads")){
+                modmenu::android::shaderdiagnostics::exportDownloads(report,gOptImportStatus);
+            }
+            ImGui::TextWrapped("%s",gOptImportStatus.c_str());
             if(ImGui::Button("Copy renderer log")){
-                auto report=world.message+"\n"+nativeReport;
                 ImGui::SetClipboardText(report.c_str());
             }
             ImGui::EndPopup();

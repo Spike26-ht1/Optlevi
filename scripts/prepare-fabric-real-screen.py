@@ -42,6 +42,8 @@ def main():
         "#include \"ShaderImportBridge.h\"\n"
         "#include \"ShaderWorldRuntime.h\"\n"
         "#include \"ShaderRenderBridge.h\"\n"
+        "#include \"ShaderDiagnostics.h\"\n"
+        "#include \"ShaderLogExport.h\"\n"
         "#include <stb_image.h>\n"
         "#include <cstdint>\n"
         "#include <cstring>\n"

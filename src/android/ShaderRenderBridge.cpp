@@ -1,6 +1,7 @@
 #include "ShaderRenderBridge.h"
 #include "ShaderWorldRuntime.h"
 #include "ShaderCameraMath.h"
+#include "ShaderDiagnostics.h"
 
 #include <EGL/egl.h>
 #include <GLES3/gl3.h>
@@ -413,6 +414,15 @@ PresentGuard::PresentGuard(){
         if(!frame.programSignatures.empty())
             current+="\nObserved native shader uniforms (unclassified):"+frame.programSignatures;
         if(!frame.details.empty())current+="\n"+frame.details;
+        if(!frame.terrainPrograms.empty()||frame.markerCount){
+            auto vendor=reinterpret_cast<char const*>(glGetString(GL_VENDOR));
+            auto renderer=reinterpret_cast<char const*>(glGetString(GL_RENDERER));
+            auto version=reinterpret_cast<char const*>(glGetString(GL_VERSION));
+            current+="\nGLES vendor: "+std::string(vendor?vendor:"unknown")+
+                "\nGLES renderer: "+std::string(renderer?renderer:"unknown")+
+                "\nGLES version: "+std::string(version?version:"unknown");
+            shaderdiagnostics::record("World candidate observation",current,true);
+        }
         std::lock_guard lock(reportMu);lastReport=std::move(current);
     }
     if(frame.context!=ctx||frame.surface!=surface)frame.firstTerrainLayout.clear();

@@ -91,6 +91,11 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Test bounded renderer diagnostic journal
+        run: |
+          c++ -std=c++17 -pthread -Isrc/android tests/shader-diagnostics.cpp -o /tmp/optlevi-diagnostics
+          /tmp/optlevi-diagnostics
+
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
         with:

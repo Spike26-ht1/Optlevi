@@ -46,7 +46,7 @@ void resetButtonLayout() {
 void install() {
     auto const& modId = ModMenuMod::instance().getSelf().getId();
     gModule = pl::modmenu::ModuleBuilder(kModuleId, "OptLevi")
-        .description("OptLevi mod browser based on ModMenuBE; JSON UI entry in resource pack")
+        .description("OptLevi independent Fabric-inspired mod browser and shader manager")
         .modId(modId)
         .defaultEnabled(true)
         .onToggle([](std::string_view, bool enabled) {

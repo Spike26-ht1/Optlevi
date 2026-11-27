@@ -1,4 +1,5 @@
 #include "ShaderWorldRuntime.h"
+#include "ShaderDiagnostics.h"
 #include <cstddef>
 #include "ShaderCameraMath.h"
 
@@ -361,6 +362,7 @@ EGLSurface pipelineSurface=EGL_NO_SURFACE;
 void statusMessage(bool ok,std::string message) {
     std::lock_guard lock(mu);
     failed=!ok;
+    if(lastStatus!=message)shaderdiagnostics::record(ok?"Runtime":"Runtime waiting/error",message);
     lastStatus=std::move(message);
 }
 
