@@ -64,3 +64,6 @@ LeviLauncher-Android + ModMenuBE (pinned Git submodules)
 Repository project targets Android ARM64 GLES3; the native `.so` is inside `.levipack`. Levi API resource pack adjusts main/pause menu, separate from shaders. Development branch contains no proprietary Minecraft engine binaries or full third-party shader bundles. BSL 10.1.8 belongs to the user's test inputs and should be selected for actual validation; never paste entire copyrighted shader contents into repository.
 
 See `docs/native-renderer-bridge.md` for details and `tests/java-composite-gles.cpp` for validated micro-fixtures.
+
+
+**Current template update:** the historical source snapshot above is preserved for reference. The active branch now builds the checked-in `native-template/` using `build/native-template/` as the disposable staging tree. The external menu-template submodule was removed; native config ABI and original legal notices remain. See `native-template/PROVENANCE.md`.

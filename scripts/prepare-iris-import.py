@@ -9,7 +9,7 @@ from pathlib import Path
 import shutil
 
 ROOT=Path(__file__).resolve().parents[1]
-SRC=ROOT/"ModMenuBE"
+SRC=ROOT/"build/native-template"
 
 def once(path,old,new):
     s=path.read_text(encoding="utf-8")

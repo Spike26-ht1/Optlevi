@@ -10,7 +10,7 @@ from pathlib import Path
 import shutil
 
 ROOT = Path(__file__).resolve().parents[1]
-UPSTREAM = ROOT / "ModMenuBE"
+UPSTREAM = ROOT / "build/native-template"
 NATIVE = UPSTREAM / "android"
 
 def replace_once(path: Path, old: str, new: str):

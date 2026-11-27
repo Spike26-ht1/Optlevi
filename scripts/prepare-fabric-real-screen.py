@@ -2,16 +2,16 @@
 """Replace the native OptLevi Mods list screen, not merely its theme.
 
 Run after prepare-fabric21-fidelity.py. The list screen is drawn through an
-independently maintained Fabric-like UI; AFAlimru's mod registry, config,
+independently maintained Fabric-like UI; the native mod registry, config,
 icon cache, update checker, and modal views remain as backend dependencies.
 """
 from pathlib import Path
 import shutil
 
 ROOT=Path(__file__).resolve().parents[1]
-MENU=ROOT/"ModMenuBE/src/ui/ModMenuScreen.cpp"
+MENU=ROOT/"build/native-template/src/ui/ModMenuScreen.cpp"
 INCLUDE=ROOT/"src/ui/OptLeviFabricScreen.inc"
-DEST=ROOT/"ModMenuBE/src/ui/OptLeviFabricScreen.inc"
+DEST=ROOT/"build/native-template/src/ui/OptLeviFabricScreen.inc"
 
 
 def once(body, old, new):

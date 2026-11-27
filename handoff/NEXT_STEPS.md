@@ -43,3 +43,6 @@ python3 scripts/build-lab-shaders.py
 ```
 
 Some tests require Linux EGL/GLES development libraries and a software OpenGL ES implementation; ARM64 packaging needs the pinned Android SDK, NDK, LeviLauncher and ModMenuBE.
+
+
+**Current template update:** the historical source snapshot above is preserved for reference. The active branch now builds the checked-in `native-template/` using `build/native-template/` as the disposable staging tree. The external menu-template submodule was removed; native config ABI and original legal notices remain. See `native-template/PROVENANCE.md`.

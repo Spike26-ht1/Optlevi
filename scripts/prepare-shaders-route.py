@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Add one atomic pause-to-Shaders route to the pinned Android State."""
 from pathlib import Path
-p=Path(__file__).resolve().parents[1]/"ModMenuBE/android/src/State.h"
+p=Path(__file__).resolve().parents[1]/"build/native-template/android/src/State.h"
 s=p.read_text(encoding="utf-8")
 old="    std::atomic<bool> menuOpen{false};"
 assert s.count(old)==1

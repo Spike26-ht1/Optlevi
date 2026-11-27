@@ -1,0 +1,3 @@
+ # OptLevi native template migration
+
+The native Android catalog/config/platform scaffold is now tracked in `native-template/`, not a separate menu-template Git submodule. The build copies it to `build/native-template/` before applying OptLevi's existing Fabric-style UI and shader backend staging scripts. The launcher SDK submodule and preloader ABI pin are unchanged. The native configuration ABI remains compatible; public symbols and `pl::modmenu` are deliberately not renamed. Original license and provenance are preserved and packaged. This migration is not a clean-room rewrite and does not prove world shader compatibility.

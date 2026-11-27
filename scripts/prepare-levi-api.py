@@ -8,7 +8,7 @@ separate, version-specific native-hook work; this script does NOT claim it exist
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-SRC = ROOT / "ModMenuBE"
+SRC = ROOT / "build/native-template"
 
 def replace_once(path, old, new):
     s = path.read_text(encoding="utf-8")

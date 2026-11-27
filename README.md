@@ -64,7 +64,7 @@ and [in-world final-pass test](docs/java-final-world-test-v10.md).
 
 The project owner has confirmed the **main-menu Mods button opens OptLevi in Minecraft Bedrock 26.62**. The pause menu now has an additional compact Mods button beside the book and a Shaders placeholder in the former Marketplace slot. A native Android Preloader touch bridge handles menu opening without registering a floating launcher button.
 
-Version 0.6.0 builds on the independent renderer from 0.4.0, which replaced the old ModMenuBE **View::List** drawing path with an independent Fabric-style renderer, informed by the owner's supplied **Fabric Mod Menu 21.0.1** JAR:
+OptLevi uses its own Fabric-style list renderer, informed by the owner's supplied **Fabric Mod Menu 21.0.1** JAR:
 
 - Balanced left mod list and right detail panes
 - Search, icon-only filter, library visibility, sorting and visible mod count
@@ -83,7 +83,7 @@ The original project icon is preserved at 200×200.
 ## Development layout
 
 - `LeviLauncher-Android/` — pinned upstream LeviLauncher base
-- `ModMenuBE/` — pinned upstream mod discovery, config and native renderer
+- `native-template/` — checked-in OptLevi native catalog, config and launcher scaffold; staged into `build/native-template/`
 - `resources/levi_api/` — embedded Minecraft JSON UI resources for main and pause menus
 - `assets/optlevi-original-200.png` — original project icon (no resizing)
 - `scripts/prepare-optlevi.py` — OptLevi native branding
@@ -91,7 +91,7 @@ The original project icon is preserved at 200×200.
 - `scripts/prepare-fabric-layout.py` — initial native theme/style modifications
 - `scripts/prepare-fabric21-fidelity.py` — earlier Fabric layout work used as a compatibility baseline
 - `src/ui/OptLeviFabricScreen.inc` — **new independent full-screen Mods frontend**, used instead of the old native list renderer
-- `scripts/prepare-fabric-real-screen.py` — inject independent frontend into the native ModMenu build
+- `scripts/prepare-fabric-real-screen.py` — inject OptLevi's Fabric-style frontend into the staged native build
 - `scripts/prepare-optlevi-touch.py` — Android native menu touch routing
 - `scripts/build-resource-pack.py` — standalone `OptLevi-LeviAPI-0.6.0.mcpack`
 - `scripts/package-optlevi.py` — combined `OptLevi-0.6.0-arm64-v8a.levipack`
@@ -116,7 +116,11 @@ New work is developed on feature branches and reviewed through pull requests; no
 | Component | Upstream | Revision | License |
 | --- | --- | --- | --- |
 | LeviLauncher Android | https://github.com/LiteLDev/LeviLauncher-Android | `d544df8cafab731ba7686dfb88951602f13293ef` | Apache-2.0 |
-| ModMenuBE | https://github.com/AFAlimru/ModMenuBE | `dcca382ec0a15e3849e9a65dcdf8fe64480d3a71` | MIT |
+| Native scaffold | [Provenance and licensing](native-template/PROVENANCE.md) | Checked-in maintained derivative | MIT |
 | Fabric Mod Menu 21.0.1 (design reference only) | https://github.com/TerraformersMC/ModMenu | JAR supplied by project owner | MIT |
 
-OptLevi does not embed Fabric Java classes or third-party Minecraft fonts. Upstream submodule licenses and notices remain with their respective projects.
+OptLevi does not embed Fabric Java classes or third-party Minecraft fonts. The native template's original license, provenance and third-party notices ship with OptLevi. The only Git submodule is the launcher SDK.
+
+## Renderer logs
+
+Open Shaders → Log → Save log to Downloads, then attach the exported text file from Downloads/OptLevi. The journal includes recent native draw observations and runtime status. Android 10+ uses MediaStore; Copy renderer log is the fallback. These observations are not proof of Java world rendering.

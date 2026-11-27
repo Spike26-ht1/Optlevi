@@ -8,7 +8,7 @@ Keeps functional mod discovery, config, enable/disable and update actions.
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-SRC = ROOT / "ModMenuBE" / "src" / "ui"
+SRC = ROOT / "build/native-template" / "src" / "ui"
 
 def replace_once(path, old, new):
     content = path.read_text(encoding="utf-8")

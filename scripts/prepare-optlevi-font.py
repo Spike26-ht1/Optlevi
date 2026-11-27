@@ -8,7 +8,7 @@ When available, our packaged OFL Monocraft provides a pixel-art style instead.
 from pathlib import Path
 
 ROOT=Path(__file__).resolve().parents[1]
-SOURCE=ROOT/"ModMenuBE/src/ui/Fonts.cpp"
+SOURCE=ROOT/"build/native-template/src/ui/Fonts.cpp"
 OLD="""    gBody  = addFont(atlas, kRegular, std::round(kBodySize * scale), sRanges.data(), 1.0f);
     gBold  = addFont(atlas, kBold, std::round(kBodySize * scale), sShown.data(), kBoldWeight);
     gTitle = addFont(atlas, kBold, std::round(kTitleSize * scale), sShown.data(), kBoldWeight);"""
@@ -34,7 +34,7 @@ NEW="""#ifndef _WIN32
 #endif"""
 def main():
     s=SOURCE.read_text(encoding="utf-8")
-    assert s.count(OLD)==1,"Upstream font initialization changed"
+    assert s.count(OLD)==1,"Native template font initialization changed"
     assert s.count('#include "core/Log.h"')==1
     s=s.replace('#include "core/Log.h"','#include "core/Log.h"\n#include "core/Paths.h"')
     s=s.replace(OLD,NEW)

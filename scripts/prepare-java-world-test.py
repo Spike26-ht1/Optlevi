@@ -8,7 +8,7 @@ from pathlib import Path
 import shutil
 
 ROOT=Path(__file__).resolve().parents[1]
-NATIVE=ROOT/"ModMenuBE/android"
+NATIVE=ROOT/"build/native-template/android"
 
 def once(path,old,new):
     data=path.read_text(encoding="utf-8")

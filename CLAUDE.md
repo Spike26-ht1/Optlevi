@@ -19,3 +19,6 @@ Read in order:
 Full tracked source snapshot: https://github.com/Spike26-ht1/Optlevi/archive/1987a576413a504fcf1df3ffb541fee7f69a73e6.zip
 Repo: https://github.com/Spike26-ht1/Optlevi
 PR: https://github.com/Spike26-ht1/Optlevi/pull/19
+
+
+**Current template update:** the historical source snapshot above is preserved for reference. The active branch now builds the checked-in `native-template/` using `build/native-template/` as the disposable staging tree. The external menu-template submodule was removed; native config ABI and original legal notices remain. See `native-template/PROVENANCE.md`.
