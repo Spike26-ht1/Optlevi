@@ -1,0 +1,115 @@
+# Exact tracked source file manifest
+
+Repository: Spike26-ht1/Optlevi  
+Snapshot: `1987a576413a504fcf1df3ffb541fee7f69a73e6`  
+Files: 103  
+Total tracked blob bytes: 625,551  
+Git tree truncated: no
+
+Size is Git blob size. Submodule contents are not included here.
+
+| Tracked path | Bytes |
+| --- | ---: |
+| `.github/workflows/modmenu-android.yml` | 2,435 |
+| `.github/workflows/optlevi-android.yml` | 16,495 |
+| `.gitmodules` | 216 |
+| `LICENSE` | 1,064 |
+| `README.md` | 8,638 |
+| `assets/optlevi-original-200.png` | 11,181 |
+| `docs/android-import-crash-v12.md` | 3,860 |
+| `docs/bedrock-26.60-ui-study.md` | 3,461 |
+| `docs/bedrock-native-atlas.md` | 4,522 |
+| `docs/fabric-fullscreen-design.md` | 3,705 |
+| `docs/fabric-modmenu-21-reference.md` | 5,329 |
+| `docs/iris-android-v09-test-bench.md` | 4,988 |
+| `docs/java-final-world-test-v10.md` | 4,884 |
+| `docs/levi-api-resource-ui.md` | 8,777 |
+| `docs/modmenu-android.md` | 4,589 |
+| `docs/native-renderer-bridge.md` | 17,651 |
+| `docs/optlevi-native-menu.md` | 825 |
+| `docs/shaders-android-research.md` | 3,722 |
+| `docs/ui-research-log.md` | 7,640 |
+| `patches/modmenube/0001-align-current-levilauncher.patch` | 3,211 |
+| `resources/levi_api/manifest.json` | 533 |
+| `resources/levi_api/texts/en_US.lang` | 115 |
+| `resources/levi_api/texts/languages.json` | 19 |
+| `resources/levi_api/texts/pt_BR.lang` | 115 |
+| `resources/levi_api/ui/_ui_defs.json` | 78 |
+| `resources/levi_api/ui/pause_screen.json` | 2,773 |
+| `resources/levi_api/ui/start_screen.json` | 1,151 |
+| `scripts/build-lab-shaders.py` | 966 |
+| `scripts/build-resource-pack.py` | 1,696 |
+| `scripts/generate-bedrock-atlas.py` | 4,401 |
+| `scripts/package-optlevi.py` | 7,160 |
+| `scripts/prepare-fabric-layout.py` | 6,979 |
+| `scripts/prepare-fabric-real-screen.py` | 3,058 |
+| `scripts/prepare-fabric21-fidelity.py` | 21,622 |
+| `scripts/prepare-iris-import.py` | 1,646 |
+| `scripts/prepare-java-world-test.py` | 2,342 |
+| `scripts/prepare-levi-api.py` | 5,850 |
+| `scripts/prepare-optlevi-font.py` | 2,542 |
+| `scripts/prepare-optlevi-touch.py` | 2,131 |
+| `scripts/prepare-optlevi.py` | 2,145 |
+| `scripts/prepare-shaders-route.py` | 438 |
+| `scripts/test-bedrock-atlas.py` | 3,052 |
+| `scripts/test-bedrock-style.py` | 1,968 |
+| `scripts/test-fabric-real-screen.py` | 2,698 |
+| `scripts/test-java-bsl.py` | 10,707 |
+| `scripts/test-java-world-test.py` | 2,407 |
+| `scripts/test-lab-shaders.py` | 1,953 |
+| `scripts/test-optlevi-pause-ui.py` | 4,284 |
+| `scripts/test-optlevi-touch.py` | 1,797 |
+| `scripts/test-shaders-screen.py` | 3,027 |
+| `shaderpacks/OptLevi-Lab-Lite/shaders/final.fsh` | 196 |
+| `shaderpacks/OptLevi-Lab-Lite/shaders/final.vsh` | 109 |
+| `shaderpacks/OptLevi-Lab-Lite/shaders/lib/grade.glsl` | 318 |
+| `shaderpacks/OptLevi-Lab-Lite/shaders/shaders.properties` | 168 |
+| `shaderpacks/OptLevi-Lab-Terrain/README.md` | 340 |
+| `shaderpacks/OptLevi-Lab-Terrain/shaders/final.fsh` | 1,341 |
+| `shaderpacks/OptLevi-Lab-Terrain/shaders/final.vsh` | 93 |
+| `shaderpacks/OptLevi-Lab-Terrain/shaders/shaders.properties` | 103 |
+| `shaderpacks/OptLevi-Lab-World/shaders/block.properties` | 84 |
+| `shaderpacks/OptLevi-Lab-World/shaders/deferred.fsh` | 534 |
+| `shaderpacks/OptLevi-Lab-World/shaders/deferred.vsh` | 109 |
+| `shaderpacks/OptLevi-Lab-World/shaders/final.fsh` | 196 |
+| `shaderpacks/OptLevi-Lab-World/shaders/final.vsh` | 109 |
+| `shaderpacks/OptLevi-Lab-World/shaders/gbuffers_terrain.fsh` | 957 |
+| `shaderpacks/OptLevi-Lab-World/shaders/gbuffers_terrain.vsh` | 400 |
+| `shaderpacks/OptLevi-Lab-World/shaders/gbuffers_water.fsh` | 433 |
+| `shaderpacks/OptLevi-Lab-World/shaders/gbuffers_water.vsh` | 400 |
+| `shaderpacks/OptLevi-Lab-World/shaders/lib/grade.glsl` | 318 |
+| `shaderpacks/OptLevi-Lab-World/shaders/lib/settings.glsl` | 198 |
+| `shaderpacks/OptLevi-Lab-World/shaders/shaders.properties` | 436 |
+| `shaderpacks/OptLevi-Lab-World/shaders/shadow.fsh` | 198 |
+| `shaderpacks/OptLevi-Lab-World/shaders/shadow.vsh` | 203 |
+| `shaderpacks/OptLevi-Lab-WorldFX/README.md` | 831 |
+| `shaderpacks/OptLevi-Lab-WorldFX/shaders/composite.fsh` | 334 |
+| `shaderpacks/OptLevi-Lab-WorldFX/shaders/composite.vsh` | 104 |
+| `shaderpacks/OptLevi-Lab-WorldFX/shaders/composite1.fsh` | 644 |
+| `shaderpacks/OptLevi-Lab-WorldFX/shaders/composite1.vsh` | 104 |
+| `shaderpacks/OptLevi-Lab-WorldFX/shaders/final.fsh` | 426 |
+| `shaderpacks/OptLevi-Lab-WorldFX/shaders/final.vsh` | 104 |
+| `shaderpacks/OptLevi-Lab-WorldFX/shaders/lib/lab_settings.glsl` | 599 |
+| `shaderpacks/OptLevi-Lab-WorldFX/shaders/shaders.properties` | 612 |
+| `shaderpacks/README.md` | 1,093 |
+| `src/android/GameUiTouchBridge.cpp` | 8,360 |
+| `src/android/GameUiTouchBridge.h` | 291 |
+| `src/android/ShaderCameraMath.h` | 6,252 |
+| `src/android/ShaderImportBridge.cpp` | 9,880 |
+| `src/android/ShaderImportBridge.h` | 524 |
+| `src/android/ShaderMeshMapping.h` | 10,167 |
+| `src/android/ShaderPackProfiles.h` | 6,824 |
+| `src/android/ShaderPackUniforms.h` | 11,550 |
+| `src/android/ShaderRenderBridge.cpp` | 21,176 |
+| `src/android/ShaderRenderBridge.h` | 508 |
+| `src/android/ShaderWorldRuntime.cpp` | 122,227 |
+| `src/android/ShaderWorldRuntime.h` | 9,081 |
+| `src/ui/OptLeviBedrockAtlas.inc` | 2,845 |
+| `src/ui/OptLeviBedrockTexture.inc` | 6,439 |
+| `src/ui/OptLeviFabricScreen.inc` | 21,451 |
+| `src/ui/OptLeviJavaPack.inc` | 9,004 |
+| `src/ui/OptLeviShaderCatalog.inc` | 6,800 |
+| `src/ui/OptLeviShaderGlesTest.inc` | 64,825 |
+| `src/ui/OptLeviShaderScreen.inc` | 15,949 |
+| `tests/java-composite-gles.cpp` | 51,796 |
+| `tests/lab-shaders-gles.cpp` | 10,662 |
