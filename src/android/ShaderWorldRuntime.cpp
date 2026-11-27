@@ -1126,6 +1126,7 @@ bool renderPipeline(int width,int height,std::string& error,GLuint destination=0
 } // namespace
 
 void requestPipeline(std::vector<Pass> passes,std::string label) {
+    shaderdiagnostics::record("Shader request",label+"; passes="+std::to_string(passes.size()));
     size_t total=0,images=0;
     bool badImages=false;
     for(size_t i=0;i<passes.size();++i){
@@ -1173,6 +1174,7 @@ void requestPipeline(std::vector<Pass> passes,std::string label) {
         pendingAction=2;requestedActive=false;wantsNativeCapture=false;
         pendingPasses.clear();
         failed=true;lastStatus="Java composite graph exceeds pass/source budget";
+        shaderdiagnostics::record("Runtime waiting/error",lastStatus);
         return;
     }
     wantsNativeCapture=true;
@@ -1188,6 +1190,7 @@ void requestEnable(std::string fragment,std::string label) {
 }
 
 void requestDisable() {
+    shaderdiagnostics::record("Shader request","Disabled");
     wantsNativeTerrain=false;
     wantsNativeCapture=false;
     requestedActive=false;
@@ -2228,7 +2231,10 @@ void beforeSwap(int width,int height) {
         consumeDepth.rendered=nativeTerrainRendered;
         if(!nativeTerrainRendered){
             std::lock_guard lock(mu);++renderMetrics.waitingFrames;
-            if(!failed)lastStatus="Waiting for verified native terrain phase provider; vanilla preserved";
+            if(!failed){
+                lastStatus="Waiting for verified native terrain phase provider; vanilla preserved";
+                shaderdiagnostics::record("Runtime waiting/error",lastStatus);
+            }
             failed=true;
         }
         return;

@@ -20,5 +20,34 @@ int main(){
     s=j.snapshot();assert(s.size()<Journal::maxBytes+Journal::maxEntry+256);
     assert(s.find("terrain-layout")!=std::string::npos);
     assert(s.find("A: 99")!=std::string::npos||s.find("B: 99")!=std::string::npos);
-    std::cout<<"Bounded concurrent diagnostic journal: OK\n";
+    namespace fs=std::filesystem;
+    auto dir=fs::temp_directory_path()/("optlevi-log-test-"+std::to_string(
+        std::chrono::steady_clock::now().time_since_epoch().count()));
+    auto read=[](fs::path const& p){
+        std::ifstream in(p,std::ios::binary);
+        return std::string(std::istreambuf_iterator<char>(in),{});
+    };
+    std::string error;
+    Journal first;first.add("Lifecycle","first session");
+    MediaLogWriter writer;
+    assert(writer.save(dir,first,error));
+    assert(read(dir/"latest.log").find("first session")!=std::string::npos);
+    assert(!fs::exists(dir/"latest.log.tmp"));
+    first.add("status","world input missing");
+    assert(writer.save(dir,first,error));
+    assert(read(dir/"latest.log").find("world input missing")!=std::string::npos);
+    assert(!fs::exists(dir/"previous.log"));
+    auto before=read(dir/"latest.log");
+    Journal second;second.add("Lifecycle","second session");
+    MediaLogWriter next;
+    assert(next.save(dir,second,error));
+    assert(read(dir/"previous.log")==before);
+    assert(read(dir/"latest.log").find("second session")!=std::string::npos);
+    // A blocked temporary path must not destroy the last good log.
+    auto good=read(dir/"latest.log");fs::create_directory(dir/"latest.log.tmp");
+    second.add("status","new sample");
+    assert(!next.save(dir,second,error));
+    assert(read(dir/"latest.log")==good);
+    fs::remove_all(dir);
+    std::cout<<"Bounded concurrent diagnostic journal and automatic log persistence: OK\n";
 }

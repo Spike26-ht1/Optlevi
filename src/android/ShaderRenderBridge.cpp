@@ -479,7 +479,7 @@ bool install(){
     if(attempted)return hookCount.load()!=0;
     attempted=true;
     void* library=dlopen("libGLESv3.so",RTLD_NOW);
-    if(!library){std::lock_guard lock(reportMu);lastReport="Native draw bridge: GLES library unavailable";return false;}
+    if(!library){std::lock_guard lock(reportMu);lastReport="Native draw bridge: GLES library unavailable";shaderdiagnostics::record("Hooks",lastReport);return false;}
     unsigned count=0;
     count+=hookEntry(library,"glDrawElements",DrawElementsDirect,DrawElementsResolved,DrawElementsOriginal);
     count+=hookEntry(library,"glDrawArrays",DrawArraysDirect,DrawArraysResolved,DrawArraysOriginal);
@@ -489,6 +489,7 @@ bool install(){
     hookCount.store(count);
     std::lock_guard lock(reportMu);
     lastReport="Native GLES draw hook entrypoints: "+std::to_string(count);
+    shaderdiagnostics::record("Hooks",lastReport);
     return count!=0;
 }
 
@@ -514,7 +515,7 @@ PresentGuard::PresentGuard(){
             current+="\nObserved native shader uniforms (unclassified):"+frame.programSignatures;
         if(!frame.details.empty())current+="\n"+frame.details;
         if(!frame.drawEvidence.empty())current+="\nDraw layout evidence:"+frame.drawEvidence;
-        if(frame.seenCount){
+        { // Include zero-draw reports; missing hook coverage is evidence too.
             auto vendor=reinterpret_cast<char const*>(glGetString(GL_VENDOR));
             auto renderer=reinterpret_cast<char const*>(glGetString(GL_RENDERER));
             auto version=reinterpret_cast<char const*>(glGetString(GL_VERSION));

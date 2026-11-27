@@ -23,7 +23,7 @@ def main():
          "    src/ShaderImportBridge.cpp\n    src/ShaderWorldRuntime.cpp\n    src/ShaderRenderBridge.cpp\n    src/ShaderLogExport.cpp\n")
     overlay=NATIVE/"src/EglOverlay.cpp"
     once(overlay,'#include "State.h"\n',
-         '#include "State.h"\n#include "ShaderWorldRuntime.h"\n#include "ShaderRenderBridge.h"\n')
+         '#include "State.h"\n#include "ShaderWorldRuntime.h"\n#include "ShaderRenderBridge.h"\n#include "ShaderLogExport.h"\n')
     once(overlay,'''    if (game) {
         if (st.menuOpen.load(std::memory_order_relaxed) || ui::wantsFrame()) {''',
          '''    if (game) {
@@ -32,6 +32,7 @@ def main():
         eglQuerySurface(display,surface,EGL_WIDTH,&worldW);
         eglQuerySurface(display,surface,EGL_HEIGHT,&worldH);
         if (worldW>0 && worldH>0) shaderworld::beforeSwap(worldW,worldH);
+        shaderdiagnostics::persistMediaLog();
         if (st.menuOpen.load(std::memory_order_relaxed) || ui::wantsFrame()) {''')
     once(overlay,'    return ok;\n}\n\n} // namespace modmenu::android::overlay',
          '    if (ok) shaderbridge::install();\n    return ok;\n}\n\n} // namespace modmenu::android::overlay')
@@ -40,7 +41,16 @@ def main():
          '#include "ShaderImportBridge.h"\n#include "ShaderWorldRuntime.h"\n')
     once(entry,"    shaderimport::uninstall();\n",
          "    shaderworld::stop();\n    shaderimport::uninstall();\n")
-    print("Opt-in, single-pass world shader bound to the existing game-specific EGL swap")
+    lifecycle=NATIVE/"src/ModMenuMod.cpp"
+    once(lifecycle,'#include "platform/Jni.h"\n',
+         '#include "platform/Jni.h"\n#include "ShaderDiagnostics.h"\n#include "ShaderLogExport.h"\n')
+    once(lifecycle,"    jni::init(mSelf.getJavaVM());\n",
+         '    jni::init(mSelf.getJavaVM());\n    shaderdiagnostics::record("Lifecycle","OptLevi enabled (automatic renderer logging)");\n    shaderdiagnostics::persistMediaLog(true);\n')
+    once(lifecycle,'    if (!overlay::install()) {\n        mSelf.getLogger().error("eglSwapBuffers hook failed; the menu cannot be drawn");\n    }\n',
+         '    if (!overlay::install()) {\n        mSelf.getLogger().error("eglSwapBuffers hook failed; the menu cannot be drawn");\n        shaderdiagnostics::record("Hooks","EGL swap hook failed");\n    }else{\n        shaderdiagnostics::record("Hooks","EGL swap hook installed");\n    }\n    shaderdiagnostics::persistMediaLog(true);\n')
+    once(lifecycle,"    entry::uninstall();\n",
+         '    entry::uninstall();\n    shaderdiagnostics::record("Lifecycle","OptLevi disabled");\n    shaderdiagnostics::persistMediaLog(true);\n')
+    print("Opt-in Java runtime and automatic Android media diagnostics installed")
 
 if __name__=="__main__":
     main()

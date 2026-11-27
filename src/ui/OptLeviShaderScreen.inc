@@ -130,6 +130,7 @@ static void drawOptLeviShadersScreen(ImVec2 display) {
         }else{
             gOptImportStatus=error.empty()?
                 "Embedded Lab World FX missing from mod shaderpacks folder":error;
+            modmenu::android::shaderdiagnostics::record("Shader request rejected",gOptImportStatus);
         }
     }
     float listTop=barY+2*line+11*u;
@@ -292,6 +293,7 @@ static void drawOptLeviShadersScreen(ImVec2 display) {
                 gOptImportStatus=error.empty()?
                     "Select a supported Java composite pack":error;
                 gOptPreviewReport=gOptImportStatus;
+                modmenu::android::shaderdiagnostics::record("Shader request rejected",gOptShadersSelection+": "+gOptImportStatus);
             }
         }
     }

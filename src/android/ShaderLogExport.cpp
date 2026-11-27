@@ -1,4 +1,7 @@
 #include "ShaderLogExport.h"
+#include "ShaderDiagnostics.h"
+#include <android/log.h>
+#include <filesystem>
 #include "platform/Jni.h"
 #include <jni.h>
 #include <chrono>
@@ -14,6 +17,94 @@ void require(JNIEnv* env,bool good,char const* message){
     }
     if(!good)throw std::runtime_error(message);
 }
+}
+namespace {
+std::mutex mediaMutex;
+MediaLogWriter mediaWriter;
+std::filesystem::path mediaDirectory;
+std::chrono::steady_clock::time_point nextAttempt{};
+std::string lastMediaError;
+// Query Android's own app-specific media directory rather than hardcoding
+// a package name or assuming a storage volume.
+std::filesystem::path discoverMediaDirectory(std::string& error){
+    JNIEnv* e=jni::env();
+    if(!e){error="JNI unavailable";return {};}
+    if(e->PushLocalFrame(24)<0){
+        if(e->ExceptionCheck())e->ExceptionClear();
+        error="JNI local frame unavailable";return {};
+    }
+    std::filesystem::path path;
+    try{
+        jobject context=jni::currentActivity(e);
+        if(!context){
+            // The activity can be absent when the native module is enabled.
+            // If the application lookup is unavailable, retry on game swaps.
+            auto thread=e->FindClass("android/app/ActivityThread");
+            require(e,thread!=nullptr,"Application context unavailable");
+            auto app=e->GetStaticMethodID(thread,"currentApplication","()Landroid/app/Application;");
+            require(e,app!=nullptr,"Application method unavailable");
+            context=e->CallStaticObjectMethod(thread,app);
+            require(e,context!=nullptr,"Application context not ready");
+        }
+        auto contextClass=e->FindClass("android/content/Context");
+        require(e,contextClass!=nullptr,"Android Context unavailable");
+        auto getDirs=e->GetMethodID(contextClass,"getExternalMediaDirs","()[Ljava/io/File;");
+        require(e,getDirs!=nullptr,"External media directories unavailable");
+        auto dirs=static_cast<jobjectArray>(e->CallObjectMethod(context,getDirs));
+        require(e,dirs!=nullptr,"External media not ready");
+        auto fileClass=e->FindClass("java/io/File");
+        require(e,fileClass!=nullptr,"File class unavailable");
+        auto getPath=e->GetMethodID(fileClass,"getAbsolutePath","()Ljava/lang/String;");
+        require(e,getPath!=nullptr,"Media directory path unavailable");
+        auto length=e->GetArrayLength(dirs);
+        require(e,length>0,"No external media volume");
+        for(jsize i=0;i<length;++i){
+            auto file=e->GetObjectArrayElement(dirs,i);
+            require(e,true,"Media directory lookup failed");
+            if(!file)continue;
+            auto value=static_cast<jstring>(e->CallObjectMethod(file,getPath));
+            require(e,value!=nullptr,"Media path unavailable");
+            auto chars=e->GetStringUTFChars(value,nullptr);
+            require(e,chars!=nullptr,"Media path conversion failed");
+            std::filesystem::path candidate(chars);
+            e->ReleaseStringUTFChars(value,chars);
+            e->DeleteLocalRef(value);e->DeleteLocalRef(file);
+            if(candidate.is_absolute()){
+                candidate/="OptLevi/logs";
+                std::error_code ec;
+                std::filesystem::create_directories(candidate,ec);
+                if(!ec){path=std::move(candidate);break;}
+            }
+        }
+        if(path.empty())error="No writable app-specific external media directory";
+    }catch(std::exception const& ex){error=ex.what();}
+    if(e->ExceptionCheck())e->ExceptionClear();
+    e->PopLocalFrame(nullptr);
+    return path;
+}
+}
+void persistMediaLog(bool force){
+    // No per-draw file I/O. Only lifecycle hooks and the outer EGL swap
+    // call this function. Failed paths are retried, including after resume.
+    std::lock_guard lock(mediaMutex);
+    auto now=std::chrono::steady_clock::now();
+    if(!force&&now<nextAttempt)return;
+    nextAttempt=now+std::chrono::seconds(3);
+    std::string error;
+    if(mediaDirectory.empty()){
+        mediaDirectory=discoverMediaDirectory(error);
+        if(!mediaDirectory.empty())record("Logger","Automatic Android media log initialized");
+    }
+    if(!mediaDirectory.empty()&&mediaWriter.save(mediaDirectory,journal(),error)){
+        if(!lastMediaError.empty())lastMediaError.clear();
+        return;
+    }
+    mediaDirectory.clear();
+    if(error!=lastMediaError){
+        lastMediaError=error;
+        __android_log_print(ANDROID_LOG_WARN,"OptLevi","Automatic renderer log: %s",error.c_str());
+        record("Logger error",error);
+    }
 }
 bool exportDownloads(std::string const& contents,std::string& result){
     if(contents.empty()||contents.size()>256*1024){result="Invalid log size";return false;}
