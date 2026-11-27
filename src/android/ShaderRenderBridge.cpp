@@ -33,7 +33,7 @@ struct Frame {
     GLuint terrainFramebuffer=0;
     int terrainWidth=0,terrainHeight=0;
     std::vector<GLuint> terrainPrograms;
-    std::string terrainEffectReport,programSignatures;
+    std::string terrainEffectReport,programSignatures,drawEvidence;
     std::array<GLuint,128> seen{};
     unsigned seenCount=0,markerCount=0,captureCount=0,terrainCount=0;
     std::string details;
@@ -82,7 +82,105 @@ struct Resource {
     GLint location;
     std::string name;
 };
-void captureBeforeDraw(){
+struct ObservedDraw {
+    GLenum mode=0;
+    GLsizei count=0,instances=1;
+    bool indexed=false;
+    GLenum indexType=0;
+    std::uintptr_t indexOffset=0;
+    GLint first=0;
+};
+// Describe the first observed draw for a linked program. This is not a
+// semantic classification: it records only actual GLES state, with bounded
+// logging and no mapping, replay or framebuffer writes.
+void describeDraw(GLuint program,ObservedDraw const& call,bool terrainCandidate){
+    if(frame.drawEvidence.size()>6500)return;
+    GLint vao=0,ebo=0,fbo=0,samples=0,viewport[4]{},draw0=0;
+    glGetIntegerv(GL_VERTEX_ARRAY_BINDING,&vao);
+    glGetIntegerv(GL_ELEMENT_ARRAY_BUFFER_BINDING,&ebo);
+    glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING,&fbo);
+    glGetIntegerv(GL_SAMPLES,&samples);
+    glGetIntegerv(GL_VIEWPORT,viewport);
+    glGetIntegerv(GL_DRAW_BUFFER0,&draw0);
+    GLboolean depthWrite=GL_FALSE;glGetBooleanv(GL_DEPTH_WRITEMASK,&depthWrite);
+    std::string out="\nDraw program="+std::to_string(program)+
+        (terrainCandidate?" terrain-candidate":" unclassified")+
+        " mode="+std::to_string(call.mode)+" count="+std::to_string(call.count)+
+        " instances="+std::to_string(call.instances)+
+        " VAO="+std::to_string(vao)+" EBO="+std::to_string(ebo);
+    if(call.indexed){
+        out+=" indexType="+std::to_string(call.indexType);
+        out+=ebo?" indexOffset="+std::to_string(call.indexOffset):" client-indices/unbound";
+    }else out+=" first="+std::to_string(call.first);
+    out+=" FBO="+std::to_string(fbo)+" viewport="+std::to_string(viewport[0])+","+
+        std::to_string(viewport[1])+","+std::to_string(viewport[2])+","+std::to_string(viewport[3])+
+        " samples="+std::to_string(samples)+" draw0="+std::to_string(draw0)+
+        " depthTest="+std::to_string(glIsEnabled(GL_DEPTH_TEST))+
+        " depthWrite="+std::to_string(depthWrite)+
+        " blend="+std::to_string(glIsEnabled(GL_BLEND));
+    // GLES 3.0 exposes attachment types, component bits and texture level.
+    // A viewport is not an attachment extent. Do not invent dimensions or
+    // use GLES 3.1 glGetTexLevelParameteriv on a GLES 3.0 driver.
+    if(glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER)==GL_FRAMEBUFFER_COMPLETE){
+        auto attachment=[&](char const* label,GLenum slot,GLenum bits){
+            GLint type=0;
+            glGetFramebufferAttachmentParameteriv(GL_DRAW_FRAMEBUFFER,slot,
+                GL_FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE,&type);
+            out+=" "+std::string(label)+"Type="+std::to_string(type);
+            if(type==GL_NONE)return;
+            GLint size=0,component=0;
+            glGetFramebufferAttachmentParameteriv(GL_DRAW_FRAMEBUFFER,slot,bits,&size);
+            out+=" bits="+std::to_string(size);
+            if(slot!=GL_STENCIL_ATTACHMENT&&slot!=GL_STENCIL){
+                glGetFramebufferAttachmentParameteriv(GL_DRAW_FRAMEBUFFER,slot,
+                    GL_FRAMEBUFFER_ATTACHMENT_COMPONENT_TYPE,&component);
+                out+=" component="+std::to_string(component);
+            }
+            if(fbo){
+                GLint object=0;
+                glGetFramebufferAttachmentParameteriv(GL_DRAW_FRAMEBUFFER,slot,
+                    GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME,&object);
+                out+=" object="+std::to_string(object);
+                if(type==GL_TEXTURE){
+                    GLint level=0;
+                    glGetFramebufferAttachmentParameteriv(GL_DRAW_FRAMEBUFFER,slot,
+                        GL_FRAMEBUFFER_ATTACHMENT_TEXTURE_LEVEL,&level);
+                    out+=" level="+std::to_string(level);
+                }
+            }
+        };
+        if(draw0!=GL_NONE)attachment("color",GLenum(draw0),GL_FRAMEBUFFER_ATTACHMENT_RED_SIZE);
+        attachment("depth",fbo?GL_DEPTH_ATTACHMENT:GL_DEPTH,GL_FRAMEBUFFER_ATTACHMENT_DEPTH_SIZE);
+        attachment("stencil",fbo?GL_STENCIL_ATTACHMENT:GL_STENCIL,GL_FRAMEBUFFER_ATTACHMENT_STENCIL_SIZE);
+    }else out+=" incomplete-FBO";
+    GLint count=0;glGetProgramiv(program,GL_ACTIVE_ATTRIBUTES,&count);
+    for(GLint i=0;i<count&&i<16&&out.size()<3000;++i){
+        GLchar name[128]{};GLsizei len=0;GLint arraySize=0;GLenum shaderType=0;
+        glGetActiveAttrib(program,GLuint(i),sizeof(name),&len,&arraySize,&shaderType,name);
+        if(len<=0)continue;
+        GLint location=glGetAttribLocation(program,name);if(location<0)continue;
+        GLint enabled=0,size=0,type=0,normalized=0,stride=0,vbo=0,divisor=0,integer=0;
+        void* offset=nullptr;
+        glGetVertexAttribiv(GLuint(location),GL_VERTEX_ATTRIB_ARRAY_ENABLED,&enabled);
+        glGetVertexAttribiv(GLuint(location),GL_VERTEX_ATTRIB_ARRAY_SIZE,&size);
+        glGetVertexAttribiv(GLuint(location),GL_VERTEX_ATTRIB_ARRAY_TYPE,&type);
+        glGetVertexAttribiv(GLuint(location),GL_VERTEX_ATTRIB_ARRAY_NORMALIZED,&normalized);
+        glGetVertexAttribiv(GLuint(location),GL_VERTEX_ATTRIB_ARRAY_STRIDE,&stride);
+        glGetVertexAttribiv(GLuint(location),GL_VERTEX_ATTRIB_ARRAY_BUFFER_BINDING,&vbo);
+        glGetVertexAttribiv(GLuint(location),GL_VERTEX_ATTRIB_ARRAY_DIVISOR,&divisor);
+        glGetVertexAttribiv(GLuint(location),GL_VERTEX_ATTRIB_ARRAY_INTEGER,&integer);
+        glGetVertexAttribPointerv(GLuint(location),GL_VERTEX_ATTRIB_ARRAY_POINTER,&offset);
+        out+="\n  "+std::string(name,size_t(len))+" loc="+std::to_string(location)+
+            " shaderType="+std::to_string(shaderType)+" array="+std::to_string(arraySize)+
+            " enabled="+std::to_string(enabled)+" components="+std::to_string(size)+
+            " storageType="+std::to_string(type)+" normalized="+std::to_string(normalized)+
+            " integer="+std::to_string(integer)+" stride="+std::to_string(stride)+
+            " VBO="+std::to_string(vbo)+" divisor="+std::to_string(divisor);
+        if(vbo)out+=" offset="+std::to_string(reinterpret_cast<std::uintptr_t>(offset));
+    }
+    if(frame.drawEvidence.size()+out.size()<=9000)frame.drawEvidence+=out;
+}
+void captureBeforeDraw(ObservedDraw const& call){
     if(frame.inPresent||frame.context==EGL_NO_CONTEXT||!captureRequested())return;
     if(eglGetCurrentContext()!=frame.context||eglGetCurrentSurface(EGL_DRAW)!=frame.surface)return;
     GLint program=0;
@@ -137,6 +235,7 @@ void captureBeforeDraw(){
         if(add("OptLeviShadowDepth",2,Resource::Kind::ShadowDepth,GL_INT_VEC3))continue;
         add("OptLeviShadowColor",2,Resource::Kind::ShadowColor,GL_INT_VEC4);
     }
+    describeDraw(GLuint(program),call,terrainAtlas&&viewProjection>=0);
     if(frame.programSignatures.size()<1500){
         frame.programSignatures+="\nProgram "+std::to_string(program)+": "+signature;
     }
@@ -321,9 +420,9 @@ void describeTerrainCandidate(){
     frame.terrainCandidate=false;
 }
 template<class Fn,class... Args>
-void draw(Fn original,Args... args){
+void draw(ObservedDraw const& evidence,Fn original,Args... args){
     struct Guard { Guard(){++drawNesting;} ~Guard(){--drawNesting;} } guard;
-    if(drawNesting==1)captureBeforeDraw();
+    if(drawNesting==1)captureBeforeDraw(evidence);
     DeferredInputs inputs;
     original(args...);
     if(drawNesting==1)noteTerrainDraw();
@@ -347,15 +446,15 @@ void BindFramebufferResolved(GLenum target,GLuint id){bindFramebuffer(BindFrameb
 // be used by a native renderer. Hook each distinct address once.
 // Use the comma-containing signatures through parenthesized argument tuples.
 #define OPTLEVI_UNWRAP(...) __VA_ARGS__
-#define OPTLEVI_DRAW_ENTRY(NAME,PARAMS,ARGS) \
+#define OPTLEVI_DRAW_ENTRY(NAME,PARAMS,ARGS,EVIDENCE) \
     using NAME##Fn=void (*) PARAMS; \
     NAME##Fn NAME##Original[2]{}; \
-    void NAME##Direct PARAMS { draw(NAME##Original[0],OPTLEVI_UNWRAP ARGS); } \
-    void NAME##Resolved PARAMS { draw(NAME##Original[1],OPTLEVI_UNWRAP ARGS); }
-OPTLEVI_DRAW_ENTRY(DrawElements,(GLenum m,GLsizei n,GLenum t,void const* p),(m,n,t,p))
-OPTLEVI_DRAW_ENTRY(DrawArrays,(GLenum m,GLint f,GLsizei n),(m,f,n))
-OPTLEVI_DRAW_ENTRY(DrawElementsInstanced,(GLenum m,GLsizei n,GLenum t,void const* p,GLsizei c),(m,n,t,p,c))
-OPTLEVI_DRAW_ENTRY(DrawArraysInstanced,(GLenum m,GLint f,GLsizei n,GLsizei c),(m,f,n,c))
+    void NAME##Direct PARAMS { draw(ObservedDraw{OPTLEVI_UNWRAP EVIDENCE},NAME##Original[0],OPTLEVI_UNWRAP ARGS); } \
+    void NAME##Resolved PARAMS { draw(ObservedDraw{OPTLEVI_UNWRAP EVIDENCE},NAME##Original[1],OPTLEVI_UNWRAP ARGS); }
+OPTLEVI_DRAW_ENTRY(DrawElements,(GLenum m,GLsizei n,GLenum t,void const* p),(m,n,t,p),(m,n,1,true,t,reinterpret_cast<std::uintptr_t>(p),0))
+OPTLEVI_DRAW_ENTRY(DrawArrays,(GLenum m,GLint f,GLsizei n),(m,f,n),(m,n,1,false,0,0,f))
+OPTLEVI_DRAW_ENTRY(DrawElementsInstanced,(GLenum m,GLsizei n,GLenum t,void const* p,GLsizei c),(m,n,t,p,c),(m,n,c,true,t,reinterpret_cast<std::uintptr_t>(p),0))
+OPTLEVI_DRAW_ENTRY(DrawArraysInstanced,(GLenum m,GLint f,GLsizei n,GLsizei c),(m,f,n,c),(m,n,c,false,0,0,f))
 #undef OPTLEVI_DRAW_ENTRY
 #undef OPTLEVI_UNWRAP
 
@@ -414,14 +513,16 @@ PresentGuard::PresentGuard(){
         if(!frame.programSignatures.empty())
             current+="\nObserved native shader uniforms (unclassified):"+frame.programSignatures;
         if(!frame.details.empty())current+="\n"+frame.details;
-        if(!frame.terrainPrograms.empty()||frame.markerCount){
+        if(!frame.drawEvidence.empty())current+="\nDraw layout evidence:"+frame.drawEvidence;
+        if(frame.seenCount){
             auto vendor=reinterpret_cast<char const*>(glGetString(GL_VENDOR));
             auto renderer=reinterpret_cast<char const*>(glGetString(GL_RENDERER));
             auto version=reinterpret_cast<char const*>(glGetString(GL_VERSION));
             current+="\nGLES vendor: "+std::string(vendor?vendor:"unknown")+
                 "\nGLES renderer: "+std::string(renderer?renderer:"unknown")+
                 "\nGLES version: "+std::string(version?version:"unknown");
-            shaderdiagnostics::record("World candidate observation",current,true);
+            shaderdiagnostics::record((!frame.terrainPrograms.empty()||frame.markerCount)?
+                "World candidate observation":"Unclassified draw observation",current,true);
         }
         std::lock_guard lock(reportMu);lastReport=std::move(current);
     }
@@ -430,7 +531,7 @@ PresentGuard::PresentGuard(){
     frame.seenCount=frame.markerCount=frame.captureCount=frame.terrainCount=0;
     frame.details.clear();frame.deferredSamplers.clear();frame.terrainPrograms.clear();
     frame.terrainCandidate=false;frame.terrainEffectReport.clear();
-    frame.programSignatures.clear();
+    frame.programSignatures.clear();frame.drawEvidence.clear();
 }
 PresentGuard::~PresentGuard(){frame.inPresent=false;}
 std::string report(){std::lock_guard lock(reportMu);return lastReport;}
