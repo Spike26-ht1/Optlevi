@@ -863,6 +863,17 @@ void main(){optRouteTarget0=tint;}
     clearScene();beforeSwap(32,32);require(!status().active,"Stale world frame reused");
     glBindVertexArray(0);glBindBuffer(GL_ARRAY_BUFFER,0);
     glDeleteVertexArrays(1,&sceneVao);glDeleteBuffers(1,&sceneVbo);
+    // A geometry-bearing pack without deferred passes must never turn
+    // the composited backbuffer into its main Java colortex0.
+    Pass noDeferred=end;
+    noDeferred.geometryPrograms={sceneTerrain};
+    requestPipeline({noDeferred},"Geometry pack without deferred fixture");
+    clearScene();beforeSwap(32,32);
+    require(!status().active&&status().message.find("native scene colortex0")!=std::string::npos,
+            "Geometry pack fell back to the backbuffer");
+    actual=pixel();
+    require(std::abs(int(actual[0])-51)<=2&&std::abs(int(actual[1])-102)<=2&&
+            std::abs(int(actual[2])-153)<=2,"Unprovided geometry pack changed vanilla scene");
     // Missing geometry input must not turn into a fake color sampler.
     clearScene();
     Pass unavailable{"final",fragment(R"(

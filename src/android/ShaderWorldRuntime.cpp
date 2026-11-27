@@ -669,7 +669,12 @@ bool compilePipeline(std::vector<Pass> const& passes,std::string& error) {
     std::array<bool,kBuffers> available{},produced{};
     available[0]=true;needed[0]=true;
     for(unsigned n=0;n<kBuffers;++n)if(depthFrame.colors[n].fresh)available[n]=true;
-    sceneNeeded[0]=depthFrame.colors[0].fresh;
+    // A pack with main-world geometry is not a fullscreen-only pack,
+    // even when its profile disables every deferred pass. A captured
+    // backbuffer has no verified Java G-buffer encoding.
+    const bool mainGeometry=std::any_of(passes.front().geometryPrograms.begin(),
+        passes.front().geometryPrograms.end(),[](auto const& g){return !g.shadow;});
+    sceneNeeded[0]=depthFrame.colors[0].fresh||mainGeometry;
     for(size_t i=0;i<passes.size();++i){
         auto& m=metadata[i];
         if(!evaluateEnabled(passes[i],m.enabled,m.mip,m.history,error)){
@@ -2221,7 +2226,7 @@ void beforeSwap(int width,int height) {
         consumeDepth.rendered=nativeTerrainRendered;
         if(!nativeTerrainRendered){
             std::lock_guard lock(mu);++renderMetrics.waitingFrames;
-            if(!failed)lastStatus="Waiting for recognized native terrain color and depth; vanilla preserved";
+            if(!failed)lastStatus="Waiting for verified native terrain phase provider; vanilla preserved";
             failed=true;
         }
         return;

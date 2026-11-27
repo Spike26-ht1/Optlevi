@@ -27,8 +27,8 @@ struct DeferredSampler { GLuint program; GLint location; unsigned index; };
 struct Frame {
     EGLContext context=EGL_NO_CONTEXT;
     EGLSurface surface=EGL_NO_SURFACE;
-    bool inPresent=false,inTerrainEffect=false;
-    bool terrainCandidate=false,terrainEffectDone=false;
+    bool inPresent=false;
+    bool terrainCandidate=false;
     GLuint terrainFramebuffer=0;
     int terrainWidth=0,terrainHeight=0;
     std::vector<GLuint> terrainPrograms;
@@ -82,7 +82,7 @@ struct Resource {
     std::string name;
 };
 void captureBeforeDraw(){
-    if(frame.inPresent||frame.inTerrainEffect||frame.context==EGL_NO_CONTEXT||!captureRequested())return;
+    if(frame.inPresent||frame.context==EGL_NO_CONTEXT||!captureRequested())return;
     if(eglGetCurrentContext()!=frame.context||eglGetCurrentSurface(EGL_DRAW)!=frame.surface)return;
     GLint program=0;
     glGetIntegerv(GL_CURRENT_PROGRAM,&program);
@@ -109,7 +109,7 @@ void captureBeforeDraw(){
         if(signature.size()<280){if(!signature.empty())signature+=", ";signature+=name;}
         if(name=="u_viewProj"&&type==GL_FLOAT_MAT4)viewProjection=glGetUniformLocation(GLuint(program),raw);
         if(name=="ViewPositionAndTime"&&type==GL_FLOAT_VEC4)viewPosition=glGetUniformLocation(GLuint(program),raw);
-        terrainAtlas|=name=="s_MatTexture";
+        terrainAtlas|=name=="s_MatTexture"&&type==GL_SAMPLER_2D;
         if(name=="OptLeviDeferred"&&type==GL_INT_VEC2){deferredMarker=glGetUniformLocation(GLuint(program),raw);continue;}
         int deferredIndex=indexOf(name,"s_OptLeviDeferred",16);
         if(deferredIndex>=0&&type==GL_SAMPLER_2D){
@@ -149,7 +149,7 @@ void captureBeforeDraw(){
         glGetProgramiv(GLuint(program),GL_ACTIVE_ATTRIBUTES,&count);
         glGetIntegerv(GL_VERTEX_ARRAY_BINDING,&vao);
         glGetIntegerv(GL_ELEMENT_ARRAY_BUFFER_BINDING,&elementBuffer);
-        std::string info="Verified native terrain VAO="+std::to_string(vao)+
+        std::string info="Unverified terrain candidate VAO="+std::to_string(vao)+
             " elementBuffer="+std::to_string(elementBuffer);
         for(GLint i=0;i<count&&i<12&&info.size()<1800;++i){
             GLchar raw[128]{};GLsizei size=0;GLint elements=0;GLenum type=0;
@@ -158,7 +158,8 @@ void captureBeforeDraw(){
             GLint location=glGetAttribLocation(GLuint(program),raw);
             if(location<0)continue;
             GLint enabled=0,components=0,componentType=0,normalized=0,stride=0,
-                  buffer=0,divisor=0;
+                  buffer=0,divisor=0,integer=0;
+            void* pointer=nullptr;
             glGetVertexAttribiv(GLuint(location),GL_VERTEX_ATTRIB_ARRAY_ENABLED,&enabled);
             glGetVertexAttribiv(GLuint(location),GL_VERTEX_ATTRIB_ARRAY_SIZE,&components);
             glGetVertexAttribiv(GLuint(location),GL_VERTEX_ATTRIB_ARRAY_TYPE,&componentType);
@@ -166,6 +167,8 @@ void captureBeforeDraw(){
             glGetVertexAttribiv(GLuint(location),GL_VERTEX_ATTRIB_ARRAY_STRIDE,&stride);
             glGetVertexAttribiv(GLuint(location),GL_VERTEX_ATTRIB_ARRAY_BUFFER_BINDING,&buffer);
             glGetVertexAttribiv(GLuint(location),GL_VERTEX_ATTRIB_ARRAY_DIVISOR,&divisor);
+            glGetVertexAttribiv(GLuint(location),GL_VERTEX_ATTRIB_ARRAY_INTEGER,&integer);
+            glGetVertexAttribPointerv(GLuint(location),GL_VERTEX_ATTRIB_ARRAY_POINTER,&pointer);
             info+="\n  "+std::string(raw,size_t(size))+" at "+std::to_string(location)+
                   " enabled="+std::to_string(enabled)+
                   " comps="+std::to_string(components)+
@@ -173,7 +176,10 @@ void captureBeforeDraw(){
                   " normalized="+std::to_string(normalized)+
                   " stride="+std::to_string(stride)+
                   " VBO="+std::to_string(buffer)+
-                  " divisor="+std::to_string(divisor);
+                  " divisor="+std::to_string(divisor)+
+                  " integer="+std::to_string(integer)+
+                  // In a VBO this is an offset, never dereference a client pointer.
+                  (buffer?" offset="+std::to_string(reinterpret_cast<std::uintptr_t>(pointer)):" client-array/unbound");
         }
         if(glGetError()==GL_NO_ERROR)frame.firstTerrainLayout=std::move(info);
     }
@@ -247,7 +253,7 @@ struct DeferredInputs {
     std::vector<Saved> saved;
     GLint active=GL_TEXTURE0;
     DeferredInputs(){
-        if(drawNesting!=1||frame.inPresent||frame.inTerrainEffect||frame.deferredSamplers.empty()||
+        if(drawNesting!=1||frame.inPresent||frame.deferredSamplers.empty()||
             !captureRequested()||frame.context!=eglGetCurrentContext()||
             frame.surface!=eglGetCurrentSurface(EGL_DRAW))return;
         GLint program=0,maxUnits=0;
@@ -287,7 +293,7 @@ struct DeferredInputs {
     }
 };
 void noteTerrainDraw(){
-    if(!nativeTerrainRequested()||frame.inPresent||frame.inTerrainEffect||frame.terrainEffectDone||
+    if(!captureRequested()||frame.inPresent||
        frame.context!=eglGetCurrentContext()||frame.surface!=eglGetCurrentSurface(EGL_DRAW))return;
     GLint p=0;glGetIntegerv(GL_CURRENT_PROGRAM,&p);
     if(std::find(frame.terrainPrograms.begin(),frame.terrainPrograms.end(),GLuint(p))==frame.terrainPrograms.end())return;
@@ -299,15 +305,19 @@ void noteTerrainDraw(){
     frame.terrainCandidate=true;frame.terrainFramebuffer=GLuint(fbo);
     frame.terrainWidth=viewport[2];frame.terrainHeight=viewport[3];
 }
-void flushTerrain(){
-    if(!frame.terrainCandidate||frame.inTerrainEffect||!nativeTerrainRequested())return;
+// A uniform-name match plus an FBO switch cannot establish phase ownership
+// or prove that HUD/postprocessing has not already drawn. Observe only;
+// a verified world adapter must explicitly call renderNativeTerrainPhase
+// or renderJavaWorldScene. Never write to a guessed native framebuffer.
+void describeTerrainCandidate(){
+    if(!frame.terrainCandidate)return;
+    GLint samples=0,draw=0;glGetIntegerv(GL_SAMPLES,&samples);
+    glGetIntegerv(GL_DRAW_BUFFER0,&draw);
+    frame.terrainEffectReport="Candidate FBO="+std::to_string(frame.terrainFramebuffer)+
+        " viewport="+std::to_string(frame.terrainWidth)+"x"+std::to_string(frame.terrainHeight)+
+        " samples="+std::to_string(samples)+" draw0="+std::to_string(draw)+
+        " (observation only; no verified world phase)";
     frame.terrainCandidate=false;
-    frame.inTerrainEffect=true;
-    std::string error;
-    bool ok=renderNativeTerrainPhase(frame.terrainFramebuffer,frame.terrainWidth,frame.terrainHeight,error);
-    frame.inTerrainEffect=false;frame.terrainEffectDone=ok;
-    frame.terrainEffectReport=ok?"Native terrain phase processed actual color and depth":
-        "Native terrain phase: "+error;
 }
 template<class Fn,class... Args>
 void draw(Fn original,Args... args){
@@ -321,11 +331,11 @@ void draw(Fn original,Args... args){
 using BindFramebufferFn=void(*)(GLenum,GLuint);
 BindFramebufferFn BindFramebufferOriginal[2]{};
 void bindFramebuffer(BindFramebufferFn original,GLenum target,GLuint id){
-    if(!drawNesting&&!frame.inPresent&&!frame.inTerrainEffect&&frame.terrainCandidate&&
+    if(!drawNesting&&!frame.inPresent&&frame.terrainCandidate&&
        frame.context==eglGetCurrentContext()&&frame.surface==eglGetCurrentSurface(EGL_DRAW)&&
        (target==GL_FRAMEBUFFER||target==GL_DRAW_FRAMEBUFFER)&&id!=frame.terrainFramebuffer){
         GLint current=0;glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING,&current);
-        if(GLuint(current)==frame.terrainFramebuffer)flushTerrain();
+        if(GLuint(current)==frame.terrainFramebuffer)describeTerrainCandidate();
     }
     original(target,id);
 }
@@ -385,22 +395,22 @@ bool install(){
 PresentGuard::PresentGuard(){
     frame.inPresent=true;
     auto ctx=eglGetCurrentContext();auto surface=eglGetCurrentSurface(EGL_DRAW);
-    // Default-framebuffer terrain has no departure hook. Its effect runs
-    // here, after native draws and before OptLevi's own overlay.
+    // Record a remaining candidate for diagnostics, not as a phase barrier.
+    // The default framebuffer can already contain HUD or postprocessing.
     if(frame.context==ctx&&frame.surface==surface&&frame.terrainCandidate){
         GLint current=0;glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING,&current);
-        if(GLuint(current)==frame.terrainFramebuffer)flushTerrain();
+        if(GLuint(current)==frame.terrainFramebuffer)describeTerrainCandidate();
     }
     if(captureRequested()&&frame.context==ctx&&frame.surface==surface){
         std::string current="Native GLES draw hook entrypoints: "+std::to_string(hookCount.load())+
             "\nPrograms observed: "+std::to_string(frame.seenCount)+
             "\nExplicit phase marker programs: "+std::to_string(frame.markerCount)+
             "\nWorld resources captured: "+std::to_string(frame.captureCount)+
-            "\nRecognized terrain programs: "+std::to_string(frame.terrainPrograms.size());
+            "\nTerrain candidate programs (unverified): "+std::to_string(frame.terrainPrograms.size());
         if(!frame.markerCount)current+="\nNo verified OptLevi phase-marker material was observed.";
         if(!frame.firstTerrainLayout.empty())current+="\n"+frame.firstTerrainLayout;
         if(!frame.terrainEffectReport.empty())current+="\n"+frame.terrainEffectReport;
-        if(frame.terrainPrograms.empty()&&!frame.programSignatures.empty())
+        if(!frame.programSignatures.empty())
             current+="\nObserved native shader uniforms (unclassified):"+frame.programSignatures;
         if(!frame.details.empty())current+="\n"+frame.details;
         std::lock_guard lock(reportMu);lastReport=std::move(current);
@@ -409,7 +419,7 @@ PresentGuard::PresentGuard(){
     frame.context=ctx;frame.surface=surface;
     frame.seenCount=frame.markerCount=frame.captureCount=frame.terrainCount=0;
     frame.details.clear();frame.deferredSamplers.clear();frame.terrainPrograms.clear();
-    frame.terrainCandidate=false;frame.terrainEffectDone=false;frame.terrainEffectReport.clear();
+    frame.terrainCandidate=false;frame.terrainEffectReport.clear();
     frame.programSignatures.clear();
 }
 PresentGuard::~PresentGuard(){frame.inPresent=false;}

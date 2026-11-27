@@ -78,7 +78,10 @@ int main(int argc,char** argv){
     glRenderbufferStorage(GL_RENDERBUFFER,GL_DEPTH_COMPONENT24,32,32);
     glFramebufferRenderbuffer(GL_FRAMEBUFFER,GL_DEPTH_ATTACHMENT,GL_RENDERBUFFER,nativeDepth);
     check(glCheckFramebufferStatus(GL_FRAMEBUFFER)==GL_FRAMEBUFFER_COMPLETE,"Native FBO incomplete");
-    const char* nativeVs="#version 300 es\nuniform float z;void main(){vec2 uv=vec2(float((gl_VertexID<<1)&2),float(gl_VertexID&2));gl_Position=vec4(uv*2.0-1.0,z,1);}";
+    // Standard right-handed perspective: camera faces -Z; nearer
+    // geometry has a larger view-space Z. Do not use an identity inverse
+    // for positive clip depths: that reverses the shader's occlusion test.
+    const char* nativeVs="#version 300 es\nuniform float z;uniform mat4 projection;void main(){vec2 uv=vec2(float((gl_VertexID<<1)&2),float(gl_VertexID&2));gl_Position=projection*vec4((uv*2.0-1.0)*(-z),z,1);}";
     const char* nativeFs="#version 300 es\nprecision highp float;out vec4 color;void main(){color=vec4(0.8,0.8,0.8,1);}";
     auto stage=[&](GLenum type,char const* source){
         GLuint shader=glCreateShader(type);glShaderSource(shader,1,&source,nullptr);glCompileShader(shader);
@@ -92,18 +95,40 @@ int main(int argc,char** argv){
     glViewport(0,0,32,32);glEnable(GL_DEPTH_TEST);glDepthMask(GL_TRUE);glDepthFunc(GL_LEQUAL);
     glDisable(GL_BLEND);glDisable(GL_CULL_FACE);glDisable(GL_SCISSOR_TEST);
     glClearDepthf(1);glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);
-    glUniform1f(glGetUniformLocation(nativeProgram,"z"),0.5f);glDrawArrays(GL_TRIANGLES,0,3);
-    glEnable(GL_SCISSOR_TEST);glScissor(0,0,16,32);
-    glUniform1f(glGetUniformLocation(nativeProgram,"z"),0.0f);glDrawArrays(GL_TRIANGLES,0,3);
-    glDisable(GL_SCISSOR_TEST);
+    using modmenu::android::shaderbridge::camera::Matrix;
+    Matrix nativeProjection{1,0,0,0, 0,1,0,0, 0,0,-1.5f,-1, 0,0,-2.5f,0};
     auto projection=matrix("gbufferProjectionInverse",GL_FLOAT_MAT4);
+    check(modmenu::android::shaderbridge::camera::invert(nativeProjection,projection.floats),
+          "Native perspective inverse failed");
+    glUniformMatrix4fv(glGetUniformLocation(nativeProgram,"projection"),1,GL_FALSE,nativeProjection.data());
+    glUniform1f(glGetUniformLocation(nativeProgram,"z"),-2.5f);glDrawArrays(GL_TRIANGLES,0,3);
+    glEnable(GL_SCISSOR_TEST);glScissor(0,0,16,32);
+    glUniform1f(glGetUniformLocation(nativeProgram,"z"),-2.0f);glDrawArrays(GL_TRIANGLES,0,3);
+    glDisable(GL_SCISSOR_TEST);
+    check(glGetError()==GL_NO_ERROR,"Native fixture depth draws failed");
+    // Separate read/draw targets and a non-default active texture are
+    // deliberately kept across the effect. Verify restored bindings.
+    glBindFramebuffer(GL_READ_FRAMEBUFFER,0);
+    glActiveTexture(GL_TEXTURE3);
     bool nativeOk=publishWorldUniforms({projection},error);
     check(nativeOk,"Native projection publish: "+error);
     nativeOk=renderNativeTerrainPhase(nativeFbo,32,32,error);
     check(nativeOk,"Native terrain phase: "+error);
+    GLint restoredRead=0,restoredDraw=0,restoredProgram=0,restoredVao=0,restoredActive=0;
+    glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING,&restoredRead);
+    glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING,&restoredDraw);
+    glGetIntegerv(GL_CURRENT_PROGRAM,&restoredProgram);
+    glGetIntegerv(GL_VERTEX_ARRAY_BINDING,&restoredVao);
+    glGetIntegerv(GL_ACTIVE_TEXTURE,&restoredActive);
+    check(restoredRead==0&&GLuint(restoredDraw)==nativeFbo&&GLuint(restoredProgram)==nativeProgram&&
+          GLuint(restoredVao)==nativeVao&&restoredActive==GL_TEXTURE3&&glIsEnabled(GL_DEPTH_TEST),
+          "Native terrain effect leaked GLES bindings/state");
+    glBindFramebuffer(GL_READ_FRAMEBUFFER,nativeFbo);
+    glActiveTexture(GL_TEXTURE0);
     std::array<unsigned char,4> edge{},farPixel{};
     glReadPixels(17,16,1,1,GL_RGBA,GL_UNSIGNED_BYTE,edge.data());
     glReadPixels(30,16,1,1,GL_RGBA,GL_UNSIGNED_BYTE,farPixel.data());
+    std::cout<<"Native terrain GPU pixels: edge="<<int(edge[0])<<" far="<<int(farPixel[0])<<"\n";
     check(edge[0]+10<farPixel[0]&&std::abs(int(farPixel[0])-204)<=3,
           "Native depth contact shading did not darken geometry edge");
     clearFrame();beforeSwap(32,32);p=readPixel();
