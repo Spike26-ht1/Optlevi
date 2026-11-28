@@ -571,7 +571,8 @@ in vec4 optPosition;
 in vec4 optColor;
 uniform mat4 optProjection;
 out vec4 tint;
-void main(){gl_Position=optProjection*optPosition;tint=optColor;}
+uniform vec3 optTerrainOffset;
+void main(){gl_Position=optProjection*vec4(optPosition.xyz+optTerrainOffset,optPosition.w);tint=optColor;}
 )",R"(#version 300 es
 precision highp float;
 in vec4 tint;
@@ -727,6 +728,17 @@ void main(){optDisabledOutput=vec4(1.0);}
     glReadPixels(16,16,1,1,GL_RGBA,GL_UNSIGNED_BYTE,actual.data());
     require(std::abs(int(actual[0])-153)<=2&&std::abs(int(actual[1])-51)<=2&&
         std::abs(int(actual[2])-102)<=2,"Cached terrain output wrong");
+    // Move the existing GPU mesh offscreen, then reset the offset on the
+    // same token. No CPU face rebuild and no stale per-draw translation.
+    cached.terrainOffset={4,0,0};
+    glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);
+    require(drawGeometry(cached,captureError),"Offset cached terrain draw failed");
+    glReadPixels(16,16,1,1,GL_RGBA,GL_UNSIGNED_BYTE,actual.data());
+    require(actual[0]<=2&&actual[1]<=2&&actual[2]<=2,"Cached mesh offset not applied");
+    cached.terrainOffset={0,0,0};
+    require(drawGeometry(cached,captureError),"Reset cached terrain offset failed");
+    glReadPixels(16,16,1,1,GL_RGBA,GL_UNSIGNED_BYTE,actual.data());
+    require(std::abs(int(actual[0])-153)<=2,"Cached mesh offset leaked between draws");
     require(!prepareTerrainMesh(17,2,{},newToken,captureError),"Missing revised mesh accepted");
     require(!drawGeometry(cached,captureError),"Stale cached mesh accepted");
     require(prepareTerrainMesh(17,2,assembled,newToken,captureError)&&newToken!=token,

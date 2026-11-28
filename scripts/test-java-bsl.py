@@ -206,6 +206,9 @@ void main(){
     assert(geometry.find("in vec4 mc_Entity;")!=std::string::npos);
     assert(geometry.find("gl_VertexID")==std::string::npos);
     assert(geometry.find("optGeometryTransform()")!=std::string::npos);
+    assert(geometry.find("uniform vec3 optTerrainOffset;")!=std::string::npos);
+    auto directGeometry=optTranslateGeometryVertex("#version 120\nvoid main(){gl_Position=gl_ModelViewProjectionMatrix*gl_Vertex;}\n");
+    assert(directGeometry.find("optModelViewProjection*optGeometryPosition()")!=std::string::npos);
     std::string geometryFragment;
     assert(optTranslateGeometryFragment("#version 120\nuniform sampler2D texture;\nvoid main(){\n/* DRAWBUFFERS:13 */\ngl_FragData[0]=texture2D(texture,vec2(0.5));gl_FragData[1]=vec4(1.0);\n}\n",geometryFragment,error));
     assert(geometryFragment.find("uniform sampler2D optGeometryAtlas;")!=std::string::npos);

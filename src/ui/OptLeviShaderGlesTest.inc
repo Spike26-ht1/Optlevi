@@ -553,7 +553,7 @@ static std::string optTranslateGeometryVertex(std::string source){
     clean=optGeometryLegacyNames(std::move(clean));
     optReplaceIdentifier(clean,"varying","out");
     optReplaceIdentifier(clean,"attribute","in");
-    optReplaceIdentifier(clean,"gl_Vertex","optPosition");
+    optReplaceIdentifier(clean,"gl_Vertex","optGeometryPosition()");
     optReplaceIdentifier(clean,"gl_Color","optColor");
     optReplaceIdentifier(clean,"gl_Normal","optNormal");
     optReplaceIdentifier(clean,"gl_MultiTexCoord0","optUV0");
@@ -581,7 +581,11 @@ uniform mat4 optModelViewProjection;
 uniform mat3 optNormalMatrix;
 uniform mat4 optTextureMatrix0;
 uniform mat4 optTextureMatrix1;
-vec4 optGeometryTransform(){return optProjection*optModelView*optPosition;}
+// For cached chunk-local meshes, restore camera-relative Java coordinates
+// before any pack vertex expression, not only the final MVP transform.
+uniform vec3 optTerrainOffset;
+vec4 optGeometryPosition(){return vec4(optPosition.xyz+optTerrainOffset,optPosition.w);}
+vec4 optGeometryTransform(){return optProjection*optModelView*optGeometryPosition();}
 )GLSL")+optTranslateGlobalInitializers(optTranslateBslNumeric(std::move(clean)));
 }
 // Iris/OptiFine alphaTest.<program> compares the first fragment

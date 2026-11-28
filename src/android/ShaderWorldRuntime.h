@@ -151,6 +151,9 @@ struct GeometryDraw {
     std::vector<std::pair<std::string,unsigned>> textures2D;
     // Runtime-owned mapped terrain token; mutually exclusive with native VAO.
     std::uint64_t terrainMesh=0;
+    // Verified local-to-camera-relative translation, in Java block units.
+    // Zero for meshes already in camera-relative space. Per-draw, not cached.
+    mesh::V3 terrainOffset{};
 };
 // Actual world viewport (not shadow-map dimensions). Call before shadow
 // draws if their programs need viewport built-ins.
@@ -178,7 +181,8 @@ struct TerrainFaceMetadata {
     mesh::State states;
     mesh::V3 center;
 };
-// Vertices are decoded, verified camera-relative native attributes. Indices
+// Vertices are decoded, verified native attributes in a single coordinate frame.
+// Local meshes use GeometryDraw::terrainOffset at draw time. Indices
 // are six per face in draw order; baseVertex follows GLES signed semantics.
 bool assembleIndexedTerrainQuads(std::vector<mesh::NativeVertex> const& vertices,
     std::vector<std::uint32_t> const& indices,int baseVertex,
@@ -202,8 +206,9 @@ bool capturePackedTerrainQuads(PackedTerrainSource const& source,
 // the selected geometry/shadow program with a generated mapped VAO.
 bool drawTerrainQuads(GeometryDraw const& draw,std::vector<TerrainQuad> const& faces,std::string& error);
 // The adapter owns stable chunk/batch identity and revision. Revision MUST
-// change if any mapped input changes (including camera-relative positions,
-// block state, light, UV, topology). Empty faces are permitted on a cache hit.
+// change if any mapped input changes (including local positions, block state,
+// light, UV, topology). Per-draw terrainOffset does not invalidate local meshes.
+// Empty faces are permitted on a cache hit.
 // No GL names escape the cache; tokens expire on release/pack/context change.
 bool prepareTerrainMesh(std::uint64_t batchKey,std::uint64_t revision,
     std::vector<TerrainQuad> const& faces,std::uint64_t& token,std::string& error);

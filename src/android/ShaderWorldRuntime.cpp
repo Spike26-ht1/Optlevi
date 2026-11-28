@@ -14,6 +14,7 @@
 #include <cmath>
 #include <mutex>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -1650,6 +1651,14 @@ bool drawGeometry(GeometryDraw const& draw,std::string& error){
     }
     GeometryHandle g;
     if(!acquireGeometryProgram(draw.program,g,error))return false;
+    bool shifted=false;
+    for(float x:draw.terrainOffset){
+        if(!std::isfinite(x)){error="Nonfinite terrain draw offset";return false;}
+        shifted|=x!=0;
+    }
+    if(shifted&&glGetUniformLocation(g.program,"optTerrainOffset")<0){
+        error="Geometry program does not support local terrain offset";return false;
+    }
     if(!draw.vao||!glIsVertexArray(draw.vao)||!draw.framebuffer||
        !glIsFramebuffer(draw.framebuffer)||draw.width<=0||draw.height<=0||
        draw.width>4096||draw.height>4096||draw.count<=0||draw.first<0||draw.instances<=0||
@@ -1762,6 +1771,14 @@ bool drawGeometry(GeometryDraw const& draw,std::string& error){
                 return finish(false,"Missing or feedback geometry texture "+std::string(name));
             inputs.push_back({loc,object,type});
         }else{
+            // Internal ABI uniform: supplied every draw, including zero,
+            // so the previous chunk's translation cannot leak.
+            if(std::string_view(name)=="optTerrainOffset"){
+                if(type!=GL_FLOAT_VEC3)return finish(false,"Invalid terrain offset uniform type");
+                WorldUniform offset;offset.name=name;offset.glType=GL_FLOAT_VEC3;
+                std::copy(draw.terrainOffset.begin(),draw.terrainOffset.end(),offset.floats.begin());
+                values.push_back({{name,type,loc},offset});continue;
+            }
             auto builtin=frameBuiltin(name);
             auto value=builtin?&*builtin:named(draw.uniforms,name);
             if(!value)value=findWorldUniform(name);

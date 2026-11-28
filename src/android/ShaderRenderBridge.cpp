@@ -88,6 +88,8 @@ struct Frame {
     // Saved across frames until EGL context/surface replacement.
     std::string firstTerrainLayout;
     std::string firstMeshSample;
+    std::string transformEvidence;
+    unsigned transformSamples=0;
     bool meshSampleAttempted=false;
     std::vector<DeferredSampler> deferredSamplers;
 };
@@ -332,6 +334,39 @@ void sampleNativeTerrain(GLuint program,ObservedDraw const& call){
     }
     frame.firstMeshSample=std::move(info);
 }
+// Bounded typed samples of actual native transforms. These are evidence,
+// not published Java world state. Multiple draws can reveal chunk origins.
+void sampleTerrainTransforms(GLuint program){
+    if(frame.transformSamples>=3)return;
+    GLint model=glGetUniformLocation(program,"u_model");
+    GLint view=glGetUniformLocation(program,"u_view");
+    GLint proj=glGetUniformLocation(program,"u_proj");
+    if(view<0||proj<0)return;
+    GLint count=0;glGetProgramiv(program,GL_ACTIVE_UNIFORMS,&count);
+    if(count<0||count>512)return;
+    std::string info="\nNative terrain transform sample "+std::to_string(frame.transformSamples+1)+
+        " program="+std::to_string(program)+" (native coordinates, unverified Java semantics)";
+    for(GLint i=0;i<count;++i){
+        GLchar raw[128]{};GLsizei len=0;GLint size=0;GLenum type=0;
+        glGetActiveUniform(program,GLuint(i),sizeof(raw),&len,&size,&type,raw);
+        if(len<=0||size!=1)continue;
+        std::string_view name(raw,size_t(len));
+        unsigned n=0;
+        if((name=="u_model"||name=="u_view"||name=="u_proj"||name=="u_viewProj")&&type==GL_FLOAT_MAT4)n=16;
+        else if((name=="MeshContext"||name=="ViewPositionAndTime"||name=="LightWorldSpaceDirection"||
+            name=="GameTimeOfDay")&&type==GL_FLOAT_VEC4)n=4;
+        else if(name=="LightWorldSpaceDirection"&&type==GL_FLOAT_VEC3)n=3;
+        else if(name=="GameTimeOfDay"&&type==GL_FLOAT)n=1;
+        if(!n)continue;
+        GLint loc=glGetUniformLocation(program,raw);if(loc<0)continue;
+        std::array<float,16> val{};glGetUniformfv(program,loc,val.data());
+        info+="\n  "+std::string(name)+":";
+        for(unsigned k=0;k<n;++k)info+=" "+std::to_string(val[k]);
+    }
+    if(model<0)info+="\n  u_model unavailable";
+    if(frame.transformEvidence.size()+info.size()<=3400)frame.transformEvidence+=info;
+    ++frame.transformSamples;
+}
 void captureBeforeDraw(ObservedDraw const& call){
     if(frame.inPresent||frame.context==EGL_NO_CONTEXT||!captureRequested())return;
     if(eglGetCurrentContext()!=frame.context||eglGetCurrentSurface(EGL_DRAW)!=frame.surface)return;
@@ -339,7 +374,12 @@ void captureBeforeDraw(ObservedDraw const& call){
     glGetIntegerv(GL_CURRENT_PROGRAM,&program);
     if(program<=0||frame.seenCount>=frame.seen.size())return;
     auto end=frame.seen.begin()+frame.seenCount;
-    if(std::find(frame.seen.begin(),end,GLuint(program))!=end)return;
+    if(std::find(frame.seen.begin(),end,GLuint(program))!=end){
+        if(frame.transformSamples<3&&
+           std::find(frame.terrainPrograms.begin(),frame.terrainPrograms.end(),GLuint(program))!=frame.terrainPrograms.end())
+            sampleTerrainTransforms(GLuint(program));
+        return;
+    }
     frame.seen[frame.seenCount++]=GLuint(program);
 
     GLint count=0;
@@ -403,6 +443,7 @@ void captureBeforeDraw(ObservedDraw const& call){
     const bool terrainCandidate=splitTerrain||(terrainAtlas&&viewProjection>=0&&viewPosition>=0&&lightmap>=0);
     describeDraw(GLuint(program),call,terrainCandidate);
     if(splitTerrain){
+        sampleTerrainTransforms(GLuint(program));
         sampleNativeTerrain(GLuint(program),call);
         // Resolve sampler units from the linked program, never assume
         // texture unit numbers. Restore the native active texture.
@@ -860,6 +901,7 @@ PresentGuard::PresentGuard(){
         current+=coverageReport();
         if(!frame.markerCount)current+="\nNo verified OptLevi phase-marker material was observed.";
         if(!frame.firstTerrainLayout.empty())current+="\n"+frame.firstTerrainLayout;
+        if(!frame.transformEvidence.empty())current+="\n"+frame.transformEvidence;
         if(!frame.firstMeshSample.empty())current+="\n"+frame.firstMeshSample;
         if(!frame.terrainEffectReport.empty())current+="\n"+frame.terrainEffectReport;
         if(!frame.programSignatures.empty())
@@ -888,6 +930,7 @@ PresentGuard::PresentGuard(){
     frame.details.clear();frame.deferredSamplers.clear();frame.terrainPrograms.clear();
     frame.terrainCandidate=false;frame.terrainEffectReport.clear();
     frame.programSignatures.clear();frame.drawEvidence.clear();frame.trace.reset();
+    frame.transformEvidence.clear();frame.transformSamples=0;
 }
 PresentGuard::~PresentGuard(){frame.inPresent=false;}
 std::string report(){std::lock_guard lock(reportMu);return lastReport;}
