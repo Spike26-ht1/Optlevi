@@ -169,6 +169,19 @@ struct TerrainQuad {
     std::array<mesh::NativeVertex,4> vertices;
     mesh::V3 center;
 };
+// Metadata must come from the native chunk builder, in the same order as
+// the index groups. Neither texture coordinates nor positions identify blocks.
+struct TerrainFaceMetadata {
+    std::string canonicalName;
+    mesh::State states;
+    mesh::V3 center;
+};
+// Vertices are decoded, verified camera-relative native attributes. Indices
+// are six per face in draw order; baseVertex follows GLES signed semantics.
+bool assembleIndexedTerrainQuads(std::vector<mesh::NativeVertex> const& vertices,
+    std::vector<std::uint32_t> const& indices,int baseVertex,
+    std::vector<TerrainFaceMetadata> const& metadata,
+    std::vector<TerrainQuad>& output,std::string& error);
 // The native adapter supplies verified faces and per-draw inputs. Uses
 // the selected geometry/shadow program with a generated mapped VAO.
 bool drawTerrainQuads(GeometryDraw const& draw,std::vector<TerrainQuad> const& faces,std::string& error);
@@ -178,6 +191,8 @@ bool drawTerrainQuads(GeometryDraw const& draw,std::vector<TerrainQuad> const& f
 struct WorldBatch {
     GeometryDraw geometry;
     bool blend=false,depthWrite=true,depthTest=true,cull=false;
+    // Optional verified CPU faces instead of a pre-mapped VAO.
+    std::vector<TerrainQuad> terrainFaces;
 };
 struct WorldScene {
     int width=0,height=0;

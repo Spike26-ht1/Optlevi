@@ -652,7 +652,27 @@ void main(){optDisabledOutput=vec4(1.0);}
     quad.vertices[2].packedUV={0.2f,0.2f};quad.vertices[3].packedUV={0.1f,0.2f};
     for(auto& vertex:quad.vertices){vertex.color={0.6f,0.2f,0.4f,1};vertex.packedLight=0;}
     mesh.uniforms={transform};glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);
-    require(drawTerrainQuads(mesh,{quad},captureError),"Mapped terrain batch draw failed");
+    std::vector<mesh::NativeVertex> nativeVertices(quad.vertices.begin(),quad.vertices.end());
+    TerrainFaceMetadata meta{quad.canonicalName,quad.states,quad.center};
+    std::vector<TerrainQuad> assembled;
+    require(assembleIndexedTerrainQuads(nativeVertices,{0,1,2,0,2,3},0,{meta},assembled,captureError),
+        "Indexed native quad assembly failed");
+    require(assembled.size()==1&&assembled[0].vertices[3].position==quad.vertices[3].position,
+        "Native quad order wrong");
+    require(assembleIndexedTerrainQuads(nativeVertices,{2,3,4,2,4,5},-2,{meta},assembled,captureError),
+        "Signed base vertex assembly failed");
+    require(!assembleIndexedTerrainQuads(nativeVertices,{0,1,2,0,3,2},0,{meta},assembled,captureError),
+        "Reversed second triangle accepted");
+    require(!assembleIndexedTerrainQuads(nativeVertices,{0,1,2,0,2,8},0,{meta},assembled,captureError),
+        "Out-of-range index accepted");
+    require(!assembleIndexedTerrainQuads(nativeVertices,{0,1,2,0,2,3},0,{},assembled,captureError),
+        "Missing block metadata accepted");
+    require(assembled.size()==1,"Failed assembly modified existing batch");
+    require(assembleIndexedTerrainQuads(nativeVertices,{0,1,3,1,2,3},0,{meta},assembled,captureError),
+        "Alternate native diagonal rejected");
+    require(assembled[0].vertices[0].position==quad.vertices[3].position&&
+        assembled[0].vertices[2].position==quad.vertices[1].position,"Original diagonal not preserved");
+    require(drawTerrainQuads(mesh,assembled,captureError),"Mapped terrain batch draw failed");
     glReadPixels(16,16,1,1,GL_RGBA,GL_UNSIGNED_BYTE,actual.data());
     require(std::abs(int(actual[0])-153)<=2&&std::abs(int(actual[1])-51)<=2&&
         std::abs(int(actual[2])-102)<=2,"Mapped terrain batch output wrong");

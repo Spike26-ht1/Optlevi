@@ -1,5 +1,6 @@
 #pragma once
 #include <array>
+#include <cstdint>
 #include <algorithm>
 #include <cmath>
 #include <charconv>
@@ -123,6 +124,31 @@ inline BlockMatch resolveBlockId(std::vector<BlockRule> const& rules,std::string
 }
 inline bool blockId(std::vector<BlockRule> const& rules,std::string const& canonicalName,State const& states,int& id){
     return resolveBlockId(rules,canonicalName,states,id)==BlockMatch::Matched;
+}
+// Recover an oriented quad only from two adjacent triangles sharing one
+// diagonal. Preserve the original diagonal and winding; no spatial guesses.
+inline bool indexedQuad(std::array<std::uint32_t,6> const& indices,std::int64_t base,
+                        std::size_t vertexCount,std::array<std::size_t,4>& output){
+    if(base<INT32_MIN||base>INT32_MAX)return false;
+    std::array<std::size_t,6> v{};
+    for(unsigned i=0;i<6;++i){
+        auto n=std::int64_t(indices[i])+base;
+        if(n<0||std::uint64_t(n)>=vertexCount)return false;
+        v[i]=std::size_t(n);
+    }
+    for(unsigned i=0;i<3;++i)for(unsigned j=i+1;j<3;++j)
+        if(v[i]==v[j]||v[i+3]==v[j+3])return false;
+    auto inSecond=[&](std::size_t n){return n==v[3]||n==v[4]||n==v[5];};
+    unsigned shared=0,unique=0;
+    for(unsigned i=0;i<3;++i){if(inSecond(v[i]))++shared;else unique=i;}
+    if(shared!=2)return false;
+    std::array<std::size_t,4> q{v[(unique+2)%3],v[unique],v[(unique+1)%3],0};
+    for(unsigned i=3;i<6;++i)if(v[i]!=q[0]&&v[i]!=q[2])q[3]=v[i];
+    for(unsigned i=0;i<3;++i)
+        if(v[3+i]==q[0]&&v[3+(i+1)%3]==q[2]&&v[3+(i+2)%3]==q[3]){
+            output=q;return true;
+        }
+    return false; // Inconsistent winding or non-quad topology.
 }
 using V2=std::array<float,2>;using V3=std::array<float,3>;using V4=std::array<float,4>;
 struct NativeVertex { V3 position;V4 color;V2 packedUV;float packedLight; };

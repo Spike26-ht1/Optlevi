@@ -1612,6 +1612,7 @@ bool translateTerrainQuad(std::string const& canonicalName,mesh::State const& st
 }
 
 bool drawGeometry(GeometryDraw const& draw,std::string& error){
+    OwnedGpuScope owned;
     GeometryHandle g;
     if(!acquireGeometryProgram(draw.program,g,error))return false;
     if(!draw.vao||!glIsVertexArray(draw.vao)||!draw.framebuffer||
@@ -1918,7 +1919,37 @@ bool renderShadowScene(std::vector<GeometryDraw> const& opaque,
     return finish(true);
 }
 
+bool assembleIndexedTerrainQuads(std::vector<mesh::NativeVertex> const& vertices,
+    std::vector<std::uint32_t> const& indices,int baseVertex,
+    std::vector<TerrainFaceMetadata> const& metadata,
+    std::vector<TerrainQuad>& output,std::string& error){
+    if(metadata.empty()||metadata.size()>16384||indices.size()!=metadata.size()*6||
+       vertices.empty()||vertices.size()>1048576){
+        error="Invalid indexed terrain batch size";return false;
+    }
+    std::vector<TerrainQuad> result;
+    result.reserve(metadata.size());
+    for(std::size_t i=0;i<metadata.size();++i){
+        auto const& meta=metadata[i];
+        if(meta.canonicalName.empty()||meta.canonicalName.size()>256||
+           meta.canonicalName.find(':')==std::string::npos){
+            error="Missing canonical block identity for face "+std::to_string(i);return false;
+        }
+        std::array<std::uint32_t,6> pair{};
+        std::copy_n(indices.begin()+i*6,6,pair.begin());
+        std::array<std::size_t,4> order{};
+        if(!mesh::indexedQuad(pair,baseVertex,vertices.size(),order)){
+            error="Invalid indexed quad topology at face "+std::to_string(i);return false;
+        }
+        TerrainQuad face;face.canonicalName=meta.canonicalName;face.states=meta.states;face.center=meta.center;
+        for(unsigned k=0;k<4;++k)face.vertices[k]=vertices[order[k]];
+        result.push_back(std::move(face));
+    }
+    output=std::move(result);error.clear();return true;
+}
+
 bool drawTerrainQuads(GeometryDraw const& draw,std::vector<TerrainQuad> const& faces,std::string& error){
+    OwnedGpuScope owned;
     if(faces.empty()||faces.size()>16384||draw.instances!=1){
         error="Unsupported terrain batch size or instancing";return false;
     }
@@ -2111,6 +2142,7 @@ bool renderJavaWorldScene(WorldScene const& scene,std::string& error){
     auto drawStage=[&](std::vector<WorldBatch> const& draws,bool updateSerial){
         for(auto const& batch:draws){
             auto draw=batch.geometry;GeometryHandle g;
+            if(!batch.terrainFaces.empty()&&draw.vao){error="Ambiguous terrain batch: both VAO and CPU faces";return false;}
             if(!acquireGeometryProgram(draw.program,g,error))return false;
             if(g.targets.size()>slots){error="Geometry outputs exceed driver limits";return false;}
             glBindFramebuffer(GL_FRAMEBUFFER,work);
@@ -2126,7 +2158,9 @@ bool renderJavaWorldScene(WorldScene const& scene,std::string& error){
             glBlendEquationSeparate(GL_FUNC_ADD,GL_FUNC_ADD);
             glBlendFuncSeparate(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA,GL_ONE,GL_ONE_MINUS_SRC_ALPHA);
             draw.framebuffer=work;draw.width=scene.width;draw.height=scene.height;
-            if(!drawGeometry(draw,error))return false;
+            if(batch.terrainFaces.empty()){
+                if(!drawGeometry(draw,error))return false;
+            }else if(!drawTerrainQuads(draw,batch.terrainFaces,error))return false;
             if(updateSerial)for(auto i:g.targets)depthFrame.colors[i].serial=++snapshotSerial;
         }
         return true;
