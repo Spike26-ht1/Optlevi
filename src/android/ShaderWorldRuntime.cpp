@@ -1,5 +1,6 @@
 #include "ShaderWorldRuntime.h"
 #include "ShaderDiagnostics.h"
+#include "ShaderNativeMeshSample.h"
 #include <cstddef>
 #include "ShaderCameraMath.h"
 
@@ -1946,6 +1947,136 @@ bool assembleIndexedTerrainQuads(std::vector<mesh::NativeVertex> const& vertices
         result.push_back(std::move(face));
     }
     output=std::move(result);error.clear();return true;
+}
+
+bool capturePackedTerrainQuads(PackedTerrainSource const& source,
+    std::vector<TerrainFaceMetadata> const& metadata,
+    std::vector<TerrainQuad>& output,std::string& error){
+    OwnedGpuScope owned;
+    using namespace shaderbridge::meshsample;
+    if(eglGetCurrentContext()==EGL_NO_CONTEXT||eglGetCurrentContext()!=context||
+       eglGetCurrentSurface(EGL_DRAW)!=pipelineSurface||!captureRequested()){
+        error="Packed terrain capture requires the selected render context";return false;
+    }
+    if(metadata.empty()||metadata.size()>16384||source.lightComponent>1){
+        error="Invalid packed terrain metadata";return false;
+    }
+    for(unsigned i=0;i<3;++i)if(!std::isfinite(source.scale[i])||source.scale[i]<=0||
+        !std::isfinite(source.translation[i])){
+        error="Unverified packed terrain coordinate mapping";return false;
+    }
+    unsigned indexBytes=source.indexType==GL_UNSIGNED_BYTE?1:source.indexType==GL_UNSIGNED_SHORT?2:
+        source.indexType==GL_UNSIGNED_INT?4:0;
+    if(!indexBytes||source.indexOffset%indexBytes){error="Invalid packed terrain index type or offset";return false;}
+    GLint vao=0,ebo=0,maxAttrib=0;
+    glGetIntegerv(GL_VERTEX_ARRAY_BINDING,&vao);glGetIntegerv(GL_ELEMENT_ARRAY_BUFFER_BINDING,&ebo);
+    glGetIntegerv(GL_MAX_VERTEX_ATTRIBS,&maxAttrib);
+    if(!vao||!ebo){error="Packed terrain requires native VAO and EBO";return false;}
+    struct Attr {unsigned loc,type,components,bytes;bool normalized;GLint buffer=0,stride=0;std::uintptr_t offset=0;};
+    std::array<Attr,4> a{{
+        {source.position,GL_HALF_FLOAT,4,8,false},
+        {source.color,GL_UNSIGNED_BYTE,4,4,true},
+        {source.uv,GL_UNSIGNED_SHORT,2,4,true},
+        {source.light,GL_UNSIGNED_SHORT,2,4,true}
+    }};
+    for(unsigned k=0;k<a.size();++k){
+        auto& x=a[k];
+        if(x.loc>=unsigned(maxAttrib)){error="Invalid native attribute location";return false;}
+        for(unsigned j=0;j<k;++j)if(a[j].loc==x.loc){error="Duplicate native attribute location";return false;}
+        GLint enabled=0,type=0,size=0,norm=0,integer=0,divisor=0;
+        void* pointer=nullptr;
+        glGetVertexAttribiv(x.loc,GL_VERTEX_ATTRIB_ARRAY_ENABLED,&enabled);
+        glGetVertexAttribiv(x.loc,GL_VERTEX_ATTRIB_ARRAY_TYPE,&type);
+        glGetVertexAttribiv(x.loc,GL_VERTEX_ATTRIB_ARRAY_SIZE,&size);
+        glGetVertexAttribiv(x.loc,GL_VERTEX_ATTRIB_ARRAY_NORMALIZED,&norm);
+        glGetVertexAttribiv(x.loc,GL_VERTEX_ATTRIB_ARRAY_INTEGER,&integer);
+        glGetVertexAttribiv(x.loc,GL_VERTEX_ATTRIB_ARRAY_DIVISOR,&divisor);
+        glGetVertexAttribiv(x.loc,GL_VERTEX_ATTRIB_ARRAY_BUFFER_BINDING,&x.buffer);
+        glGetVertexAttribiv(x.loc,GL_VERTEX_ATTRIB_ARRAY_STRIDE,&x.stride);
+        glGetVertexAttribPointerv(x.loc,GL_VERTEX_ATTRIB_ARRAY_POINTER,&pointer);
+        x.offset=reinterpret_cast<std::uintptr_t>(pointer);
+        if(!enabled||!x.buffer||integer||divisor||type!=int(x.type)||
+           size!=int(x.components)||bool(norm)!=x.normalized||x.stride<0){
+            error="Unsupported reflected packed terrain attribute "+std::to_string(k);return false;
+        }
+        if(!x.stride)x.stride=int(x.bytes);
+    }
+    if(glGetError()!=GL_NO_ERROR){error="Native attribute reflection failed";return false;}
+    // At most five contiguous staging transfers per batch. No per-vertex
+    // GPU synchronization, no mapping live game buffers, no retained GL names.
+    constexpr std::uint64_t budget=16*1024*1024;
+    std::uint64_t used=0;
+    GLint oldRead=0,oldWrite=0;
+    glGetIntegerv(GL_COPY_READ_BUFFER_BINDING,&oldRead);glGetIntegerv(GL_COPY_WRITE_BUFFER_BINDING,&oldWrite);
+    GLuint staging=0;glGenBuffers(1,&staging);
+    struct Restore {
+        GLint read,write;GLuint staging;
+        ~Restore(){glBindBuffer(GL_COPY_READ_BUFFER,GLuint(read));glBindBuffer(GL_COPY_WRITE_BUFFER,GLuint(write));
+            if(staging)glDeleteBuffers(1,&staging);}
+    } restore{oldRead,oldWrite,staging};
+    if(!staging){error="Cannot allocate packed terrain staging buffer";return false;}
+    auto read=[&](GLuint object,std::uint64_t offset,std::uint64_t length,std::vector<unsigned char>& data){
+        if(!length||length>budget-used||offset>std::uint64_t(std::numeric_limits<GLintptr>::max()))return false;
+        glBindBuffer(GL_COPY_READ_BUFFER,object);
+        GLint64 size=0;GLint mapped=0;
+        glGetBufferParameteri64v(GL_COPY_READ_BUFFER,GL_BUFFER_SIZE,&size);
+        glGetBufferParameteriv(GL_COPY_READ_BUFFER,GL_BUFFER_MAPPED,&mapped);
+        if(mapped||size<0||offset>std::uint64_t(size)||length>std::uint64_t(size)-offset)return false;
+        glBindBuffer(GL_COPY_WRITE_BUFFER,staging);
+        glBufferData(GL_COPY_WRITE_BUFFER,GLsizeiptr(length),nullptr,GL_STREAM_READ);
+        glCopyBufferSubData(GL_COPY_READ_BUFFER,GL_COPY_WRITE_BUFFER,GLintptr(offset),0,GLsizeiptr(length));
+        if(glGetError()!=GL_NO_ERROR)return false;
+        auto ptr=static_cast<unsigned char const*>(glMapBufferRange(GL_COPY_WRITE_BUFFER,0,GLsizeiptr(length),GL_MAP_READ_BIT));
+        if(!ptr)return false;
+        data.assign(ptr,ptr+length);
+        bool ok=glUnmapBuffer(GL_COPY_WRITE_BUFFER)==GL_TRUE&&glGetError()==GL_NO_ERROR;
+        if(ok)used+=length;return ok;
+    };
+    std::vector<unsigned char> raw;
+    auto count=metadata.size()*6;
+    if(!read(GLuint(ebo),source.indexOffset,count*indexBytes,raw)){
+        error="Cannot read packed terrain indices";return false;
+    }
+    std::vector<std::uint32_t> indices(count);
+    std::uint32_t low=UINT32_MAX,high=0;
+    for(std::size_t i=0;i<count;++i){
+        auto p=raw.data()+i*indexBytes;
+        auto n=std::int64_t(indexBytes==1?*p:indexBytes==2?u16(p):u32(p))+source.baseVertex;
+        if(n<0||n>UINT32_MAX){error="Packed terrain effective index out of range";return false;}
+        indices[i]=std::uint32_t(n);low=std::min(low,indices[i]);high=std::max(high,indices[i]);
+    }
+    std::uint64_t span=std::uint64_t(high)-low+1;
+    if(span>262144){error="Packed terrain vertex span exceeds budget";return false;}
+    std::array<std::vector<unsigned char>,4> bytes;
+    for(unsigned k=0;k<a.size();++k){
+        auto const& x=a[k];
+        std::uint64_t start=0,end=0;
+        if(!attributeRange(x.offset,x.stride,low,x.bytes,std::uint64_t(std::numeric_limits<GLintptr>::max()),start)||
+           !attributeRange(x.offset,x.stride,high,x.bytes,std::uint64_t(std::numeric_limits<GLintptr>::max()),end)||
+           !read(GLuint(x.buffer),start,end-start+x.bytes,bytes[k])){
+            error="Cannot read packed terrain attribute "+std::to_string(k);return false;
+        }
+    }
+    std::vector<mesh::NativeVertex> vertices(static_cast<std::size_t>(span));
+    std::vector<bool> decoded(static_cast<std::size_t>(span),false);
+    for(auto& i:indices){
+        i-=low;
+        if(decoded[i])continue;
+        auto& v=vertices[i];
+        auto p=bytes[0].data()+std::size_t(i)*a[0].stride;
+        auto c=bytes[1].data()+std::size_t(i)*a[1].stride;
+        auto uv=bytes[2].data()+std::size_t(i)*a[2].stride;
+        auto light=bytes[3].data()+std::size_t(i)*a[3].stride;
+        for(unsigned k=0;k<3;++k){
+            v.position[k]=half(u16(p+k*2))*source.scale[k]+source.translation[k];
+            if(!std::isfinite(v.position[k])){error="Nonfinite decoded terrain position";return false;}
+        }
+        for(unsigned k=0;k<4;++k)v.color[k]=float(c[k])/255.0f;
+        for(unsigned k=0;k<2;++k)v.packedUV[k]=float(u16(uv+k*2))/65535.0f;
+        v.packedLight=float(u16(light+source.lightComponent*2))/65535.0f;
+        decoded[i]=true;
+    }
+    return assembleIndexedTerrainQuads(vertices,indices,0,metadata,output,error);
 }
 
 bool drawTerrainQuads(GeometryDraw const& draw,std::vector<TerrainQuad> const& faces,std::string& error){

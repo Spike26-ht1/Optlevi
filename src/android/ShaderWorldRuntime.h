@@ -182,6 +182,20 @@ bool assembleIndexedTerrainQuads(std::vector<mesh::NativeVertex> const& vertices
     std::vector<std::uint32_t> const& indices,int baseVertex,
     std::vector<TerrainFaceMetadata> const& metadata,
     std::vector<TerrainQuad>& output,std::string& error);
+// A verified packed RenderChunk draw, not an arbitrary native VAO.
+// Attribute locations refer to the currently bound native VAO. The adapter
+// supplies the verified packed-light component and affine coordinate mapping.
+struct PackedTerrainSource {
+    unsigned position=0,color=0,uv=0,light=0;
+    unsigned lightComponent=0;
+    unsigned indexType=0;
+    std::uintptr_t indexOffset=0;
+    int baseVertex=0;
+    mesh::V3 scale{},translation{};
+};
+bool capturePackedTerrainQuads(PackedTerrainSource const& source,
+    std::vector<TerrainFaceMetadata> const& metadata,
+    std::vector<TerrainQuad>& output,std::string& error);
 // The native adapter supplies verified faces and per-draw inputs. Uses
 // the selected geometry/shadow program with a generated mapped VAO.
 bool drawTerrainQuads(GeometryDraw const& draw,std::vector<TerrainQuad> const& faces,std::string& error);

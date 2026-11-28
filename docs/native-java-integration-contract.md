@@ -22,3 +22,7 @@ References:
 - https://shaders.properties/current/reference/shadersproperties/rendering/
 
 Acceptance: actual BSL archive imports and links; all mandatory inputs produced for the current world frame; mapped terrain, entities, shadows and water visible during camera movement; native HUD survives final composition; frame failures restore native rendering; test on physical device. Host GLES fixtures are not proof of Bedrock compatibility.
+
+## Packed RenderChunk capture
+
+The adapter may call `capturePackedTerrainQuads` on the verified native draw VAO before it changes. It validates reflected half-float positions, normalized byte colors and normalized ushort UV/light, stages only bounded VBO/EBO ranges, decodes signed base-vertex indices, and produces CPU faces for `WorldBatch::terrainFaces`. It requires actual per-face block metadata, verified light component and positive affine position mapping into camera-relative coordinates. It is not connected to a guessed draw hook and is not suitable for every draw every frame without caching and profiling. Unsupported topology/layout or over-budget reads are rejected without changing the previous output.

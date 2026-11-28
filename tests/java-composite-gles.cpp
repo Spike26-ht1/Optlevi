@@ -672,6 +672,44 @@ void main(){optDisabledOutput=vec4(1.0);}
         "Alternate native diagonal rejected");
     require(assembled[0].vertices[0].position==quad.vertices[3].position&&
         assembled[0].vertices[2].position==quad.vertices[1].position,"Original diagonal not preserved");
+    // Real GLES buffer fixture: packed native layout, nonzero EBO offset,
+    // signed base vertex, separate verified light component and coordinate mapping.
+    GLuint packedVao=0,packedVbo=0,packedEbo=0;
+    glGenVertexArrays(1,&packedVao);glBindVertexArray(packedVao);
+    glGenBuffers(1,&packedVbo);glBindBuffer(GL_ARRAY_BUFFER,packedVbo);
+    struct Packed {std::uint16_t pos[4];std::uint8_t color[4];std::uint16_t uv[2],light[2];};
+    const Packed packed[]={
+        {{0xbc00,0xbc00,0,0x3c00},{153,51,102,255},{6554,6554},{123,0}},
+        {{0x3c00,0xbc00,0,0x3c00},{153,51,102,255},{13107,6554},{123,0}},
+        {{0x3c00,0x3c00,0,0x3c00},{153,51,102,255},{13107,13107},{123,0}},
+        {{0xbc00,0x3c00,0,0x3c00},{153,51,102,255},{6554,13107},{123,0}}
+    };
+    glBufferData(GL_ARRAY_BUFFER,sizeof(packed),packed,GL_STATIC_DRAW);
+    glVertexAttribPointer(0,4,GL_HALF_FLOAT,GL_FALSE,sizeof(Packed),reinterpret_cast<void*>(offsetof(Packed,pos)));
+    glVertexAttribPointer(1,4,GL_UNSIGNED_BYTE,GL_TRUE,sizeof(Packed),reinterpret_cast<void*>(offsetof(Packed,color)));
+    glVertexAttribPointer(2,2,GL_UNSIGNED_SHORT,GL_TRUE,sizeof(Packed),reinterpret_cast<void*>(offsetof(Packed,uv)));
+    glVertexAttribPointer(3,2,GL_UNSIGNED_SHORT,GL_TRUE,sizeof(Packed),reinterpret_cast<void*>(offsetof(Packed,light)));
+    for(unsigned i=0;i<4;++i)glEnableVertexAttribArray(i);
+    glGenBuffers(1,&packedEbo);glBindBuffer(GL_ELEMENT_ARRAY_BUFFER,packedEbo);
+    const std::uint16_t packedIndices[]={999,2,3,4,2,4,5};
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER,sizeof(packedIndices),packedIndices,GL_STATIC_DRAW);
+    glBindBuffer(GL_COPY_READ_BUFFER,meshVbo);glBindBuffer(GL_COPY_WRITE_BUFFER,meshEbo);
+    PackedTerrainSource nativeSource;
+    nativeSource.position=0;nativeSource.color=1;nativeSource.uv=2;nativeSource.light=3;
+    nativeSource.lightComponent=1;nativeSource.indexType=GL_UNSIGNED_SHORT;
+    nativeSource.indexOffset=2;nativeSource.baseVertex=-2;nativeSource.scale={1,1,1};
+    require(capturePackedTerrainQuads(nativeSource,{meta},assembled,captureError),"Packed native GLES capture failed");
+    require(assembled[0].vertices[0].position==quad.vertices[0].position&&
+        assembled[0].vertices[2].packedLight==0,"Packed native values wrong");
+    GLint copyRead=0,copyWrite=0;
+    glGetIntegerv(GL_COPY_READ_BUFFER_BINDING,&copyRead);glGetIntegerv(GL_COPY_WRITE_BUFFER_BINDING,&copyWrite);
+    require(GLuint(copyRead)==meshVbo&&GLuint(copyWrite)==meshEbo,"Packed capture leaked copy bindings");
+    nativeSource.indexOffset=4;
+    require(!capturePackedTerrainQuads(nativeSource,{meta},assembled,captureError),"Truncated EBO accepted");
+    require(assembled.size()==1,"Failed native capture modified previous result");
+    glBindBuffer(GL_COPY_READ_BUFFER,0);glBindBuffer(GL_COPY_WRITE_BUFFER,0);
+    glBindVertexArray(meshVao);glBindBuffer(GL_ARRAY_BUFFER,meshVbo);
+    glDeleteVertexArrays(1,&packedVao);glDeleteBuffers(1,&packedVbo);glDeleteBuffers(1,&packedEbo);
     require(drawTerrainQuads(mesh,assembled,captureError),"Mapped terrain batch draw failed");
     glReadPixels(16,16,1,1,GL_RGBA,GL_UNSIGNED_BYTE,actual.data());
     require(std::abs(int(actual[0])-153)<=2&&std::abs(int(actual[1])-51)<=2&&
