@@ -2,6 +2,7 @@
 #include "ShaderWorldRuntime.h"
 #include "ShaderCameraMath.h"
 #include "ShaderDiagnostics.h"
+#include "ShaderHookTrace.h"
 
 #include <EGL/egl.h>
 #include <GLES3/gl3.h>
@@ -24,6 +25,10 @@ using namespace shaderworld;
 std::mutex reportMu;
 std::string lastReport="Native draw bridge not initialized";
 std::atomic<unsigned> hookCount{0};
+std::atomic<unsigned> foreignDraws{0},outerDraws{0};
+std::mutex installMu;
+std::vector<void*> installedTargets;
+void* glesLibrary=nullptr;
 struct DeferredSampler { GLuint program; GLint location; unsigned index; };
 struct Frame {
     EGLContext context=EGL_NO_CONTEXT;
@@ -37,6 +42,7 @@ struct Frame {
     std::array<GLuint,128> seen{};
     unsigned seenCount=0,markerCount=0,captureCount=0,terrainCount=0;
     std::string details;
+    HookTrace trace;
     // Saved across frames until EGL context/surface replacement.
     std::string firstTerrainLayout;
     std::vector<DeferredSampler> deferredSamplers;
@@ -89,6 +95,8 @@ struct ObservedDraw {
     GLenum indexType=0;
     std::uintptr_t indexOffset=0;
     GLint first=0;
+    GLint baseVertex=0;
+    unsigned variant=0; // 0 ordinary, 1 range, 2 base vertex, 3 instanced base vertex
 };
 // Describe the first observed draw for a linked program. This is not a
 // semantic classification: it records only actual GLES state, with bounded
@@ -112,6 +120,8 @@ void describeDraw(GLuint program,ObservedDraw const& call,bool terrainCandidate)
         out+=" indexType="+std::to_string(call.indexType);
         out+=ebo?" indexOffset="+std::to_string(call.indexOffset):" client-indices/unbound";
     }else out+=" first="+std::to_string(call.first);
+    if(call.variant>=2)out+=" baseVertex="+std::to_string(call.baseVertex);
+    out+=" variant="+std::to_string(call.variant);
     out+=" FBO="+std::to_string(fbo)+" viewport="+std::to_string(viewport[0])+","+
         std::to_string(viewport[1])+","+std::to_string(viewport[2])+","+std::to_string(viewport[3])+
         " samples="+std::to_string(samples)+" draw0="+std::to_string(draw0)+
@@ -422,7 +432,17 @@ void describeTerrainCandidate(){
 template<class Fn,class... Args>
 void draw(ObservedDraw const& evidence,Fn original,Args... args){
     struct Guard { Guard(){++drawNesting;} ~Guard(){--drawNesting;} } guard;
-    if(drawNesting==1)captureBeforeDraw(evidence);
+    if(drawNesting==1&&!frame.inPresent&&captureRequested()){
+        outerDraws.fetch_add(1,std::memory_order_relaxed);
+        if(frame.context!=EGL_NO_CONTEXT&&frame.context==eglGetCurrentContext()&&
+           frame.surface==eglGetCurrentSurface(EGL_DRAW)){
+            GLint p=0,fbo=0;
+            glGetIntegerv(GL_CURRENT_PROGRAM,&p);
+            glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING,&fbo);
+            frame.trace.add({TraceKind::Draw,unsigned(p),unsigned(fbo),evidence.mode,evidence.variant});
+            captureBeforeDraw(evidence);
+        }else foreignDraws.fetch_add(1,std::memory_order_relaxed);
+    }
     DeferredInputs inputs;
     original(args...);
     if(drawNesting==1)noteTerrainDraw();
@@ -437,10 +457,51 @@ void bindFramebuffer(BindFramebufferFn original,GLenum target,GLuint id){
         GLint current=0;glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING,&current);
         if(GLuint(current)==frame.terrainFramebuffer)describeTerrainCandidate();
     }
+    if(!drawNesting&&!frame.inPresent&&captureRequested()&&frame.context!=EGL_NO_CONTEXT&&
+       frame.context==eglGetCurrentContext()&&frame.surface==eglGetCurrentSurface(EGL_DRAW)&&
+       (target==GL_FRAMEBUFFER||target==GL_DRAW_FRAMEBUFFER||target==GL_READ_FRAMEBUFFER)){
+        GLint current=0;glGetIntegerv(target==GL_READ_FRAMEBUFFER?GL_READ_FRAMEBUFFER_BINDING:
+            GL_DRAW_FRAMEBUFFER_BINDING,&current);
+        if(GLuint(current)!=id)frame.trace.add({TraceKind::Bind,target,unsigned(current),id,0});
+    }
     original(target,id);
 }
 void BindFramebufferDirect(GLenum target,GLuint id){bindFramebuffer(BindFramebufferOriginal[0],target,id);}
 void BindFramebufferResolved(GLenum target,GLuint id){bindFramebuffer(BindFramebufferOriginal[1],target,id);}
+
+// These hooks observe real clear/copy operations before forwarding them.
+// They do not infer opaque/HUD phase ownership or alter native attachments.
+bool traceAllowed(){
+    return !drawNesting&&!frame.inPresent&&captureRequested()&&frame.context!=EGL_NO_CONTEXT&&
+        frame.context==eglGetCurrentContext()&&frame.surface==eglGetCurrentSurface(EGL_DRAW);
+}
+thread_local unsigned phaseNesting=0;
+struct PhaseGuard { PhaseGuard(){++phaseNesting;} ~PhaseGuard(){--phaseNesting;} };
+using ClearFn=void(*)(GLbitfield);
+ClearFn ClearOriginal[2]{};
+void clear(ClearFn original,GLbitfield mask){
+    PhaseGuard guard;
+    if(phaseNesting==1&&traceAllowed()){
+        GLint fbo=0;glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING,&fbo);
+        frame.trace.add({TraceKind::Clear,unsigned(fbo),mask,0,0});
+    }
+    original(mask);
+}
+void ClearDirect(GLbitfield m){clear(ClearOriginal[0],m);}
+void ClearResolved(GLbitfield m){clear(ClearOriginal[1],m);}
+using BlitFn=void(*)(GLint,GLint,GLint,GLint,GLint,GLint,GLint,GLint,GLbitfield,GLenum);
+BlitFn BlitOriginal[2]{};
+void blit(BlitFn original,GLint a,GLint b,GLint c,GLint d,GLint e,GLint f,GLint g,GLint h,GLbitfield mask,GLenum filter){
+    PhaseGuard guard;
+    if(phaseNesting==1&&traceAllowed()){
+        GLint read=0,write=0;glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING,&read);
+        glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING,&write);
+        frame.trace.add({TraceKind::Blit,unsigned(read),unsigned(write),mask,filter});
+    }
+    original(a,b,c,d,e,f,g,h,mask,filter);
+}
+void BlitDirect(GLint a,GLint b,GLint c,GLint d,GLint e,GLint f,GLint g,GLint h,GLbitfield m,GLenum n){blit(BlitOriginal[0],a,b,c,d,e,f,g,h,m,n);}
+void BlitResolved(GLint a,GLint b,GLint c,GLint d,GLint e,GLint f,GLint g,GLint h,GLbitfield m,GLenum n){blit(BlitOriginal[1],a,b,c,d,e,f,g,h,m,n);}
 
 // Both the public GLES export and the resolved EGL dispatch address may
 // be used by a native renderer. Hook each distinct address once.
@@ -455,6 +516,13 @@ OPTLEVI_DRAW_ENTRY(DrawElements,(GLenum m,GLsizei n,GLenum t,void const* p),(m,n
 OPTLEVI_DRAW_ENTRY(DrawArrays,(GLenum m,GLint f,GLsizei n),(m,f,n),(m,n,1,false,0,0,f))
 OPTLEVI_DRAW_ENTRY(DrawElementsInstanced,(GLenum m,GLsizei n,GLenum t,void const* p,GLsizei c),(m,n,t,p,c),(m,n,c,true,t,reinterpret_cast<std::uintptr_t>(p),0))
 OPTLEVI_DRAW_ENTRY(DrawArraysInstanced,(GLenum m,GLint f,GLsizei n,GLsizei c),(m,f,n,c),(m,n,c,false,0,0,f))
+OPTLEVI_DRAW_ENTRY(DrawRangeElements,(GLenum m,GLuint a,GLuint b,GLsizei n,GLenum t,void const* p),(m,a,b,n,t,p),(m,n,1,true,t,reinterpret_cast<std::uintptr_t>(p),0,0,1))
+OPTLEVI_DRAW_ENTRY(DrawElementsBaseVertex,(GLenum m,GLsizei n,GLenum t,void const* p,GLint v),(m,n,t,p,v),(m,n,1,true,t,reinterpret_cast<std::uintptr_t>(p),0,v,2))
+OPTLEVI_DRAW_ENTRY(DrawElementsBaseVertexOES,(GLenum m,GLsizei n,GLenum t,void const* p,GLint v),(m,n,t,p,v),(m,n,1,true,t,reinterpret_cast<std::uintptr_t>(p),0,v,2))
+OPTLEVI_DRAW_ENTRY(DrawElementsBaseVertexEXT,(GLenum m,GLsizei n,GLenum t,void const* p,GLint v),(m,n,t,p,v),(m,n,1,true,t,reinterpret_cast<std::uintptr_t>(p),0,v,2))
+OPTLEVI_DRAW_ENTRY(DrawElementsInstancedBaseVertex,(GLenum m,GLsizei n,GLenum t,void const* p,GLsizei c,GLint v),(m,n,t,p,c,v),(m,n,c,true,t,reinterpret_cast<std::uintptr_t>(p),0,v,3))
+OPTLEVI_DRAW_ENTRY(DrawElementsInstancedBaseVertexOES,(GLenum m,GLsizei n,GLenum t,void const* p,GLsizei c,GLint v),(m,n,t,p,c,v),(m,n,c,true,t,reinterpret_cast<std::uintptr_t>(p),0,v,3))
+OPTLEVI_DRAW_ENTRY(DrawElementsInstancedBaseVertexEXT,(GLenum m,GLsizei n,GLenum t,void const* p,GLsizei c,GLint v),(m,n,t,p,c,v),(m,n,c,true,t,reinterpret_cast<std::uintptr_t>(p),0,v,3))
 #undef OPTLEVI_DRAW_ENTRY
 #undef OPTLEVI_UNWRAP
 
@@ -464,28 +532,78 @@ unsigned hookEntry(void* library,char const* name,Fn direct,Fn resolved,Fn (&ori
     Fn detours[2]={direct,resolved};
     unsigned count=0;
     for(unsigned i=0;i<2;++i){
-        if(!targets[i]||(i==1&&targets[i]==targets[0]))continue;
-        void* trampoline=nullptr;
-        if(pl::memory::hook(targets[i],reinterpret_cast<void*>(detours[i]),&trampoline)==0&&trampoline){
-            original[i]=reinterpret_cast<Fn>(trampoline);++count;
+        std::string label=std::string(name)+(i?" [EGL resolved]":" [GLES export]");
+        if(!targets[i]){shaderdiagnostics::record("Hook entry",label+": unavailable");continue;}
+        if(std::find(installedTargets.begin(),installedTargets.end(),targets[i])!=installedTargets.end()){
+            shaderdiagnostics::record("Hook entry",label+": already covered alias");continue;
         }
+        void* trampoline=nullptr;
+        int result=pl::memory::hook(targets[i],reinterpret_cast<void*>(detours[i]),&trampoline);
+        if(result==0&&trampoline){
+            original[i]=reinterpret_cast<Fn>(trampoline);++count;
+            installedTargets.push_back(targets[i]);
+            shaderdiagnostics::record("Hook entry",label+": installed");
+        }else shaderdiagnostics::record("Hook entry",label+": failed ("+std::to_string(result)+")");
     }
     return count;
+}
+// Optional GLES 3.2 / OES / EXT calls are installed only after observing
+// actual support from the current accepted game context. No private symbols.
+void installContextHooks(){
+    static bool attempted=false;
+    std::lock_guard lock(installMu);
+    if(attempted||!glesLibrary||eglGetCurrentContext()==EGL_NO_CONTEXT)return;
+    attempted=true;
+    GLint major=0,minor=0,n=0;
+    glGetIntegerv(GL_MAJOR_VERSION,&major);glGetIntegerv(GL_MINOR_VERSION,&minor);
+    glGetIntegerv(GL_NUM_EXTENSIONS,&n);
+    bool oes=false,ext=false;
+    for(GLint i=0;i<n&&i<4096;++i){
+        auto p=reinterpret_cast<char const*>(glGetStringi(GL_EXTENSIONS,GLuint(i)));
+        if(!p)continue;
+        oes|=std::string_view(p)=="GL_OES_draw_elements_base_vertex";
+        ext|=std::string_view(p)=="GL_EXT_draw_elements_base_vertex";
+    }
+    unsigned count=0;
+    // Retry core entrypoints that might not have resolved before EGL
+    // initialization. The original arrays remain intact for covered aliases.
+    count+=hookEntry(glesLibrary,"glDrawRangeElements",DrawRangeElementsDirect,DrawRangeElementsResolved,DrawRangeElementsOriginal);
+    if(major>3||(major==3&&minor>=2)){
+        count+=hookEntry(glesLibrary,"glDrawElementsBaseVertex",DrawElementsBaseVertexDirect,DrawElementsBaseVertexResolved,DrawElementsBaseVertexOriginal);
+        count+=hookEntry(glesLibrary,"glDrawElementsInstancedBaseVertex",DrawElementsInstancedBaseVertexDirect,DrawElementsInstancedBaseVertexResolved,DrawElementsInstancedBaseVertexOriginal);
+    }
+    if(oes){
+        count+=hookEntry(glesLibrary,"glDrawElementsBaseVertexOES",DrawElementsBaseVertexOESDirect,DrawElementsBaseVertexOESResolved,DrawElementsBaseVertexOESOriginal);
+        count+=hookEntry(glesLibrary,"glDrawElementsInstancedBaseVertexOES",DrawElementsInstancedBaseVertexOESDirect,DrawElementsInstancedBaseVertexOESResolved,DrawElementsInstancedBaseVertexOESOriginal);
+    }
+    if(ext){
+        count+=hookEntry(glesLibrary,"glDrawElementsBaseVertexEXT",DrawElementsBaseVertexEXTDirect,DrawElementsBaseVertexEXTResolved,DrawElementsBaseVertexEXTOriginal);
+        count+=hookEntry(glesLibrary,"glDrawElementsInstancedBaseVertexEXT",DrawElementsInstancedBaseVertexEXTDirect,DrawElementsInstancedBaseVertexEXTResolved,DrawElementsInstancedBaseVertexEXTOriginal);
+    }
+    hookCount.fetch_add(count);
+    shaderdiagnostics::record("Hooks","Context GLES "+std::to_string(major)+"."+std::to_string(minor)+
+        "; OES base vertex="+std::to_string(oes)+" EXT base vertex="+std::to_string(ext)+
+        "; additional hooks="+std::to_string(count));
 }
 }
 
 bool install(){
     static bool attempted=false;
+    std::lock_guard lock(installMu);
     if(attempted)return hookCount.load()!=0;
     attempted=true;
     void* library=dlopen("libGLESv3.so",RTLD_NOW);
     if(!library){std::lock_guard lock(reportMu);lastReport="Native draw bridge: GLES library unavailable";shaderdiagnostics::record("Hooks",lastReport);return false;}
+    glesLibrary=library;
     unsigned count=0;
     count+=hookEntry(library,"glDrawElements",DrawElementsDirect,DrawElementsResolved,DrawElementsOriginal);
     count+=hookEntry(library,"glDrawArrays",DrawArraysDirect,DrawArraysResolved,DrawArraysOriginal);
     count+=hookEntry(library,"glDrawElementsInstanced",DrawElementsInstancedDirect,DrawElementsInstancedResolved,DrawElementsInstancedOriginal);
     count+=hookEntry(library,"glDrawArraysInstanced",DrawArraysInstancedDirect,DrawArraysInstancedResolved,DrawArraysInstancedOriginal);
     count+=hookEntry(library,"glBindFramebuffer",BindFramebufferDirect,BindFramebufferResolved,BindFramebufferOriginal);
+    count+=hookEntry(library,"glDrawRangeElements",DrawRangeElementsDirect,DrawRangeElementsResolved,DrawRangeElementsOriginal);
+    count+=hookEntry(library,"glClear",ClearDirect,ClearResolved,ClearOriginal);
+    count+=hookEntry(library,"glBlitFramebuffer",BlitDirect,BlitResolved,BlitOriginal);
     hookCount.store(count);
     std::lock_guard lock(reportMu);
     lastReport="Native GLES draw hook entrypoints: "+std::to_string(count);
@@ -495,6 +613,7 @@ bool install(){
 
 PresentGuard::PresentGuard(){
     frame.inPresent=true;
+    installContextHooks();
     auto ctx=eglGetCurrentContext();auto surface=eglGetCurrentSurface(EGL_DRAW);
     // Record a remaining candidate for diagnostics, not as a phase barrier.
     // The default framebuffer can already contain HUD or postprocessing.
@@ -503,7 +622,9 @@ PresentGuard::PresentGuard(){
         if(GLuint(current)==frame.terrainFramebuffer)describeTerrainCandidate();
     }
     if(captureRequested()&&frame.context==ctx&&frame.surface==surface){
-        std::string current="Native GLES draw hook entrypoints: "+std::to_string(hookCount.load())+
+        std::string current="Native GLES hook entrypoints: "+std::to_string(hookCount.load())+
+            "\nOuter hooked draws (all contexts, cumulative): "+std::to_string(outerDraws.load())+
+            "\nDraws outside accepted context (cumulative): "+std::to_string(foreignDraws.load())+
             "\nPrograms observed: "+std::to_string(frame.seenCount)+
             "\nExplicit phase marker programs: "+std::to_string(frame.markerCount)+
             "\nWorld resources captured: "+std::to_string(frame.captureCount)+
@@ -514,6 +635,8 @@ PresentGuard::PresentGuard(){
         if(!frame.programSignatures.empty())
             current+="\nObserved native shader uniforms (unclassified):"+frame.programSignatures;
         if(!frame.details.empty())current+="\n"+frame.details;
+        auto order=frame.trace.report();
+        if(!order.empty())current+="\nNative GL event order (not classified phases):"+order;
         if(!frame.drawEvidence.empty())current+="\nDraw layout evidence:"+frame.drawEvidence;
         { // Include zero-draw reports; missing hook coverage is evidence too.
             auto vendor=reinterpret_cast<char const*>(glGetString(GL_VENDOR));
@@ -532,7 +655,7 @@ PresentGuard::PresentGuard(){
     frame.seenCount=frame.markerCount=frame.captureCount=frame.terrainCount=0;
     frame.details.clear();frame.deferredSamplers.clear();frame.terrainPrograms.clear();
     frame.terrainCandidate=false;frame.terrainEffectReport.clear();
-    frame.programSignatures.clear();frame.drawEvidence.clear();
+    frame.programSignatures.clear();frame.drawEvidence.clear();frame.trace.reset();
 }
 PresentGuard::~PresentGuard(){frame.inPresent=false;}
 std::string report(){std::lock_guard lock(reportMu);return lastReport;}

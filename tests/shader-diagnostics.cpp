@@ -1,4 +1,5 @@
 #include "ShaderDiagnostics.h"
+#include "ShaderHookTrace.h"
 #include <cassert>
 #include <iostream>
 #include <thread>
@@ -49,5 +50,18 @@ int main(){
     assert(!next.save(dir,second,error));
     assert(read(dir/"latest.log")==good);
     fs::remove_all(dir);
-    std::cout<<"Bounded concurrent diagnostic journal and automatic log persistence: OK\n";
+    using namespace modmenu::android::shaderbridge;
+    HookTrace trace;
+    trace.add({TraceKind::Bind,1,2,3,0});
+    trace.add({TraceKind::Draw,7,3,4,2});
+    trace.add({TraceKind::Draw,7,3,4,2});
+    trace.add({TraceKind::Blit,3,0,16384,9728});
+    auto order=trace.report();
+    assert(order.find("bind target=1")<order.find("draw program=7"));
+    assert(order.find("variant=2 x2")!=std::string::npos);
+    assert(order.find("draw program=7")<order.find("blit read=3"));
+    for(unsigned i=0;i<100;++i)trace.add({TraceKind::Clear,i,256,0,0});
+    assert(trace.report().find("omitted events=")!=std::string::npos);
+    trace.reset();assert(trace.report().empty());
+    std::cout<<"Bounded concurrent diagnostic journal, log persistence and hook trace: OK\n";
 }
