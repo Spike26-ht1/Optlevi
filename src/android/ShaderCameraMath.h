@@ -81,6 +81,22 @@ struct Projection {
     Matrix matrix{},inverse{};
     float nearClip=0,farClip=0;
 };
+// Validate a directly observed OpenGL perspective matrix. Unlike P*V
+// recovery, this does not require an independently known camera origin.
+// Preserve actual off-center/subpixel projection terms.
+inline bool directProjection(Matrix const& m,Projection& output){
+    for(float x:m)if(!std::isfinite(x))return false;
+    constexpr float eps=0.0001f;
+    if(m[0]<=0||m[5]<=0||std::abs(m[11]+1)>eps||std::abs(m[15])>eps||
+       std::abs(m[1])>eps||std::abs(m[2])>eps||std::abs(m[3])>eps||
+       std::abs(m[4])>eps||std::abs(m[6])>eps||std::abs(m[7])>eps||
+       std::abs(m[12])>eps||std::abs(m[13])>eps||!(m[10]<-1&&m[14]<0))return false;
+    double n=double(m[14])/(double(m[10])-1),f=double(m[14])/(double(m[10])+1);
+    if(!(n>0.0001&&n<100&&f>n&&f<1000000))return false;
+    Projection p;p.matrix=m;p.nearClip=float(n);p.farClip=float(f);
+    if(!invert(m,p.inverse))return false;
+    output=p;return true;
+}
 inline double dot(Vec a,Vec b){return a[0]*b[0]+a[1]*b[1]+a[2]*b[2];}
 inline Vec scale(Vec a,double s){for(double& x:a)x*=s;return a;}
 inline Vec cross(Vec a,Vec b){return {a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]};}

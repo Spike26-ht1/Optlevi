@@ -1,5 +1,6 @@
 #include "ShaderDiagnostics.h"
 #include "ShaderHookTrace.h"
+#include "ShaderCameraMath.h"
 #include <cassert>
 #include <iostream>
 #include <thread>
@@ -51,6 +52,14 @@ int main(){
     assert(read(dir/"latest.log")==good);
     fs::remove_all(dir);
     using namespace modmenu::android::shaderbridge;
+    camera::Projection projection;
+    camera::Matrix nativeP{1,0,0,0,0,1,0,0,0.01f,-0.02f,-1.5f,-1,0,0,-2.5f,0};
+    assert(camera::directProjection(nativeP,projection));
+    assert(projection.matrix==nativeP);
+    assert(std::abs(projection.nearClip-1.0f)<0.0001f&&std::abs(projection.farClip-5.0f)<0.0001f);
+    auto identity=camera::multiply(projection.matrix,projection.inverse);
+    for(unsigned i=0;i<16;++i)assert(std::abs(identity[i]-(i%5==0?1.0f:0.0f))<0.001f);
+    nativeP[11]=1;assert(!camera::directProjection(nativeP,projection));
     HookTrace trace;
     trace.add({TraceKind::Bind,1,2,3,0});
     trace.add({TraceKind::Draw,7,3,4,2});

@@ -205,7 +205,7 @@ void captureBeforeDraw(ObservedDraw const& call){
     if(count<0||count>512)return;
     std::vector<Resource> resources;
     std::vector<UniformMapping> uniforms;
-    GLint viewProjection=-1,viewPosition=-1;
+    GLint viewProjection=-1,viewPosition=-1,view=-1,projection=-1,atlas=-1,lightmap=-1,mesh=-1;
     bool terrainAtlas=false;
     std::string signature;
     GLint deferredMarker=-1;
@@ -218,7 +218,12 @@ void captureBeforeDraw(ObservedDraw const& call){
         if(signature.size()<280){if(!signature.empty())signature+=", ";signature+=name;}
         if(name=="u_viewProj"&&type==GL_FLOAT_MAT4)viewProjection=glGetUniformLocation(GLuint(program),raw);
         if(name=="ViewPositionAndTime"&&type==GL_FLOAT_VEC4)viewPosition=glGetUniformLocation(GLuint(program),raw);
-        terrainAtlas|=name=="s_MatTexture"&&type==GL_SAMPLER_2D;
+        if(name=="u_view"&&type==GL_FLOAT_MAT4)view=glGetUniformLocation(GLuint(program),raw);
+        if(name=="u_proj"&&type==GL_FLOAT_MAT4)projection=glGetUniformLocation(GLuint(program),raw);
+        if(name=="s_MatTexture"&&type==GL_SAMPLER_2D)atlas=glGetUniformLocation(GLuint(program),raw);
+        if(name=="s_LightMapTexture"&&type==GL_SAMPLER_2D)lightmap=glGetUniformLocation(GLuint(program),raw);
+        if(name=="MeshContext")mesh=glGetUniformLocation(GLuint(program),raw);
+        terrainAtlas=atlas>=0;
         if(name=="OptLeviDeferred"&&type==GL_INT_VEC2){deferredMarker=glGetUniformLocation(GLuint(program),raw);continue;}
         int deferredIndex=indexOf(name,"s_OptLeviDeferred",16);
         if(deferredIndex>=0&&type==GL_SAMPLER_2D){
@@ -245,16 +250,44 @@ void captureBeforeDraw(ObservedDraw const& call){
         if(add("OptLeviShadowDepth",2,Resource::Kind::ShadowDepth,GL_INT_VEC3))continue;
         add("OptLeviShadowColor",2,Resource::Kind::ShadowColor,GL_INT_VEC4);
     }
-    describeDraw(GLuint(program),call,terrainAtlas&&viewProjection>=0);
+    // Actual user-device signature: separate u_view/u_proj, atlas,
+    // lightmap, MeshContext and both UV attributes. Do not match actors
+    // or UI merely because they use s_MatTexture.
+    const bool splitTerrain=terrainAtlas&&lightmap>=0&&mesh>=0&&view>=0&&projection>=0&&
+        glGetAttribLocation(GLuint(program),"a_position")>=0&&
+        glGetAttribLocation(GLuint(program),"a_texcoord0")>=0&&
+        glGetAttribLocation(GLuint(program),"a_texcoord1")>=0&&
+        glGetAttribLocation(GLuint(program),"a_color0")>=0;
+    const bool terrainCandidate=splitTerrain||(terrainAtlas&&viewProjection>=0&&viewPosition>=0&&lightmap>=0);
+    describeDraw(GLuint(program),call,terrainCandidate);
+    if(splitTerrain){
+        // Resolve sampler units from the linked program, never assume
+        // texture unit numbers. Restore the native active texture.
+        GLint active=GL_TEXTURE0,maxUnits=0;
+        glGetIntegerv(GL_ACTIVE_TEXTURE,&active);
+        glGetIntegerv(GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS,&maxUnits);
+        auto sampler=[&](char const* name,GLint location){
+            GLint unit=-1,texture=0;
+            glGetUniformiv(GLuint(program),location,&unit);
+            if(unit>=0&&unit<maxUnits){
+                glActiveTexture(GL_TEXTURE0+unit);
+                glGetIntegerv(GL_TEXTURE_BINDING_2D,&texture);
+                note(std::string("Native terrain ")+name+" unit="+std::to_string(unit)+
+                    " texture="+std::to_string(texture));
+            }
+        };
+        sampler("atlas",atlas);sampler("lightmap",lightmap);
+        glActiveTexture(GLenum(active));
+    }
     if(frame.programSignatures.size()<1500){
         frame.programSignatures+="\nProgram "+std::to_string(program)+": "+signature;
     }
     // Record the real VAO layout of the first recognized terrain draw.
     // This is needed to build the future native mesh adapter without
     // hardcoding offsets for a different Minecraft build. It makes no draw.
-    if(terrainAtlas&&viewProjection>=0&&frame.terrainPrograms.size()<128)
+    if(terrainCandidate&&frame.terrainPrograms.size()<128)
         frame.terrainPrograms.push_back(GLuint(program));
-    if(terrainAtlas&&viewProjection>=0&&frame.firstTerrainLayout.empty()){
+    if(terrainCandidate&&frame.firstTerrainLayout.empty()){
         GLint count=0,vao=0,elementBuffer=0;
         glGetProgramiv(GLuint(program),GL_ACTIVE_ATTRIBUTES,&count);
         glGetIntegerv(GL_VERTEX_ARRAY_BINDING,&vao);
@@ -296,23 +329,39 @@ void captureBeforeDraw(ObservedDraw const& call){
     // Recover only the projection component of the observed terrain draw.
     // A terrain draw is not a phase barrier, and native world coordinates
     // must not be passed off as Java cameraPosition or model-view values.
-    if(viewProjection>=0&&viewPosition>=0&&terrainAtlas){
-        if(frame.terrainCount++==0){
-            camera::Matrix vp{};
-            std::array<float,4> eye{};
-            glGetUniformfv(GLuint(program),viewProjection,vp.data());
-            glGetUniformfv(GLuint(program),viewPosition,eye.data());
+    if(terrainCandidate){
+        if(frame.terrainCount==0){
             camera::Projection p;
-            if(camera::recoverProjection(vp,eye,p)){
+            bool valid=false;
+            if(splitTerrain){
+                camera::Matrix direct{};
+                glGetUniformfv(GLuint(program),projection,direct.data());
+                valid=camera::directProjection(direct,p);
+                note("Native split view/projection signature observed; projection validation="+std::to_string(valid));
+                if(!valid){
+                    std::string values="Native u_proj:";
+                    for(float v:direct)values+=" "+std::to_string(v);
+                    note(values);
+                }
+            }else{
+                camera::Matrix vp{};
+                std::array<float,4> eye{};
+                glGetUniformfv(GLuint(program),viewProjection,vp.data());
+                glGetUniformfv(GLuint(program),viewPosition,eye.data());
+                valid=camera::recoverProjection(vp,eye,p);
+            }
+            if(valid){
                 std::vector<WorldUniform> values(2);
                 values[0].name="gbufferProjection";values[0].glType=GL_FLOAT_MAT4;values[0].floats=p.matrix;
                 values[1].name="gbufferProjectionInverse";values[1].glType=GL_FLOAT_MAT4;values[1].floats=p.inverse;
                 std::string error;
                 if(publishWorldUniforms(values,error)){
                     frame.captureCount+=2;
-                    note("Native terrain perspective recovered (projection and inverse)");
+                    ++frame.terrainCount;
+                    note("Native terrain perspective captured (projection and inverse), near="+
+                        std::to_string(p.nearClip)+" far="+std::to_string(p.farClip));
                 }else note("Native camera capture: "+error);
-            }else note("Native terrain signature observed; projection/eye validation failed");
+            }else note("Native terrain signature observed; projection validation failed");
         }
     }
     if(resources.empty()&&uniforms.empty()&&deferredMarker<0)return;
@@ -606,7 +655,7 @@ void installContextHooks(){
 
 bool install(){
     static bool attempted=false;
-    std::lock_guard lock(installMu);
+    std::lock_guard installLock(installMu);
     if(attempted)return hookCount.load()!=0;
     attempted=true;
     void* library=dlopen("libGLESv3.so",RTLD_NOW);
