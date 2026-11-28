@@ -149,6 +149,8 @@ struct GeometryDraw {
     std::uintptr_t indexOffset=0;
     std::vector<WorldUniform> uniforms;
     std::vector<std::pair<std::string,unsigned>> textures2D;
+    // Runtime-owned mapped terrain token; mutually exclusive with native VAO.
+    std::uint64_t terrainMesh=0;
 };
 // Actual world viewport (not shadow-map dimensions). Call before shadow
 // draws if their programs need viewport built-ins.
@@ -199,6 +201,13 @@ bool capturePackedTerrainQuads(PackedTerrainSource const& source,
 // The native adapter supplies verified faces and per-draw inputs. Uses
 // the selected geometry/shadow program with a generated mapped VAO.
 bool drawTerrainQuads(GeometryDraw const& draw,std::vector<TerrainQuad> const& faces,std::string& error);
+// The adapter owns stable chunk/batch identity and revision. Revision MUST
+// change if any mapped input changes (including camera-relative positions,
+// block state, light, UV, topology). Empty faces are permitted on a cache hit.
+// No GL names escape the cache; tokens expire on release/pack/context change.
+bool prepareTerrainMesh(std::uint64_t batchKey,std::uint64_t revision,
+    std::vector<TerrainQuad> const& faces,std::uint64_t& token,std::string& error);
+bool releaseTerrainMesh(std::uint64_t token);
 // All batches must use real, mapped Java-convention vertices and actual
 // per-draw uniforms/textures. The engine owns the world FBOs and phase order.
 // The provider supplies draw state (including whether a batch is translucent).

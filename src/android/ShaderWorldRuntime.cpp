@@ -100,6 +100,24 @@ struct DepthFrame {
 };
 thread_local DepthFrame depthFrame;
 std::uint64_t colorTargetBytes=0;
+std::uint64_t terrainMeshBytes=0;
+constexpr std::uint64_t kTerrainMeshLimit=24ull*1024*1024;
+struct CachedTerrainMesh {
+    std::uint64_t key=0,revision=0,token=0,bytes=0;
+    GLuint vao=0,vbo=0,ebo=0;
+    int count=0;
+};
+std::vector<CachedTerrainMesh> terrainMeshes;
+std::uint64_t nextTerrainToken=1;
+void deleteTerrainBuffers(CachedTerrainMesh const& m){
+    if(m.vao)glDeleteVertexArrays(1,&m.vao);
+    if(m.vbo)glDeleteBuffers(1,&m.vbo);
+    if(m.ebo)glDeleteBuffers(1,&m.ebo);
+}
+void clearTerrainMeshes(bool deleteNames){
+    if(deleteNames)for(auto const& m:terrainMeshes)deleteTerrainBuffers(m);
+    terrainMeshes.clear();terrainMeshBytes=0;
+}
 std::uint64_t depthBytes(){
     std::uint64_t bytes=0;
     for(auto const& d:depthFrame.images)bytes+=d.bytes;
@@ -370,6 +388,7 @@ void statusMessage(bool ok,std::string message) {
 void abandonContext() {
     // Names from the previous EGL context are invalid in this one.
     context=eglGetCurrentContext();
+    clearTerrainMeshes(false);
     geometryHandles.clear();geometryNames.clear();
     pipeline.clear();
     packGpu.clear();packGpuBytes=0;packResourcesReady=false;frameCounter=0;
@@ -380,6 +399,7 @@ void abandonContext() {
 }
 
 void discardGeometry(){
+    clearTerrainMeshes(true);
     for(auto const& g:geometryHandles)if(g.program)glDeleteProgram(g.program);
     geometryHandles.clear();geometryNames.clear();
 }
@@ -619,7 +639,8 @@ bool uploadPackTextures(std::vector<PackTexture> const& inputs,std::string& erro
     for(auto const& image:inputs){
         if(image.width<=0||image.height<=0||image.width>2048||image.height>2048||
            image.rgba.size()!=std::uint64_t(image.width)*image.height*4||
-           packGpuBytes+image.rgba.size()>kPackTextureLimit){
+           packGpuBytes+image.rgba.size()>kPackTextureLimit||
+           colorTargetBytes+packGpuBytes+terrainMeshBytes+depthBytes()+image.rgba.size()>kMemoryLimit){
             error="Invalid or oversized pack texture "+image.sampler;return false;
         }
         for(auto const& old:packGpu)if(old.sampler==image.sampler){
@@ -881,7 +902,7 @@ bool ensureTargets(int width,int height,std::string& error) {
         }
         bytes+=2*(mipNeeded[i]?chain:pixels)*colorFormats[i].bytes;
     }
-    if(bytes+depthBytes()>kMemoryLimit){error="Cannot allocate independent GLES3 targets within 128 MiB budget";return false;}
+    if(bytes+terrainMeshBytes+depthBytes()>kMemoryLimit){error="Cannot allocate independent GLES3 targets within 128 MiB budget";return false;}
     glActiveTexture(GL_TEXTURE0);
     glBindBuffer(GL_PIXEL_UNPACK_BUFFER,0);
     glPixelStorei(GL_UNPACK_ALIGNMENT,1);
@@ -1223,7 +1244,7 @@ static bool captureColorAttachment(unsigned colortex,unsigned framebuffer,unsign
         error="Unsupported scene color format or dimensions";return false;
     }
     std::uint64_t bytes=std::uint64_t(width)*height*fmt.bytes;
-    if(colorTargetBytes+packGpuBytes+depthBytes()-d.bytes+bytes>kMemoryLimit){
+    if(colorTargetBytes+packGpuBytes+terrainMeshBytes+depthBytes()-d.bytes+bytes>kMemoryLimit){
         error="Scene color exceeds GPU memory budget";return false;
     }
     SavedState saved;
@@ -1362,7 +1383,7 @@ static bool captureDepthAttachment(unsigned n,unsigned framebuffer,unsigned inte
         error="Unsupported scene depth format or dimensions";return false;
     }
     std::uint64_t bytes=std::uint64_t(width)*height*bpp;
-    if(colorTargetBytes+packGpuBytes+depthBytes()-d.bytes+bytes>kMemoryLimit){
+    if(colorTargetBytes+packGpuBytes+terrainMeshBytes+depthBytes()-d.bytes+bytes>kMemoryLimit){
         error="Scene depth exceeds GPU memory budget";return false;
     }
     SavedState saved;
@@ -1614,6 +1635,19 @@ bool translateTerrainQuad(std::string const& canonicalName,mesh::State const& st
 
 bool drawGeometry(GeometryDraw const& draw,std::string& error){
     OwnedGpuScope owned;
+    if(draw.terrainMesh){
+        if(draw.vao||draw.instances!=1||eglGetCurrentContext()!=context||
+           eglGetCurrentSurface(EGL_DRAW)!=pipelineSurface||!captureRequested()){
+            error="Invalid cached terrain draw";return false;
+        }
+        auto entry=std::find_if(terrainMeshes.begin(),terrainMeshes.end(),
+            [&](auto const& m){return m.token==draw.terrainMesh;});
+        if(entry==terrainMeshes.end()){error="Expired terrain mesh token";return false;}
+        auto resolved=draw;
+        resolved.terrainMesh=0;resolved.vao=entry->vao;resolved.count=entry->count;
+        resolved.first=0;resolved.indexType=GL_UNSIGNED_INT;resolved.indexOffset=0;
+        return drawGeometry(resolved,error);
+    }
     GeometryHandle g;
     if(!acquireGeometryProgram(draw.program,g,error))return false;
     if(!draw.vao||!glIsVertexArray(draw.vao)||!draw.framebuffer||
@@ -1823,7 +1857,7 @@ bool renderShadowScene(std::vector<GeometryDraw> const& opaque,
         oldBytes+=depthFrame.colors[kBuffers+i].bytes;
         channels+=colors[i]?1:0;
     }
-    if(colorTargetBytes+packGpuBytes+depthBytes()-oldBytes+pixels*(8+4*channels)>kMemoryLimit){
+    if(colorTargetBytes+packGpuBytes+terrainMeshBytes+depthBytes()-oldBytes+pixels*(8+4*channels)>kMemoryLimit){
         error="Java shadow scene exceeds GPU memory budget";return finish(false);
     }
     glActiveTexture(GL_TEXTURE0);glBindSampler(0,0);glBindBuffer(GL_PIXEL_UNPACK_BUFFER,0);
@@ -2079,11 +2113,9 @@ bool capturePackedTerrainQuads(PackedTerrainSource const& source,
     return assembleIndexedTerrainQuads(vertices,indices,0,metadata,output,error);
 }
 
-bool drawTerrainQuads(GeometryDraw const& draw,std::vector<TerrainQuad> const& faces,std::string& error){
-    OwnedGpuScope owned;
-    if(faces.empty()||faces.size()>16384||draw.instances!=1){
-        error="Unsupported terrain batch size or instancing";return false;
-    }
+static bool uploadTerrainMesh(std::vector<TerrainQuad> const& faces,GLenum usage,
+    CachedTerrainMesh& result,std::string& error){
+    if(faces.empty()||faces.size()>16384){error="Unsupported terrain batch size";return false;}
     std::vector<mesh::JavaVertex> vertices;
     std::vector<std::uint32_t> indices;
     vertices.reserve(faces.size()*4);indices.reserve(faces.size()*6);
@@ -2094,21 +2126,26 @@ bool drawTerrainQuads(GeometryDraw const& draw,std::vector<TerrainQuad> const& f
         vertices.insert(vertices.end(),mapped.begin(),mapped.end());
         for(auto i:{0u,1u,2u,0u,2u,3u})indices.push_back(base+i);
     }
+    auto bytes=std::uint64_t(vertices.size())*sizeof(mesh::JavaVertex)+
+        std::uint64_t(indices.size())*sizeof(std::uint32_t);
+    if(bytes>kTerrainMeshLimit||
+       colorTargetBytes+packGpuBytes+terrainMeshBytes+depthBytes()+bytes>kMemoryLimit){
+        error="Mapped terrain exceeds GPU budget";return false;
+    }
     GLint oldVao=0,oldArray=0;
     glGetIntegerv(GL_VERTEX_ARRAY_BINDING,&oldVao);
     glGetIntegerv(GL_ARRAY_BUFFER_BINDING,&oldArray);
     GLuint vao=0,vbo=0,ebo=0;
     glGenVertexArrays(1,&vao);glGenBuffers(1,&vbo);glGenBuffers(1,&ebo);
-    auto cleanup=[&](){
+    auto restore=[&](){
         glBindVertexArray(GLuint(oldVao));glBindBuffer(GL_ARRAY_BUFFER,GLuint(oldArray));
-        if(ebo)glDeleteBuffers(1,&ebo);if(vbo)glDeleteBuffers(1,&vbo);
-        if(vao)glDeleteVertexArrays(1,&vao);
     };
+    auto cleanup=[&](){restore();deleteTerrainBuffers({0,0,0,0,vao,vbo,ebo,0});};
     if(!vao||!vbo||!ebo){cleanup();error="Cannot allocate mapped terrain buffers";return false;}
     glBindVertexArray(vao);glBindBuffer(GL_ARRAY_BUFFER,vbo);
-    glBufferData(GL_ARRAY_BUFFER,GLsizeiptr(vertices.size()*sizeof(mesh::JavaVertex)),vertices.data(),GL_STREAM_DRAW);
+    glBufferData(GL_ARRAY_BUFFER,GLsizeiptr(vertices.size()*sizeof(mesh::JavaVertex)),vertices.data(),usage);
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER,ebo);
-    glBufferData(GL_ELEMENT_ARRAY_BUFFER,GLsizeiptr(indices.size()*sizeof(std::uint32_t)),indices.data(),GL_STREAM_DRAW);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER,GLsizeiptr(indices.size()*sizeof(std::uint32_t)),indices.data(),usage);
     using V=mesh::JavaVertex;
     const std::array<std::pair<GLint,size_t>,9> attrs={{
         {4,offsetof(V,position)},{4,offsetof(V,color)},{3,offsetof(V,normal)},
@@ -2121,14 +2158,57 @@ bool drawTerrainQuads(GeometryDraw const& draw,std::vector<TerrainQuad> const& f
         glEnableVertexAttribArray(i);
     }
     bool ok=glGetError()==GL_NO_ERROR;
-    if(ok){
-        auto batch=draw;
-        batch.vao=vao;batch.first=0;batch.count=int(indices.size());
-        batch.indexType=GL_UNSIGNED_INT;batch.indexOffset=0;
-        ok=drawGeometry(batch,error);
-    }else error="Mapped terrain buffer upload failed";
-    cleanup();
-    return ok;
+    if(!ok){cleanup();error="Mapped terrain buffer upload failed";return false;}
+    restore();result.vao=vao;result.vbo=vbo;result.ebo=ebo;
+    result.bytes=bytes;result.count=int(indices.size());return true;
+}
+
+bool prepareTerrainMesh(std::uint64_t batchKey,std::uint64_t revision,
+    std::vector<TerrainQuad> const& faces,std::uint64_t& token,std::string& error){
+    OwnedGpuScope owned;
+    if(!batchKey||!revision||eglGetCurrentContext()==EGL_NO_CONTEXT||
+       eglGetCurrentContext()!=context||eglGetCurrentSurface(EGL_DRAW)!=pipelineSurface||
+       !captureRequested()||selectedSource.empty()){
+        error="Invalid terrain cache identity or context";return false;
+    }
+    {std::lock_guard lock(mu);if(pendingAction){error="Java shader selection changing";return false;}}
+    auto it=std::find_if(terrainMeshes.begin(),terrainMeshes.end(),
+        [&](auto const& m){return m.key==batchKey;});
+    if(it!=terrainMeshes.end()&&it->revision==revision){token=it->token;error.clear();return true;}
+    // A revision mismatch immediately invalidates the old data, even if
+    // replacement fails. Never silently render stale chunk geometry.
+    if(it!=terrainMeshes.end()){
+        deleteTerrainBuffers(*it);terrainMeshBytes-=it->bytes;terrainMeshes.erase(it);
+    }
+    if(faces.empty()||faces.size()>16384||terrainMeshes.size()>=2048||!nextTerrainToken){
+        error="Terrain cache miss or entry limit";return false;
+    }
+    auto bytes=std::uint64_t(faces.size())*(4*sizeof(mesh::JavaVertex)+6*sizeof(std::uint32_t));
+    if(terrainMeshBytes+bytes>kTerrainMeshLimit){error="Terrain cache budget exceeded; release unloaded batches";return false;}
+    CachedTerrainMesh entry;
+    if(!uploadTerrainMesh(faces,GL_STATIC_DRAW,entry,error))return false;
+    entry.key=batchKey;entry.revision=revision;entry.token=nextTerrainToken++;
+    terrainMeshes.push_back(entry);terrainMeshBytes+=entry.bytes;token=entry.token;error.clear();return true;
+}
+
+bool releaseTerrainMesh(std::uint64_t token){
+    OwnedGpuScope owned;
+    if(!token||eglGetCurrentContext()==EGL_NO_CONTEXT||eglGetCurrentContext()!=context||
+       eglGetCurrentSurface(EGL_DRAW)!=pipelineSurface)return false;
+    auto it=std::find_if(terrainMeshes.begin(),terrainMeshes.end(),
+        [&](auto const& m){return m.token==token;});
+    if(it==terrainMeshes.end())return false;
+    deleteTerrainBuffers(*it);terrainMeshBytes-=it->bytes;terrainMeshes.erase(it);return true;
+}
+
+bool drawTerrainQuads(GeometryDraw const& draw,std::vector<TerrainQuad> const& faces,std::string& error){
+    OwnedGpuScope owned;
+    if(draw.instances!=1||draw.terrainMesh){error="Unsupported terrain batch instancing or cached token";return false;}
+    CachedTerrainMesh temporary;
+    if(!uploadTerrainMesh(faces,GL_STREAM_DRAW,temporary,error))return false;
+    auto batch=draw;batch.vao=temporary.vao;batch.count=temporary.count;
+    batch.first=0;batch.indexType=GL_UNSIGNED_INT;batch.indexOffset=0;
+    bool ok=drawGeometry(batch,error);deleteTerrainBuffers(temporary);return ok;
 }
 
 bool beginJavaFrame(int width,int height,std::string& error){
@@ -2213,7 +2293,7 @@ bool renderJavaWorldScene(WorldScene const& scene,std::string& error){
         oldBytes+=depthFrame.colors[i].bytes;
         if(used[i])bytes+=pixels*formats[i].bytes;
     }
-    if(colorTargetBytes+packGpuBytes+depthBytes()-oldBytes+bytes>kMemoryLimit){
+    if(colorTargetBytes+packGpuBytes+terrainMeshBytes+depthBytes()-oldBytes+bytes>kMemoryLimit){
         error="Java world geometry targets exceed GPU memory budget";return finish(false);
     }
     glActiveTexture(GL_TEXTURE0);glBindSampler(0,0);glBindBuffer(GL_PIXEL_UNPACK_BUFFER,0);
@@ -2273,7 +2353,7 @@ bool renderJavaWorldScene(WorldScene const& scene,std::string& error){
     auto drawStage=[&](std::vector<WorldBatch> const& draws,bool updateSerial){
         for(auto const& batch:draws){
             auto draw=batch.geometry;GeometryHandle g;
-            if(!batch.terrainFaces.empty()&&draw.vao){error="Ambiguous terrain batch: both VAO and CPU faces";return false;}
+            if(!batch.terrainFaces.empty()&&(draw.vao||draw.terrainMesh)){error="Ambiguous terrain batch: both VAO and CPU faces";return false;}
             if(!acquireGeometryProgram(draw.program,g,error))return false;
             if(g.targets.size()>slots){error="Geometry outputs exceed driver limits";return false;}
             glBindFramebuffer(GL_FRAMEBUFFER,work);

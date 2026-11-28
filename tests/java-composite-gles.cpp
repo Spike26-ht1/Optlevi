@@ -714,6 +714,28 @@ void main(){optDisabledOutput=vec4(1.0);}
     glReadPixels(16,16,1,1,GL_RGBA,GL_UNSIGNED_BYTE,actual.data());
     require(std::abs(int(actual[0])-153)<=2&&std::abs(int(actual[1])-51)<=2&&
         std::abs(int(actual[2])-102)<=2,"Mapped terrain batch output wrong");
+    // Persistent GPU mesh cache: hit without CPU input, replacement and
+    // stale-token rejection. The same draw ABI is used by world and shadow.
+    std::uint64_t token=0,hit=0,newToken=0;
+    require(prepareTerrainMesh(17,1,assembled,token,captureError)&&token,
+        "Terrain cache upload failed");
+    require(prepareTerrainMesh(17,1,{},hit,captureError)&&hit==token,
+        "Terrain cache hit required CPU geometry");
+    auto cached=mesh;cached.vao=0;cached.terrainMesh=token;
+    glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);
+    require(drawGeometry(cached,captureError),"Cached terrain draw failed");
+    glReadPixels(16,16,1,1,GL_RGBA,GL_UNSIGNED_BYTE,actual.data());
+    require(std::abs(int(actual[0])-153)<=2&&std::abs(int(actual[1])-51)<=2&&
+        std::abs(int(actual[2])-102)<=2,"Cached terrain output wrong");
+    require(!prepareTerrainMesh(17,2,{},newToken,captureError),"Missing revised mesh accepted");
+    require(!drawGeometry(cached,captureError),"Stale cached mesh accepted");
+    require(prepareTerrainMesh(17,2,assembled,newToken,captureError)&&newToken!=token,
+        "Terrain cache revision upload failed");
+    cached.terrainMesh=newToken;
+    require(drawGeometry(cached,captureError),"Revised mesh draw failed");
+    require(releaseTerrainMesh(newToken)&&!releaseTerrainMesh(newToken),
+        "Terrain cache release failed");
+    require(!drawGeometry(cached,captureError),"Released mesh accepted");
     GLint restoredVao=0,restoredArray=0;
     glGetIntegerv(GL_VERTEX_ARRAY_BINDING,&restoredVao);
     glGetIntegerv(GL_ARRAY_BUFFER_BINDING,&restoredArray);
