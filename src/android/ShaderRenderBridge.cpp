@@ -15,6 +15,7 @@
 #include <atomic>
 #include <charconv>
 #include <cstdint>
+#include <cstdlib>
 #include <mutex>
 #include <string>
 #include <string_view>
@@ -28,7 +29,47 @@ std::string lastReport="Native draw bridge not initialized";
 std::atomic<unsigned> hookCount{0};
 std::atomic<unsigned> foreignDraws{0},outerDraws{0};
 std::mutex installMu;
-std::vector<void*> installedTargets;
+struct HookTarget { void* address; std::string owner; };
+std::vector<HookTarget> installedTargets;
+struct EntryCoverage {
+    char const* name;
+    std::string state[2]{"not attempted","not attempted"};
+    std::atomic<unsigned> calls[2]{};
+    std::atomic<unsigned> accepted[2]{};
+};
+EntryCoverage coverageDrawElements{"glDrawElements"};
+EntryCoverage coverageDrawArrays{"glDrawArrays"};
+EntryCoverage coverageDrawElementsInstanced{"glDrawElementsInstanced"};
+EntryCoverage coverageDrawArraysInstanced{"glDrawArraysInstanced"};
+EntryCoverage coverageBindFramebuffer{"glBindFramebuffer"};
+EntryCoverage coverageDrawRangeElements{"glDrawRangeElements"};
+EntryCoverage coverageClear{"glClear"};
+EntryCoverage coverageBlit{"glBlitFramebuffer"};
+EntryCoverage coverageDrawElementsBaseVertex{"glDrawElementsBaseVertex"};
+EntryCoverage coverageDrawElementsInstancedBaseVertex{"glDrawElementsInstancedBaseVertex"};
+EntryCoverage coverageDrawElementsBaseVertexOES{"glDrawElementsBaseVertexOES"};
+EntryCoverage coverageDrawElementsInstancedBaseVertexOES{"glDrawElementsInstancedBaseVertexOES"};
+EntryCoverage coverageDrawElementsBaseVertexEXT{"glDrawElementsBaseVertexEXT"};
+EntryCoverage coverageDrawElementsInstancedBaseVertexEXT{"glDrawElementsInstancedBaseVertexEXT"};
+EntryCoverage* const coverageEntries[]={&coverageDrawElements,&coverageDrawArrays,&coverageDrawElementsInstanced,&coverageDrawArraysInstanced,&coverageBindFramebuffer,&coverageDrawRangeElements,&coverageClear,&coverageBlit,&coverageDrawElementsBaseVertex,&coverageDrawElementsInstancedBaseVertex,&coverageDrawElementsBaseVertexOES,&coverageDrawElementsInstancedBaseVertexOES,&coverageDrawElementsBaseVertexEXT,&coverageDrawElementsInstancedBaseVertexEXT};
+EntryCoverage& coverageFor(char const* name){
+    for(auto* entry:coverageEntries)if(std::string_view(entry->name)==name)return *entry;
+    // Every hookEntry call below belongs to the fixed inventory.
+    std::abort();
+}
+std::string coverageReport(){
+    std::lock_guard lock(installMu);
+    std::string out="\nGLES entry coverage (capture-active outer calls; accepted context, not verified world phase):";
+    for(auto const* e:coverageEntries){
+        out+="\n "+std::string(e->name);
+        for(unsigned i=0;i<2;++i){
+            out+=std::string(i?" EGL=":" export=")+e->state[i]+
+                " hits="+std::to_string(e->calls[i].load(std::memory_order_relaxed))+
+                " accepted="+std::to_string(e->accepted[i].load(std::memory_order_relaxed));
+        }
+    }
+    return out;
+}
 void* glesLibrary=nullptr;
 struct DeferredSampler { GLuint program; GLint location; unsigned index; };
 struct Frame {
@@ -581,12 +622,14 @@ void describeTerrainCandidate(){
     frame.terrainCandidate=false;
 }
 template<class Fn,class... Args>
-void draw(ObservedDraw const& evidence,Fn original,Args... args){
+void draw(EntryCoverage& coverage,unsigned slot,ObservedDraw const& evidence,Fn original,Args... args){
     struct Guard { Guard(){++drawNesting;} ~Guard(){--drawNesting;} } guard;
     if(drawNesting==1&&!frame.inPresent&&captureRequested()){
         outerDraws.fetch_add(1,std::memory_order_relaxed);
+        coverage.calls[slot].fetch_add(1,std::memory_order_relaxed);
         if(frame.context!=EGL_NO_CONTEXT&&frame.context==eglGetCurrentContext()&&
            frame.surface==eglGetCurrentSurface(EGL_DRAW)){
+            coverage.accepted[slot].fetch_add(1,std::memory_order_relaxed);
             if(!frame.trace.full()){
                 GLint p=0,fbo=0;
                 glGetIntegerv(GL_CURRENT_PROGRAM,&p);
@@ -603,7 +646,8 @@ void draw(ObservedDraw const& evidence,Fn original,Args... args){
 
 using BindFramebufferFn=void(*)(GLenum,GLuint);
 BindFramebufferFn BindFramebufferOriginal[2]{};
-void bindFramebuffer(BindFramebufferFn original,GLenum target,GLuint id){
+void bindFramebuffer(unsigned slot,BindFramebufferFn original,GLenum target,GLuint id){
+    if(!drawNesting&&!frame.inPresent&&captureRequested())coverageBindFramebuffer.calls[slot].fetch_add(1,std::memory_order_relaxed);
     if(!drawNesting&&!frame.inPresent&&frame.terrainCandidate&&
        frame.context==eglGetCurrentContext()&&frame.surface==eglGetCurrentSurface(EGL_DRAW)&&
        (target==GL_FRAMEBUFFER||target==GL_DRAW_FRAMEBUFFER)&&id!=frame.terrainFramebuffer){
@@ -613,14 +657,15 @@ void bindFramebuffer(BindFramebufferFn original,GLenum target,GLuint id){
     if(!drawNesting&&!frame.inPresent&&captureRequested()&&frame.context!=EGL_NO_CONTEXT&&
        frame.context==eglGetCurrentContext()&&frame.surface==eglGetCurrentSurface(EGL_DRAW)&&
        (target==GL_FRAMEBUFFER||target==GL_DRAW_FRAMEBUFFER||target==GL_READ_FRAMEBUFFER)){
+        coverageBindFramebuffer.accepted[slot].fetch_add(1,std::memory_order_relaxed);
         GLint current=0;glGetIntegerv(target==GL_READ_FRAMEBUFFER?GL_READ_FRAMEBUFFER_BINDING:
             GL_DRAW_FRAMEBUFFER_BINDING,&current);
         if(GLuint(current)!=id)frame.trace.add({TraceKind::Bind,target,unsigned(current),id,0});
     }
     original(target,id);
 }
-void BindFramebufferDirect(GLenum target,GLuint id){bindFramebuffer(BindFramebufferOriginal[0],target,id);}
-void BindFramebufferResolved(GLenum target,GLuint id){bindFramebuffer(BindFramebufferOriginal[1],target,id);}
+void BindFramebufferDirect(GLenum target,GLuint id){bindFramebuffer(0,BindFramebufferOriginal[0],target,id);}
+void BindFramebufferResolved(GLenum target,GLuint id){bindFramebuffer(1,BindFramebufferOriginal[1],target,id);}
 
 // These hooks observe real clear/copy operations before forwarding them.
 // They do not infer opaque/HUD phase ownership or alter native attachments.
@@ -632,29 +677,33 @@ thread_local unsigned phaseNesting=0;
 struct PhaseGuard { PhaseGuard(){++phaseNesting;} ~PhaseGuard(){--phaseNesting;} };
 using ClearFn=void(*)(GLbitfield);
 ClearFn ClearOriginal[2]{};
-void clear(ClearFn original,GLbitfield mask){
+void clear(unsigned slot,ClearFn original,GLbitfield mask){
     PhaseGuard guard;
+    if(phaseNesting==1&&!drawNesting&&!frame.inPresent&&captureRequested())coverageClear.calls[slot].fetch_add(1,std::memory_order_relaxed);
     if(phaseNesting==1&&traceAllowed()){
+        coverageClear.accepted[slot].fetch_add(1,std::memory_order_relaxed);
         GLint fbo=0;glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING,&fbo);
         frame.trace.add({TraceKind::Clear,unsigned(fbo),mask,0,0});
     }
     original(mask);
 }
-void ClearDirect(GLbitfield m){clear(ClearOriginal[0],m);}
-void ClearResolved(GLbitfield m){clear(ClearOriginal[1],m);}
+void ClearDirect(GLbitfield m){clear(0,ClearOriginal[0],m);}
+void ClearResolved(GLbitfield m){clear(1,ClearOriginal[1],m);}
 using BlitFn=void(*)(GLint,GLint,GLint,GLint,GLint,GLint,GLint,GLint,GLbitfield,GLenum);
 BlitFn BlitOriginal[2]{};
-void blit(BlitFn original,GLint a,GLint b,GLint c,GLint d,GLint e,GLint f,GLint g,GLint h,GLbitfield mask,GLenum filter){
+void blit(unsigned slot,BlitFn original,GLint a,GLint b,GLint c,GLint d,GLint e,GLint f,GLint g,GLint h,GLbitfield mask,GLenum filter){
     PhaseGuard guard;
+    if(phaseNesting==1&&!drawNesting&&!frame.inPresent&&captureRequested())coverageBlit.calls[slot].fetch_add(1,std::memory_order_relaxed);
     if(phaseNesting==1&&traceAllowed()){
+        coverageBlit.accepted[slot].fetch_add(1,std::memory_order_relaxed);
         GLint read=0,write=0;glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING,&read);
         glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING,&write);
         frame.trace.add({TraceKind::Blit,unsigned(read),unsigned(write),mask,filter});
     }
     original(a,b,c,d,e,f,g,h,mask,filter);
 }
-void BlitDirect(GLint a,GLint b,GLint c,GLint d,GLint e,GLint f,GLint g,GLint h,GLbitfield m,GLenum n){blit(BlitOriginal[0],a,b,c,d,e,f,g,h,m,n);}
-void BlitResolved(GLint a,GLint b,GLint c,GLint d,GLint e,GLint f,GLint g,GLint h,GLbitfield m,GLenum n){blit(BlitOriginal[1],a,b,c,d,e,f,g,h,m,n);}
+void BlitDirect(GLint a,GLint b,GLint c,GLint d,GLint e,GLint f,GLint g,GLint h,GLbitfield m,GLenum n){blit(0,BlitOriginal[0],a,b,c,d,e,f,g,h,m,n);}
+void BlitResolved(GLint a,GLint b,GLint c,GLint d,GLint e,GLint f,GLint g,GLint h,GLbitfield m,GLenum n){blit(1,BlitOriginal[1],a,b,c,d,e,f,g,h,m,n);}
 
 // Both the public GLES export and the resolved EGL dispatch address may
 // be used by a native renderer. Hook each distinct address once.
@@ -663,8 +712,8 @@ void BlitResolved(GLint a,GLint b,GLint c,GLint d,GLint e,GLint f,GLint g,GLint 
 #define OPTLEVI_DRAW_ENTRY(NAME,PARAMS,ARGS,EVIDENCE) \
     using NAME##Fn=void (*) PARAMS; \
     NAME##Fn NAME##Original[2]{}; \
-    void NAME##Direct PARAMS { draw(ObservedDraw{OPTLEVI_UNWRAP EVIDENCE},NAME##Original[0],OPTLEVI_UNWRAP ARGS); } \
-    void NAME##Resolved PARAMS { draw(ObservedDraw{OPTLEVI_UNWRAP EVIDENCE},NAME##Original[1],OPTLEVI_UNWRAP ARGS); }
+    void NAME##Direct PARAMS { draw(coverage##NAME,0,ObservedDraw{OPTLEVI_UNWRAP EVIDENCE},NAME##Original[0],OPTLEVI_UNWRAP ARGS); } \
+    void NAME##Resolved PARAMS { draw(coverage##NAME,1,ObservedDraw{OPTLEVI_UNWRAP EVIDENCE},NAME##Original[1],OPTLEVI_UNWRAP ARGS); }
 OPTLEVI_DRAW_ENTRY(DrawElements,(GLenum m,GLsizei n,GLenum t,void const* p),(m,n,t,p),(m,n,1,true,t,reinterpret_cast<std::uintptr_t>(p),0))
 OPTLEVI_DRAW_ENTRY(DrawArrays,(GLenum m,GLint f,GLsizei n),(m,f,n),(m,n,1,false,0,0,f))
 OPTLEVI_DRAW_ENTRY(DrawElementsInstanced,(GLenum m,GLsizei n,GLenum t,void const* p,GLsizei c),(m,n,t,p,c),(m,n,c,true,t,reinterpret_cast<std::uintptr_t>(p),0))
@@ -683,27 +732,34 @@ template<class Fn>
 unsigned hookEntry(void* library,char const* name,Fn direct,Fn resolved,Fn (&original)[2]){
     void* targets[2]={dlsym(library,name),reinterpret_cast<void*>(eglGetProcAddress(name))};
     Fn detours[2]={direct,resolved};
+    auto& coverage=coverageFor(name);
     unsigned count=0;
     for(unsigned i=0;i<2;++i){
         std::string label=std::string(name)+(i?" [EGL resolved]":" [GLES export]");
-        if(!targets[i]){shaderdiagnostics::record("Hook entry",label+": unavailable");continue;}
-        if(std::find(installedTargets.begin(),installedTargets.end(),targets[i])!=installedTargets.end()){
-            shaderdiagnostics::record("Hook entry",label+": address already hooked; skipped");continue;
+        auto setState=[&](std::string state){
+            coverage.state[i]=std::move(state);
+            shaderdiagnostics::record("Hook entry",label+": "+coverage.state[i]);
+        };
+        if(!targets[i]){setState(original[i]?"installed; latest lookup unavailable":"unavailable");continue;}
+        auto existing=std::find_if(installedTargets.begin(),installedTargets.end(),
+            [&](HookTarget const& t){return t.address==targets[i];});
+        if(existing!=installedTargets.end()){
+            setState(existing->owner==label?"installed":"alias of "+existing->owner);continue;
         }
         // Each detour owns one immutable original slot. A different late
         // EGL address must not overwrite a live trampoline.
         if(original[i]){
-            shaderdiagnostics::record("Hook entry",label+": address changed; existing trampoline retained");continue;
+            setState("address changed; existing trampoline retained");continue;
         }
         void* trampoline=nullptr;
         int result=pl::memory::hook(targets[i],reinterpret_cast<void*>(detours[i]),&trampoline);
         if(result==0&&trampoline){
             original[i]=reinterpret_cast<Fn>(trampoline);++count;
-            installedTargets.push_back(targets[i]);
-            shaderdiagnostics::record("Hook entry",label+": installed");
+            installedTargets.push_back({targets[i],label});
+            setState("installed");
         }else{
             if(result==0&&!trampoline)pl::memory::unhook(targets[i],reinterpret_cast<void*>(detours[i]));
-            shaderdiagnostics::record("Hook entry",label+": failed ("+std::to_string(result)+")");
+            setState("failed ("+std::to_string(result)+")");
         }
     }
     return count;
@@ -797,6 +853,7 @@ PresentGuard::PresentGuard(){
             "\nExplicit phase marker programs: "+std::to_string(frame.markerCount)+
             "\nWorld resources captured: "+std::to_string(frame.captureCount)+
             "\nTerrain candidate programs (unverified): "+std::to_string(frame.terrainPrograms.size());
+        current+=coverageReport();
         if(!frame.markerCount)current+="\nNo verified OptLevi phase-marker material was observed.";
         if(!frame.firstTerrainLayout.empty())current+="\n"+frame.firstTerrainLayout;
         if(!frame.firstMeshSample.empty())current+="\n"+frame.firstMeshSample;
