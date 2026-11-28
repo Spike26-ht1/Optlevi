@@ -8,7 +8,7 @@ not a decompiled Java class or shipped Java bytecode. Apply after prepare-fabric
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-SRC = ROOT / "ModMenuBE" / "src" / "ui"
+SRC = ROOT / "build/native-template" / "src" / "ui"
 SCREEN = SRC / "ModMenuScreen.cpp"
 
 

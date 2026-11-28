@@ -1,0 +1,36 @@
+# Native Java shader integration contract
+
+Target: Bedrock Android ARM64, RenderDragon GLES, LeviLauncher. The renderer adapter must supply actual per-frame resources, not inferred phases from draw counts.
+
+| Requirement | Runtime entry point | Remaining device integration |
+|---|---|---|
+| Actual camera/world state in Java coordinate conventions | publishWorldUniforms / captureProgramUniforms | Verify native camera origin, matrices, previous frame, time, weather and biome values |
+| Block identity and geometry | translateTerrainQuad / drawTerrainQuads / drawGeometry | Obtain verified chunk mesh, material IDs, UV/lightmap, normals and tangents; map block.properties |
+| World batches | renderJavaWorldScene | Supply opaque, hand and translucent geometry, including entities, sky, particles and water as needed |
+| Light-space geometry | getShadowCamera / renderShadowScene | Provide real shadow caster batches, including off-camera casters |
+| Depth and MRT | captureSceneDepth / captureSceneColor or owned world targets | Verify attachments, formats, dimensions and semantic producer |
+| Deferred | renderDeferred | Invoke at verified opaque-to-translucent boundary if using native phase adapter |
+| Final | presentJavaWorldScene | Call after mapped world is complete, before native HUD; verify destination and viewport |
+| Lifetime | beforeSwap | Expire current-frame inputs; never present the mapped scene twice |
+
+Do not treat GLES symbol resolution, a program name or an FBO bind as proof of a Minecraft phase. Use version-specific, source-backed adapter evidence. A missing mandatory input must preserve native rendering rather than fabricate a G-buffer. GPU work submitted by OptLevi itself is excluded from native observation via OwnedGpuScope.
+
+References:
+- https://shaders.properties/current/reference/programs/overview/
+- https://shaders.properties/current/reference/programs/deferred/
+- https://shaders.properties/current/reference/buffers/depthtex/
+- https://shaders.properties/current/reference/shadersproperties/rendering/
+
+Acceptance: actual BSL archive imports and links; all mandatory inputs produced for the current world frame; mapped terrain, entities, shadows and water visible during camera movement; native HUD survives final composition; frame failures restore native rendering; test on physical device. Host GLES fixtures are not proof of Bedrock compatibility.
+
+## Packed RenderChunk capture
+
+The adapter may call `capturePackedTerrainQuads` on the verified native draw VAO before it changes. It validates reflected half-float positions, normalized byte colors and normalized ushort UV/light, stages only bounded VBO/EBO ranges, decodes signed base-vertex indices, and produces CPU faces for `WorldBatch::terrainFaces`. It requires actual per-face block metadata, verified light component and positive affine position mapping into camera-relative coordinates. It is not connected to a guessed draw hook and is not suitable for every draw every frame without caching and profiling. Unsupported topology/layout or over-budget reads are rejected without changing the previous output.
+
+## Persistent mapped GPU geometry
+
+`prepareTerrainMesh(batchKey, revision, faces, token, error)` uploads a mapped VAO/VBO/EBO once. A hit takes empty faces and returns the existing token; pass it as `GeometryDraw::terrainMesh` with `vao=0` for world or shadow geometry. The adapter must update revisions for any change to geometry, light, block identity, UV, or position convention; in particular, camera-relative CPU vertices must not be reused after camera movement unless their actual coordinates are unchanged. No automatic eviction can invalidate a queued draw; the adapter releases unloaded batches using `releaseTerrainMesh`. Cache storage is capped at 24 MiB and 2048 batches within the shared 128 MiB budget. Pack/surface/context changes invalidate all tokens. This is an opt-in runtime cache, not yet a native chunk lifecycle hook.
+
+## Local chunk coordinates
+
+The translated geometry vertex ABI now adds the verified per-draw `GeometryDraw::terrainOffset` to the position before all legacy `gl_Vertex` expressions and `ftransform()`. Keep cached vertices and block centers in the same local coordinate frame, and pass the native adapter's verified local-to-camera-relative translation each draw. Shadow and main stages share this ABI. The preloader at the pinned revision exposes generic signature/hook APIs, but its shipped rules are UI lifecycle hooks, not renderer phase or chunk metadata hooks. Custom Buffers documents `u_model` translation as camera-relative for its 26.52 materials; this is evidence for inspection, not proof for other builds. The bridge exports up to three typed native transform samples per observed frame to validate the actual device values.

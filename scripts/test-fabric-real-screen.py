@@ -7,8 +7,8 @@ from pathlib import Path
 import json
 
 ROOT=Path(__file__).resolve().parents[1]
-src=(ROOT/"ModMenuBE/src/ui/ModMenuScreen.cpp").read_text()
-screen=(ROOT/"ModMenuBE/src/ui/OptLeviFabricScreen.inc").read_text()
+src=(ROOT/"build/native-template/src/ui/ModMenuScreen.cpp").read_text()
+screen=(ROOT/"build/native-template/src/ui/OptLeviFabricScreen.inc").read_text()
 json_ui=json.loads((ROOT/"resources/levi_api/ui/start_screen.json").read_text())
 pause=json.loads((ROOT/"resources/levi_api/ui/pause_screen.json").read_text())
 assert src.count('drawOptLeviFabricScreen(display);')==1
@@ -55,7 +55,7 @@ assert 'drawHeader(' not in screen
 assert 'drawListView(' not in screen
 assert 'col::rgb(0x262A31, 245)' not in screen
 # No old overlay button should re-enter the Android native plugin.
-entry=(ROOT/"ModMenuBE/android/src/Entry.cpp").read_text()
+entry=(ROOT/"build/native-template/android/src/Entry.cpp").read_text()
 assert "ButtonBuilder" not in entry
 
 assert json_ui["optlevi_menu_button@common_buttons.light_text_form_fitting_button"]["$pressed_button_name"]=="button.optlevi_open_menu"

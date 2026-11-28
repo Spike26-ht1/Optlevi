@@ -14,8 +14,8 @@ import struct
 ROOT=Path(__file__).resolve().parents[1]
 atlas=(ROOT/"src/ui/OptLeviBedrockAtlas.inc").read_text()
 renderer=(ROOT/"src/ui/OptLeviBedrockTexture.inc").read_text()
-screen=(ROOT/"ModMenuBE/src/ui/OptLeviFabricScreen.inc").read_text()
-native=(ROOT/"ModMenuBE/src/ui/ModMenuScreen.cpp").read_text()
+screen=(ROOT/"build/native-template/src/ui/OptLeviFabricScreen.inc").read_text()
+native=(ROOT/"build/native-template/src/ui/ModMenuScreen.cpp").read_text()
 
 match=re.search(r'kOptAtlasPngBase64\[\]\s*=\s*"([A-Za-z0-9+/=]+)"',atlas)
 assert match,"Embedded source atlas missing"
@@ -57,7 +57,7 @@ for expected in (
     assert expected in screen,expected
 
 base=json.loads((ROOT/"resources/levi_api/manifest.json").read_text())
-assert base["header"]["version"]==[0,12,0]
+assert base["header"]["version"]==[0,13,0]
 prep=(ROOT/"scripts/prepare-fabric-real-screen.py").read_text()
 assert "OptLeviBedrockAtlas.inc" in prep
 assert "OptLeviBedrockTexture.inc" in prep
@@ -65,4 +65,4 @@ assert "#include <GLES3/gl3.h>" in prep
 assert "#include <stb_image.h>" in prep
 print("Verified 16 exact Bedrock UI sprites in embedded 128×128 PNG atlas.")
 print("Verified GPU upload, nine-slice pixels, textured controls/panels, real mouse states.")
-print("Verified OptLevi 0.12.0 manifest and original Fabric-style ModMenu controls.")
+print("Verified OptLevi 0.13.0 manifest and original Fabric-style ModMenu controls.")

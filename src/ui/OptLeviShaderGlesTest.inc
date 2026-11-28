@@ -128,7 +128,196 @@ static void optReplaceAll(std::string& s,std::string const& a,
         s.replace(at,a.size(),b);at+=b.size();
     }
 }
-static std::string optTranslateFinal(std::string source) {
+static void optReplaceIdentifier(std::string& source,std::string const& from,
+                                 std::string const& to);
+
+// An explicit Java 1.21.0 compatibility profile, not the Bedrock version
+// number and not a claim that Iris's native resource providers exist.
+static std::string optGlesCompatibilityHeader(){
+    return R"GLSL(#version 300 es
+#ifdef GL_EXT_shader_implicit_conversions
+#extension GL_EXT_shader_implicit_conversions : enable
+#endif
+precision highp float;
+precision highp int;
+precision highp sampler2DShadow;
+#ifndef MC_VERSION
+#define MC_VERSION 12100
+#endif
+#define optTexture2DLod(s,u,l) textureLod(s,u,float(l))
+#define optShadow2D(s,c) vec4(vec3(texture(s,c)),1.0)
+)GLSL";
+}
+
+// Desktop GLSL 120 allows global variables initialized from uniforms and
+// varyings. ES 300 requires constant global initializers. Preserve the
+// declaration scope and preprocessor conditions, but execute simple
+// non-const scalar/vector/matrix initializers in source order before main.
+// Complex declarations are deliberately left to the compiler.
+static std::string optTranslateGlobalInitializers(std::string const& source){
+    std::vector<std::string> lines,masked;
+    std::istringstream input(source);
+    std::string line;
+    bool comment=false;
+    while(std::getline(input,line)){
+        lines.push_back(line);
+        std::string mask=line;
+        for(size_t i=0;i<mask.size();++i){
+            if(comment){
+                if(i+1<mask.size()&&line[i]=='*'&&line[i+1]=='/'){
+                    mask[i]=mask[i+1]=' ';++i;comment=false;
+                }else mask[i]=' ';
+            }else if(i+1<mask.size()&&line[i]=='/'&&line[i+1]=='*'){
+                mask[i]=mask[i+1]=' ';++i;comment=true;
+            }else if(i+1<mask.size()&&line[i]=='/'&&line[i+1]=='/'){
+                mask.replace(i,mask.size()-i,mask.size()-i,' ');break;
+            }
+        }
+        masked.push_back(std::move(mask));
+    }
+    auto isAlpha=[](char c){return (c>='A'&&c<='Z')||(c>='a'&&c<='z')||c=='_';};
+    auto ident=[&](char c){return isAlpha(c)||(c>='0'&&c<='9');};
+    auto skip=[](std::string const& s,size_t& p){
+        while(p<s.size()&&(s[p]==' '||s[p]=='\t'||s[p]=='\r'))++p;
+    };
+    auto word=[&](std::string const& s,size_t& p){
+        skip(s,p);size_t a=p;
+        if(p<s.size()&&isAlpha(s[p])){
+            ++p;while(p<s.size()&&ident(s[p]))++p;
+        }
+        return s.substr(a,p-a);
+    };
+    static const std::set<std::string> types{
+        "float","int","uint","bool","vec2","vec3","vec4",
+        "ivec2","ivec3","ivec4","uvec2","uvec3","uvec4",
+        "bvec2","bvec3","bvec4","mat2","mat3","mat4",
+        "mat2x2","mat2x3","mat2x4","mat3x2","mat3x3","mat3x4",
+        "mat4x2","mat4x3","mat4x4"};
+    std::string body,calls;
+    unsigned count=0;
+    int depth=0;
+    std::vector<int> branchDepth;
+    bool continuation=false;
+    for(size_t i=0;i<lines.size();++i){
+        auto const& mask=masked[i];
+        size_t at=0;skip(mask,at);
+        if(continuation||(at<mask.size()&&mask[at]=='#')){
+            if(!continuation){
+                ++at;auto directive=word(mask,at);
+                if(directive=="if"||directive=="ifdef"||directive=="ifndef")
+                    branchDepth.push_back(depth);
+                else if((directive=="else"||directive=="elif")&&!branchDepth.empty())
+                    depth=branchDepth.back();
+                else if(directive=="endif"&&!branchDepth.empty())branchDepth.pop_back();
+            }
+            auto end=mask.find_last_not_of(" \t\r");
+            continuation=end!=std::string::npos&&mask[end]=='\\';
+            body+=lines[i]+"\n";continue;
+        }
+        if(depth==0&&count<512){
+            at=0;auto type=word(mask,at);
+            auto name=word(mask,at);skip(mask,at);
+            if(types.count(type)&&!name.empty()&&at<mask.size()&&mask[at]=='='&&
+               (at+1==mask.size()||mask[at+1]!='=')){
+                size_t start=at+1,j=i,end=std::string::npos;
+                int parentheses=0;
+                bool bad=false;
+                // The original shader contains multi-line expressions. Only
+                // consume a single complete declaration, never a later one.
+                for(;j<lines.size()&&j-i<128&&!bad;++j){
+                    auto const& part=masked[j];
+                    size_t q=j==i?start:0;
+                    size_t first=q;skip(part,first);
+                    if(first<part.size()&&part[first]=='#')continue;
+                    for(;q<part.size();++q){
+                        char c=part[q];
+                        if(c=='('||c=='[')++parentheses;
+                        else if(c==')'||c==']')--parentheses;
+                        else if(c=='{'||c=='}'||(c==','&&parentheses==0)){bad=true;break;}
+                        else if(c==';'&&parentheses==0){end=q;break;}
+                        if(parentheses<0){bad=true;break;}
+                    }
+                    if(end!=std::string::npos)break;
+                }
+                if(!bad&&j<lines.size()&&end!=std::string::npos&&
+                   masked[j].find_first_not_of(" \t\r",end+1)==std::string::npos){
+                    std::string expr;
+                    for(size_t k=i;k<=j;++k){
+                        size_t a=k==i?start:0;
+                        size_t b=k==j?end:lines[k].size();
+                        expr+=lines[k].substr(a,b-a);
+                        if(k!=j)expr+='\n';
+                    }
+                    auto id=std::to_string(count++);
+                    body+=type+" "+name+";\nvoid optGlobalInit"+id+"(){\n"+
+                          name+"="+expr+";\n}\n#define OPTLEVI_INIT_"+id+" 1\n";
+                    // Preserve trailing comments, including a multi-line
+                    // block comment that begins after the semicolon.
+                    body+=lines[j].substr(end+1)+"\n";
+                    calls+="#ifdef OPTLEVI_INIT_"+id+"\noptGlobalInit"+id+
+                           "();\n#endif\n";
+                    i=j;continue;
+                }
+            }
+        }
+        for(char c:mask){if(c=='{')++depth;else if(c=='}')--depth;}
+        body+=lines[i]+"\n";
+    }
+    if(!count)return source;
+    optReplaceIdentifier(body,"main","optLeviGlobalMain");
+    return body+"\nvoid main(){\n"+calls+"optLeviGlobalMain();\n}\n";
+}
+
+// Narrow compatibility profile for BSL's v10 desktop GLSL. GLES requires
+// explicit int-to-float conversion where desktop GLSL allows it. These
+// rules preserve the integer uniforms, loop counters and preprocessor
+// settings; they only change the known mixed-type arithmetic sites.
+// Unknown packs and unmatched expressions are left to the compiler.
+static std::string optTranslateBslNumeric(std::string source){
+    if(source.find("BSL Shaders v10 Series")==std::string::npos)return source;
+    static const std::pair<char const*,char const*> rules[]={
+        {"eyeBrightnessSmooth.y / 240.0","float(eyeBrightnessSmooth.y) / 240.0"},
+        {"isEyeInWater == 1.0","float(isEyeInWater) == 1.0"},
+        {"frameCounter * 0.618","float(frameCounter) * 0.618"},
+        {"exp2(i + dither)","exp2(float(i) + dither)"},
+        {"0.0512 / shadowMapResolution","0.0512 / float(shadowMapResolution)"},
+        {"noVignetteColor * RETRO_FILTER_DEPTH","noVignetteColor * float(RETRO_FILTER_DEPTH)"},
+        {"/ RETRO_FILTER_DEPTH","/ float(RETRO_FILTER_DEPTH)"},
+        {"testCoord.x > -2","testCoord.x > -2.0"},
+        {"testCoord.x < 3","testCoord.x < 3.0"},
+        {"testCoord.y > 0","testCoord.y > 0.0"},
+        {"testCoord.y < 1","testCoord.y < 1.0"},
+        {"1.0 - isEyeInWater","1.0 - float(isEyeInWater)"},
+        {"worldPos.y + cameraPosition.y - FOG_HEIGHT_Y","worldPos.y + cameraPosition.y - float(FOG_HEIGHT_Y)"},
+        {"CLOUD_DENSITY * 0.125","float(CLOUD_DENSITY) * 0.125"},
+        {"1.0 / samples","1.0 / float(samples)"},
+        {"* CLOUD_DENSITY * 0.5","* float(CLOUD_DENSITY) * 0.5"},
+        {"currentStep * CLOUD_THICKNESS","currentStep * float(CLOUD_THICKNESS)"},
+        {"float cloudThickness = CLOUD_THICKNESS","float cloudThickness = float(CLOUD_THICKNESS)"},
+        {"furthestPlane < 0","furthestPlane < 0.0"},
+        {"min(planeDifference / sampleLength, maxSamples) + 1","min(planeDifference / sampleLength, float(maxSamples)) + 1.0"},
+        {"(moonNormalX * moonNormalX + moonNormalY * moonNormalY) > 1","(moonNormalX * moonNormalX + moonNormalY * moonNormalY) > 1.0"},
+    };
+    auto token=[](char c){return (c>='a'&&c<='z')||(c>='A'&&c<='Z')||
+        (c>='0'&&c<='9')||c=='_'||c=='.';};
+    for(auto const& rule:rules){
+        std::string from=rule.first,to=rule.second;
+        size_t at=0;
+        while((at=source.find(from,at))!=std::string::npos){
+            size_t end=at+from.size();
+            // Do not turn an already-correct 0.0 into 0.0.0, or match
+            // an identifier prefix, a longer numeric literal, or a swizzle.
+            if((token(from.front())&&at&&token(source[at-1]))||
+               (token(from.back())&&end<source.size()&&token(source[end]))){
+                at=end;continue;
+            }
+            source.replace(at,from.size(),to);at+=to.size();
+        }
+    }
+    return source;
+}
+
+static std::string optTranslateFinal(std::string source,bool originalVertex=false) {
     // Translate desktop GLSL 120 directives to GLES3 without claiming full Iris.
     std::istringstream lines(source);
     std::string line,clean;
@@ -146,14 +335,797 @@ static std::string optTranslateFinal(std::string source) {
     source=std::move(clean);
     optReplaceAll(source,"texture2D(","texture(");
     optReplaceAll(source,"textureCube(","texture(");
-    optReplaceAll(source,"texture2DLod(","textureLod(");
+    optReplaceAll(source,"texture2DLod(","optTexture2DLod(");
+    optReplaceAll(source,"shadow2D(","optShadow2D(");
     optReplaceAll(source,"gl_FragColor","optFragColor");
     optReplaceAll(source,"gl_FragData[0]","optFragColor");
-    optReplaceAll(source,"gl_TexCoord[0]","vec4(vTexCoord,0.0,1.0)");
+    optReplaceAll(source,"gl_TexCoord[0]",originalVertex?"optLegacyTexCoord":"vec4(vTexCoord,0.0,1.0)");
     optReplaceAll(source,"varying ","in ");
-    return std::string("#version 300 es\n"
-        "precision highp float;\nprecision highp int;\n"
-        "layout(location=0) out vec4 optFragColor;\n") + source;
+    return optGlesCompatibilityHeader()+
+        "layout(location=0) out vec4 optFragColor;\n"+
+        (originalVertex?"in vec4 optLegacyTexCoord;\n":"")+
+        optTranslateGlobalInitializers(optTranslateBslNumeric(std::move(source)));
+}
+
+// RenderDragonShaderLoader's input mapping catalog distinguishes pipeline
+// roles (colortexN) from actual native attachments. A Java pass is not
+// permitted to invent scene attachments; the runtime checks reflected samplers
+// against the buffers produced by earlier passes.
+// Source order and target location follow Iris composite/DRAWBUFFERS rules.
+static bool optParseCompositeTargets(std::string const& source,
+                                     std::vector<unsigned>& targets,
+                                     std::string& error) {
+    // Only recognized comment directives are used. GLSL preprocessor-dependent
+    // directives are not silently guessed.
+    auto rt=source.find("RENDERTARGETS:");
+    auto db=source.find("DRAWBUFFERS:");
+    if(rt!=std::string::npos && db!=std::string::npos){
+        error="Both RENDERTARGETS and DRAWBUFFERS are present";return false;
+    }
+    size_t pos=rt!=std::string::npos?rt:db;
+    targets.clear();
+    if(pos==std::string::npos){targets.push_back(0);return true;}
+    bool modern=rt!=std::string::npos;
+    pos+=modern?14:12;
+    auto end=source.find_first_of("\r\n*",pos);
+    if(end==std::string::npos)end=source.size();
+    auto token=source.substr(pos,end-pos);
+    std::set<unsigned> used;
+    if(modern){
+        std::istringstream in(token);std::string item;
+        while(std::getline(in,item,',')){
+            auto first=item.find_first_not_of(" \t");
+            auto last=item.find_last_not_of(" \t");
+            if(first==std::string::npos || last-first>1){
+                error="Only explicit colortex0..15 render targets are supported";return false;
+            }
+            unsigned target=0;
+            for(size_t i=first;i<=last;++i){
+                if(item[i]<'0'||item[i]>'9'){error="Invalid render target";return false;}
+                target=target*10+unsigned(item[i]-'0');
+            }
+            if(target>=16){error="Only colortex0..15 render targets are supported";return false;}
+            if(!used.insert(target).second){error="Repeated render target";return false;}
+            targets.push_back(target);
+        }
+    } else {
+        for(char ch:token){
+            if(ch==' '||ch=='\t')continue;
+            if(ch<'0'||ch>'9'){error="Unsupported DRAWBUFFERS target";return false;}
+            auto target=unsigned(ch-'0');
+            if(!used.insert(target).second){error="Repeated render target";return false;}
+            targets.push_back(target);
+        }
+    }
+    if(targets.empty()){error="Empty render target directive";return false;}
+    return true;
+}
+
+static std::string optTranslateComposite(std::string source,size_t outputs,bool originalVertex=false) {
+    // optTranslateFinal handles legacy desktop syntax and removes #version.
+    // Introduce separate fragment outputs for locations 1..N, not aliases.
+    source=optTranslateFinal(std::move(source),originalVertex);
+    std::string extra;
+    for(size_t i=1;i<outputs;++i){
+        auto name="optFragColor"+std::to_string(i);
+        optReplaceAll(source,"gl_FragData["+std::to_string(i)+"]",name);
+        extra+="layout(location="+std::to_string(i)+") out vec4 "+name+";\n";
+    }
+    auto at=source.find("layout(location=0)");
+    if(at!=std::string::npos)source.insert(at,extra);
+    return source;
+}
+
+// Legacy fixed-function inputs for a Java fullscreen quad only. These are
+// screen-space coordinates, NOT fabricated Minecraft camera/geometry matrices.
+static void optReplaceIdentifier(std::string& source,std::string const& from,
+                                 std::string const& to) {
+    auto ident=[](char ch){return (ch>='a'&&ch<='z')||(ch>='A'&&ch<='Z')||
+                                  (ch>='0'&&ch<='9')||ch=='_';};
+    size_t pos=0;
+    while((pos=source.find(from,pos))!=std::string::npos){
+        size_t end=pos+from.size();
+        if((pos==0||!ident(source[pos-1]))&&(end==source.size()||!ident(source[end]))){
+            source.replace(pos,from.size(),to);pos+=to.size();
+        }else pos=end;
+    }
+}
+static std::string optTranslateFullscreenVertex(std::string source) {
+    std::istringstream input(source);
+    std::string line,clean;
+    while(std::getline(input,line)){
+        auto at=line.find_first_not_of(" \t\r");
+        if(at!=std::string::npos&&(line.compare(at,8,"#version")==0||
+           line.compare(at,36,"#extension GL_ARB_shader_texture_lod")==0)){
+            clean+='\n';continue;
+        }
+        clean+=line;clean+='\n';
+    }
+    optReplaceIdentifier(clean,"varying","out");
+    optReplaceIdentifier(clean,"attribute","in");
+    optReplaceAll(clean,"gl_TexCoord[0]","optLegacyTexCoord");
+    optReplaceAll(clean,"gl_TextureMatrix[0]","mat4(1.0)");
+    optReplaceIdentifier(clean,"gl_Vertex","optFullscreenPosition()");
+    optReplaceIdentifier(clean,"gl_MultiTexCoord0","optFullscreenPosition()");
+    optReplaceIdentifier(clean,"gl_ModelViewProjectionMatrix","optScreenProjection");
+    optReplaceIdentifier(clean,"gl_ProjectionMatrix","optScreenProjection");
+    optReplaceIdentifier(clean,"gl_ModelViewMatrix","mat4(1.0)");
+    optReplaceIdentifier(clean,"ftransform","optFullscreenTransform");
+    optReplaceAll(clean,"texture2D(","texture(");
+    optReplaceAll(clean,"texture2DLod(","optTexture2DLod(");
+    optReplaceAll(clean,"shadow2D(","optShadow2D(");
+    return optGlesCompatibilityHeader()+std::string(R"GLSL(out vec4 optLegacyTexCoord;
+const mat4 optScreenProjection=mat4(
+    2.0,0.0,0.0,0.0, 0.0,2.0,0.0,0.0,
+    0.0,0.0,1.0,0.0, -1.0,-1.0,0.0,1.0);
+vec4 optFullscreenPosition(){
+    const vec2 corners[6]=vec2[6](
+        vec2(0.0,0.0),vec2(1.0,0.0),vec2(1.0,1.0),
+        vec2(0.0,0.0),vec2(1.0,1.0),vec2(0.0,1.0));
+    return vec4(corners[gl_VertexID],0.0,1.0);
+}
+vec4 optFullscreenTransform(){return optScreenProjection*optFullscreenPosition();}
+)GLSL")+optTranslateGlobalInitializers(optTranslateBslNumeric(std::move(clean)));
+}
+
+// Preserve the original conditional branches around routing comments. Turn
+// each route into a macro assignment and emit only the selected output
+// declaration after the pack's source has been preprocessed by the GLES driver.
+static bool optTranslateRoutedComposite(std::string source,bool originalVertex,
+                                        std::string& translated,std::string& error,
+                                        std::string const& alphaCondition={}){
+    std::vector<std::vector<unsigned>> routes{{0}};
+    std::istringstream lines(source);
+    std::string line,body="#define OPTLEVI_DRAW_ROUTE 0\n";
+    size_t outputs=1;
+    while(std::getline(lines,line)){
+        auto first=line.find_first_not_of(" \t\r");
+        auto last=line.find_last_not_of(" \t\r");
+        bool route=false;
+        if(first!=std::string::npos&&line.compare(first,2,"/*")==0&&last>first+2&&
+           line.compare(last-1,2,"*/")==0){
+            auto start=line.find_first_not_of(" \t",first+2);
+            route=start!=std::string::npos&&
+                  (line.compare(start,12,"DRAWBUFFERS:")==0||
+                   line.compare(start,14,"RENDERTARGETS:")==0);
+        }
+        if(route){
+            std::vector<unsigned> targets;
+            if(!optParseCompositeTargets(line,targets,error))return false;
+            if(routes.size()>=64){error="Too many conditional render-target mappings";return false;}
+            outputs=std::max(outputs,targets.size());
+            body+="#undef OPTLEVI_DRAW_ROUTE\n#define OPTLEVI_DRAW_ROUTE "+
+                  std::to_string(routes.size())+"\n";
+            routes.push_back(std::move(targets));
+        }else{
+            body+=line;body+='\n';
+        }
+    }
+    // The pack writes temporary globals, not fixed hardware outputs. The
+    // wrapper copies them into the active, explicitly named output locations.
+    translated=optTranslateComposite(std::move(body),outputs,originalVertex);
+    optReplaceIdentifier(translated,"main","optLeviShaderMain");
+    auto temp=[](size_t i){return std::string("optFragColor")+(i?std::to_string(i):"");};
+    for(size_t i=0;i<outputs;++i){
+        auto name=temp(i);
+        optReplaceAll(translated,"layout(location="+std::to_string(i)+") out vec4 "+name+";",
+                      "vec4 "+name+";");
+    }
+    translated+='\n';
+    for(size_t i=0;i<routes.size();++i){
+        translated+=(i?"#elif ":"#if ");
+        translated+="OPTLEVI_DRAW_ROUTE == "+std::to_string(i)+"\n";
+        for(size_t slot=0;slot<routes[i].size();++slot)
+            translated+="layout(location="+std::to_string(slot)+") out vec4 optRouteTarget"+
+                        std::to_string(routes[i][slot])+";\n";
+        translated+="void main(){optLeviShaderMain();\n";
+        if(!alphaCondition.empty())translated+="if (!("+alphaCondition+")) discard;\n";
+        for(size_t slot=0;slot<routes[i].size();++slot)
+            translated+="optRouteTarget"+std::to_string(routes[i][slot])+"="+temp(slot)+";\n";
+        translated+="}\n";
+    }
+    translated+="#endif\n";
+    return true;
+}
+
+
+// Unlike fullscreen translation, geometry uses actual mapped VAO attributes,
+// native per-draw transforms and texture transforms. No screen-space vertex
+// synthesis or identity camera is permitted.
+static std::string optGeometryLegacyNames(std::string source){
+    optReplaceIdentifier(source,"texture","optGeometryAtlas");
+    optReplaceAll(source,"texture2DGradARB(","textureGrad(");
+    optReplaceAll(source,"texture2DLodARB(","optTexture2DLod(");
+    optReplaceAll(source,"texture2DProj(","textureProj(");
+    return source;
+}
+static std::string optTranslateGeometryVertex(std::string source){
+    std::istringstream input(source);std::string line,clean;
+    while(std::getline(input,line)){
+        auto at=line.find_first_not_of(" \t\r");
+        if(at!=std::string::npos&&(line.compare(at,8,"#version")==0||
+            line.compare(at,36,"#extension GL_ARB_shader_texture_lod")==0||
+            line.compare(at,41,"#extension GL_ARB_shader_image_load_store")==0)){
+            clean+='\n';continue;
+        }
+        clean+=line;clean+='\n';
+    }
+    clean=optGeometryLegacyNames(std::move(clean));
+    optReplaceIdentifier(clean,"varying","out");
+    optReplaceIdentifier(clean,"attribute","in");
+    optReplaceIdentifier(clean,"gl_Vertex","optGeometryPosition()");
+    optReplaceIdentifier(clean,"gl_Color","optColor");
+    optReplaceIdentifier(clean,"gl_Normal","optNormal");
+    optReplaceIdentifier(clean,"gl_MultiTexCoord0","optUV0");
+    optReplaceIdentifier(clean,"gl_MultiTexCoord1","optUV1");
+    optReplaceIdentifier(clean,"gl_ModelViewMatrix","optModelView");
+    optReplaceIdentifier(clean,"gl_ProjectionMatrix","optProjection");
+    optReplaceIdentifier(clean,"gl_ModelViewProjectionMatrix","optModelViewProjection");
+    optReplaceIdentifier(clean,"gl_NormalMatrix","optNormalMatrix");
+    optReplaceAll(clean,"gl_TextureMatrix[0]","optTextureMatrix0");
+    optReplaceAll(clean,"gl_TextureMatrix[1]","optTextureMatrix1");
+    optReplaceIdentifier(clean,"ftransform","optGeometryTransform");
+    optReplaceAll(clean,"texture2D(","texture(");
+    optReplaceAll(clean,"textureCube(","texture(");
+    optReplaceAll(clean,"texture2DLod(","optTexture2DLod(");
+    optReplaceAll(clean,"shadow2D(","optShadow2D(");
+    return optGlesCompatibilityHeader()+std::string(R"GLSL(
+in vec4 optPosition;
+in vec4 optColor;
+in vec3 optNormal;
+in vec4 optUV0;
+in vec4 optUV1;
+uniform mat4 optModelView;
+uniform mat4 optProjection;
+uniform mat4 optModelViewProjection;
+uniform mat3 optNormalMatrix;
+uniform mat4 optTextureMatrix0;
+uniform mat4 optTextureMatrix1;
+// For cached chunk-local meshes, restore camera-relative Java coordinates
+// before any pack vertex expression, not only the final MVP transform.
+uniform vec3 optTerrainOffset;
+vec4 optGeometryPosition(){return vec4(optPosition.xyz+optTerrainOffset,optPosition.w);}
+vec4 optGeometryTransform(){return optProjection*optModelView*optGeometryPosition();}
+)GLSL")+optTranslateGlobalInitializers(optTranslateBslNumeric(std::move(clean)));
+}
+// Iris/OptiFine alphaTest.<program> compares the first fragment
+// output's alpha before writing color OR depth. GLES has no fixed alpha test.
+static bool optAlphaCondition(std::string const& setting,std::string& condition,std::string& error){
+    condition.clear();
+    std::istringstream input(setting);std::string func,threshold,extra;
+    if(!(input>>func)){error="Empty alphaTest setting";return false;}
+    if(func=="off"||func=="OFF"){
+        if(input>>extra){error="Unexpected alphaTest off argument";return false;}
+        return true;
+    }
+    if(!(input>>threshold)||input>>extra){error="Expected alphaTest function and reference";return false;}
+    if(threshold.size()>32||threshold.empty()||
+       threshold.find_first_not_of("0123456789.+-eE")!=std::string::npos){
+        error="Invalid alphaTest reference";return false;
+    }
+    std::istringstream number(threshold);double ref=0;
+    if(!(number>>ref)||number>>extra||!(ref>=0&&ref<=1)){
+        error="Invalid alphaTest reference";return false;
+    }
+    if(threshold.find_first_of(".eE")==std::string::npos)threshold+=".0";
+    std::string op;
+    if(func=="NEVER"){condition="false";return true;}
+    if(func=="ALWAYS")return true;
+    if(func=="LESS")op="<";else if(func=="LEQUAL")op="<=";
+    else if(func=="EQUAL")op="==";else if(func=="NOTEQUAL")op="!=";
+    else if(func=="GEQUAL")op=">=";else if(func=="GREATER")op=">";
+    else{error="Unsupported alphaTest function: "+func;return false;}
+    condition="optFragColor.a "+op+" ("+threshold+")";return true;
+}
+static bool optTranslateGeometryFragment(std::string source,std::string& translated,std::string& error,
+                                        std::string const& alphaCondition={}){
+    source=optGeometryLegacyNames(std::move(source));
+    return optTranslateRoutedComposite(std::move(source),false,translated,error,alphaCondition);
+}
+
+// Use the driver preprocessor to resolve shader option flags in the same
+// expanded fragment source and Java profile. Only boolean option expressions
+// are supported; fail closed on other property expression syntax.
+static bool optBuildEnabledProbe(std::string const& source,std::string const& expression,
+                                 std::string& probe,std::string& error){
+    std::string condition;
+    // An absent property enables the pass; mipmap directives may still
+    // require metadata reflection even without a program.enabled rule.
+    if(expression.empty())condition="1";
+    auto alpha=[](char c){return (c>='a'&&c<='z')||(c>='A'&&c<='Z')||c=='_';};
+    auto digit=[](char c){return c>='0'&&c<='9';};
+    for(size_t i=0;i<expression.size();){
+        char c=expression[i];
+        if(c==' '||c=='\t'||c=='\r'){++i;continue;}
+        if(alpha(c)){
+            size_t begin=i++;
+            while(i<expression.size()&&(alpha(expression[i])||digit(expression[i])))++i;
+            auto name=expression.substr(begin,i-begin);
+            if(name=="true")condition+=" 1 ";
+            else if(name=="false")condition+=" 0 ";
+            else condition+=" defined("+name+") ";
+        }else if(c=='!'||c=='('||c==')'||c=='0'||c=='1'){
+            condition+=' ';condition+=c;condition+=' ';++i;
+        }else if((c=='&'||c=='|')&&i+1<expression.size()&&expression[i+1]==c){
+            condition+=' ';condition+=expression.substr(i,2);condition+=' ';i+=2;
+        }else{error="Unsupported program.enabled expression: "+expression;return false;}
+    }
+    if(condition.empty()||condition.size()>4096){error="Empty or oversized program.enabled expression";return false;}
+    // Strip comments before collecting directives, including continuation
+    // lines. No executable GLSL from a disabled program is compiled.
+    std::istringstream input(source);std::string line,body;
+    bool block=false,continuation=false,hasMipmap=false,hasHistory=false;
+    while(std::getline(input,line)){
+        for(size_t i=0;i<line.size();++i){
+            if(block){
+                if(i+1<line.size()&&line[i]=='*'&&line[i+1]=='/'){
+                    line[i]=line[i+1]=' ';++i;block=false;
+                }else line[i]=' ';
+            }else if(i+1<line.size()&&line[i]=='/'&&line[i+1]=='*'){
+                line[i]=line[i+1]=' ';++i;block=true;
+            }else if(i+1<line.size()&&line[i]=='/'&&line[i+1]=='/'){
+                line.resize(i);break;
+            }
+        }
+        auto first=line.find_first_not_of(" \t\r");
+        bool include=continuation;
+        if(!continuation&&first!=std::string::npos&&line[first]=='#'){
+            auto start=line.find_first_not_of(" \t",first+1);
+            if(start!=std::string::npos){
+                size_t end=start;
+                while(end<line.size()&&alpha(line[end]))++end;
+                auto word=line.substr(start,end-start);
+                include=word=="define"||word=="undef"||word=="if"||word=="ifdef"||
+                    word=="ifndef"||word=="elif"||word=="else"||word=="endif"||word=="error";
+            }
+        }
+        if(!include){
+            continuation=false;
+            // Iris/OptiFine pass-local constants control mip generation.
+            // Turn declarations into metadata macros in the same conditional
+            // branches; never activate constants hidden in comments.
+            std::string compact;
+            for(char c:line)if(c!=' '&&c!='\t'&&c!='\r')compact+=c;
+            for(unsigned n=0;n<16;++n){
+                std::string canonical="constboolcolortex"+std::to_string(n)+"MipmapEnabled=";
+                std::string legacy;
+                if(n<4){
+                    static const char* names[]={"gcolor","gdepth","gnormal","composite"};
+                    legacy=std::string("constbool")+names[n]+"MipmapEnabled=";
+                }else if(n<8)legacy="constboolgaux"+std::to_string(n-3)+"MipmapEnabled=";
+                std::string clearCanonical="constboolcolortex"+std::to_string(n)+"Clear=";
+                std::string clearLegacy=legacy;
+                if(!clearLegacy.empty())clearLegacy.replace(clearLegacy.size()-14,14,"Clear=");
+                bool keep=compact==clearCanonical+"false;"||(!clearLegacy.empty()&&compact==clearLegacy+"false;");
+                bool clear=compact==clearCanonical+"true;"||(!clearLegacy.empty()&&compact==clearLegacy+"true;");
+                if(keep||clear){
+                    hasHistory=true;
+                    std::string marker="OPTLEVI_HISTORY_"+std::to_string(n);
+                    body+="#undef "+marker+"\n";
+                    if(keep)body+="#define "+marker+" 1\n";
+                    break;
+                }
+                bool yes=compact==canonical+"true;"||(!legacy.empty()&&compact==legacy+"true;");
+                bool no=compact==canonical+"false;"||(!legacy.empty()&&compact==legacy+"false;");
+                if(yes||no){
+                    hasMipmap=true;
+                    std::string marker="OPTLEVI_MIP_INPUT_"+std::to_string(n);
+                    body+="#undef "+marker+"\n";
+                    if(yes)body+="#define "+marker+" 1\n";
+                    break;
+                }
+            }
+            continue;
+        }
+        auto last=line.find_last_not_of(" \t\r");
+        continuation=last!=std::string::npos&&line[last]=='\\';
+        body+=line+'\n';
+    }
+    if(block||continuation){error="Unterminated directive in program.enabled probe";return false;}
+    if(expression.empty()&&!hasMipmap&&!hasHistory){probe.clear();return true;}
+    std::string declarations,additions;
+    for(unsigned n=0;n<16;++n){
+        auto index=std::to_string(n);
+        auto guard="#ifdef OPTLEVI_MIP_INPUT_"+index+"\n";
+        declarations+=guard+"uniform float optMipInput"+index+";\n#endif\n";
+        additions+=guard+"value+=optMipInput"+index+";\n#endif\n";
+        guard="#ifdef OPTLEVI_HISTORY_"+index+"\n";
+        declarations+=guard+"uniform float optHistory"+index+";\n#endif\n";
+        additions+=guard+"value+=optHistory"+index+";\n#endif\n";
+    }
+    probe=optGlesCompatibilityHeader()+body+"\n#if "+condition+"\n"+declarations+
+        "layout(location=0) out vec4 optEnabledOutput;\nvoid main(){float value=1.0;\n"+
+        additions+"optEnabledOutput=vec4(value);}\n"
+        "#else\nlayout(location=0) out vec4 optDisabledOutput;\nvoid main(){optDisabledOutput=vec4(0.0);}\n#endif\n";
+    return true;
+}
+
+// Attachment format directives are metadata, including the conventional
+// block-comment form used by BSL. Preserve the declared precision rather
+// than silently reducing all intermediate images to RGBA8.
+static bool optReadColorFormats(std::string const& source,
+                                std::vector<std::pair<unsigned,std::string>>& formats,
+                                std::string& error){
+    std::istringstream input(source);
+    std::string line;
+    while(std::getline(input,line)){
+        auto comment=line.find("//");
+        if(comment!=std::string::npos)line.resize(comment);
+        std::string compact;
+        for(char c:line)if(c!=' '&&c!='\t'&&c!='\r')compact+=c;
+        if(compact.rfind("constint",0)!=0)continue;
+        auto eq=compact.find("Format=",8);
+        if(eq==std::string::npos||compact.empty()||compact.back()!=';')continue;
+        auto name=compact.substr(8,eq-8);
+        auto format=compact.substr(eq+7,compact.size()-eq-8);
+        int index=-1;
+        if(name.rfind("colortex",0)==0&&name.size()>8&&name.size()<=10){
+            unsigned n=0;bool valid=true;
+            for(size_t i=8;i<name.size();++i){
+                if(name[i]<'0'||name[i]>'9'){valid=false;break;}
+                n=n*10+unsigned(name[i]-'0');
+            }
+            if(valid&&n<16)index=int(n);
+        }else{
+            static char const* aliases[]={"gcolor","gdepth","gnormal","composite",
+                "gaux1","gaux2","gaux3","gaux4"};
+            for(unsigned i=0;i<8;++i)if(name==aliases[i])index=int(i);
+        }
+        // A declaration of an unused extra attachment is harmless. Actual
+        // references beyond the backend limit still reject at reflection.
+        if(index<0)continue;
+        bool valid=!format.empty()&&format.size()<=32;
+        for(char c:format)if(!((c>='A'&&c<='Z')||(c>='0'&&c<='9')||c=='_'))valid=false;
+        if(!valid){error="Malformed attachment format: "+name;return false;}
+        bool duplicate=false;
+        for(auto const& old:formats)if(old.first==unsigned(index)){
+            if(old.second!=format){
+                error="Conflicting attachment formats for colortex"+std::to_string(index);return false;
+            }
+            duplicate=true;break;
+        }
+        if(!duplicate)formats.emplace_back(unsigned(index),std::move(format));
+    }
+    return true;
+}
+
+// Decode only explicit pack-owned PNG resources. ZIP member reads are
+// separately bounded from shader source reads; decoded dimensions are
+// checked before allocation. No placeholder noise/geometry image is made.
+static bool optLoadCompositeTextures(
+    OptPackInfo const& pack,std::string const& properties,
+    std::vector<modmenu::android::shaderworld::PackTexture>& images,
+    std::string& error){
+    std::istringstream input(properties);
+    std::string line;
+    std::set<std::string> used;
+    size_t total=0;
+    auto trim=[](std::string const& s){
+        auto first=s.find_first_not_of(" \t\r");
+        if(first==std::string::npos)return std::string{};
+        return s.substr(first,s.find_last_not_of(" \t\r")-first+1);
+    };
+    while(std::getline(input,line)){
+        auto eq=line.find('=');
+        if(eq==std::string::npos)continue;
+        auto key=trim(line.substr(0,eq));
+        std::string sampler;
+        bool noise=key=="texture.noise";
+        if(noise)sampler="noisetex";
+        else if(key.rfind("texture.composite.",0)==0)
+            sampler=key.substr(std::string("texture.composite.").size());
+        else continue;
+        auto path=trim(line.substr(eq+1));
+        bool valid=!sampler.empty()&&sampler.size()<64;
+        for(char c:sampler)if(!((c>='a'&&c<='z')||(c>='A'&&c<='Z')||
+                                  (c>='0'&&c<='9')||c=='_'))valid=false;
+        if(!valid||!used.insert(sampler).second||images.size()>=8||
+           path.empty()||path[0]=='/'||!optEnds(optLower(path),".png")){
+            error="Unsupported composite texture property: "+key;return false;
+        }
+        std::string bytes;
+        if(!optReadJavaMember(pack,"shaders/"+path,bytes,4*1024*1024)){
+            error="Cannot read pack texture: "+path;return false;
+        }
+        auto* raw=reinterpret_cast<unsigned char const*>(bytes.data());
+        int width=0,height=0,channels=0;
+        if(!stbi_info_from_memory(raw,int(bytes.size()),&width,&height,&channels)||
+           width<=0||height<=0||width>2048||height>2048||
+           std::uint64_t(width)*height*4+total>16ull*1024*1024){
+            error="Invalid or oversized pack PNG: "+path;return false;
+        }
+        auto* pixels=stbi_load_from_memory(raw,int(bytes.size()),&width,&height,&channels,4);
+        if(!pixels){error="Cannot decode pack PNG: "+path;return false;}
+        size_t size=size_t(width)*height*4;
+        modmenu::android::shaderworld::PackTexture image;
+        image.sampler=std::move(sampler);image.width=width;image.height=height;
+        image.nearest=noise;
+        image.rgba.assign(pixels,pixels+size);
+        stbi_image_free(pixels);
+        total+=size;images.push_back(std::move(image));
+    }
+    return true;
+}
+
+// Read the explicit literal orthographic shadow directives used by BSL.
+// Unknown expressions/conflicting declarations leave automatic camera off.
+static bool optReadShadowSettings(std::string const& source,
+                                  modmenu::android::shaderbridge::camera::ShadowSettings& settings){
+    std::istringstream input(source);std::string line;
+    std::map<std::string,double> seen;
+    bool block=false;
+    while(std::getline(input,line)){
+        std::string code;
+        for(size_t i=0;i<line.size();++i){
+            if(block){if(i+1<line.size()&&line.compare(i,2,"*/")==0){block=false;++i;}continue;}
+            if(i+1<line.size()&&line.compare(i,2,"//")==0)break;
+            if(i+1<line.size()&&line.compare(i,2,"/*")==0){block=true;++i;continue;}
+            code+=line[i];
+        }
+        auto at=code.find_first_not_of(" \t\r");
+        if(at==std::string::npos||code.compare(at,6,"const ")!=0)continue;
+        auto eq=code.find('=',at),end=code.find(';',at);
+        if(eq==std::string::npos||end==std::string::npos||end<eq)continue;
+        std::istringstream decl(code.substr(at,eq-at));std::string qualifier,type,key,extra;
+        if(!(decl>>qualifier>>type>>key)||decl>>extra)continue;
+        if(key=="shadowMapFov")return false;
+        if(key!="shadowMapResolution"&&key!="shadowDistance"&&key!="shadowNearPlane"&&
+           key!="shadowFarPlane"&&key!="shadowIntervalSize"&&key!="sunPathRotation")continue;
+        std::istringstream value(code.substr(eq+1,end-eq-1));double n=0;
+        if(!(value>>n)||value>>extra||!std::isfinite(n))return false;
+        auto old=seen.find(key);if(old!=seen.end()&&old->second!=n)return false;
+        seen[key]=n;
+        if(key=="shadowMapResolution"){
+            if(type!="int"||n<16||n>8192||std::floor(n)!=n)return false;
+            settings.resolution=int(n);
+        }else{
+            if(type!="float")return false;
+            if(key=="shadowDistance")settings.distance=float(n);
+            else if(key=="shadowNearPlane")settings.nearPlane=float(n);
+            else if(key=="shadowFarPlane")settings.farPlane=float(n);
+            else if(key=="shadowIntervalSize")settings.interval=float(n);
+            else if(key=="sunPathRotation")settings.rotation=float(n);
+        }
+    }
+    return modmenu::android::shaderbridge::camera::validShadowSettings(settings);
+}
+
+static bool optReadJavaProfiles(OptPackInfo const& pack,std::vector<std::string>& names,std::string& error){
+    using namespace modmenu::android::shaderworld;
+    std::string properties;profiles::Definitions definitions;
+    names.clear();
+    if(!optReadJavaMember(pack,"shaders/shaders.properties",properties))return true;
+    if(!profiles::read(properties,definitions,error))return false;
+    for(auto const& entry:definitions)names.push_back(entry.first);
+    return true;
+}
+static bool optBuildJavaPipeline(
+    OptPackInfo const& pack,
+    std::vector<modmenu::android::shaderworld::Pass>& passes,
+    std::string& error,std::string const& profile={}) {
+    using modmenu::android::shaderworld::Pass;
+    OptJavaArchiveScope archiveScope;
+    passes.clear();
+    gOptJavaSourceError.clear();
+    // An Iris shader can include arbitrary geometry stages. We implement
+    // the post-render composite subset only. Do not claim a G-buffer
+    // pipeline merely because some post passes happen to compile.
+    // Prefer dimension-specific programs, then the root program.
+    // Do not select Nether or End while using the Overworld adapter.
+    auto resolve=[&](std::string const& name,std::string& member,std::string& raw){
+        for(auto const& prefix:{std::string("shaders/world0/"),std::string("shaders/")}){
+            auto candidate=prefix+name+".fsh";
+            if(optReadJavaMember(pack,candidate,raw)){
+                member=std::move(candidate);return true;
+            }
+        }
+        return false;
+    };
+    // Buffer flip overrides, program scales and per-buffer dimensions require
+    // distinct semantics. Reject those rather than presenting an invalid graph.
+    std::string properties;
+    std::vector<std::pair<std::string,std::string>> enabledRules,alphaRules;
+    std::vector<modmenu::android::shaderworld::BufferScale> scales;
+    bool nativeTerrainPhase=false;
+    if(optReadJavaMember(pack,"shaders/shaders.properties",properties)){
+        std::istringstream input(properties);std::string line;
+        while(std::getline(input,line)){
+            auto at=line.find_first_not_of(" \t\r");
+            if(at==std::string::npos||line[at]=='#')continue;
+            auto eq=line.find('=',at);
+            if(eq!=std::string::npos){
+                auto last=line.find_last_not_of(" \t\r",eq-1);
+                auto key=line.substr(at,last-at+1);
+                if(key=="optlevi.nativeTerrainPhase"){
+                    std::istringstream value(line.substr(eq+1));std::string mode,extra;
+                    if(!(value>>mode)||mode!="true"||value>>extra){error="Invalid native terrain phase property";return false;}
+                    nativeTerrainPhase=true;continue;
+                }
+                if(key.rfind("size.buffer.colortex",0)==0){
+                    auto suffix=key.substr(std::string("size.buffer.colortex").size());
+                    unsigned index=0;bool valid=!suffix.empty();
+                    for(char c:suffix)if(c>='0'&&c<='9')index=index*10+unsigned(c-'0');
+                    else valid=false;
+                    if(!valid||index==0||index>=16){error="Invalid Java buffer size target: "+key;return false;}
+                    std::istringstream value(line.substr(eq+1));float w=0,h=0;std::string extra;
+                    if(!(value>>w>>h)||value>>extra||!std::isfinite(w)||!std::isfinite(h)||
+                       w<0.125f||w>1.0f||h<0.125f||h>1.0f){
+                        error="Unsupported Java buffer scale: "+key;return false;
+                    }
+                    if(std::any_of(scales.begin(),scales.end(),[&](auto const& s){return s.index==index;})){
+                        error="Duplicate Java buffer scale: "+key;return false;
+                    }
+                    scales.push_back({index,w,h});continue;
+                }
+                if(key.rfind("alphaTest.",0)==0){
+                    alphaRules.emplace_back(key.substr(10),line.substr(eq+1));continue;
+                }
+                if(key.rfind("program.",0)==0&&optEnds(key,".enabled")){
+                    enabledRules.emplace_back(key,line.substr(eq+1));
+                    continue;
+                }
+            }
+            for(auto const* prefix:{"flip.","scale.composite",
+                                    "blend.composite","program.composite","program.world0.composite",
+                                    "scale.deferred","blend.deferred","program.deferred","program.world0/deferred"}){
+                if(line.compare(at,std::strlen(prefix),prefix)==0){
+                    error="Unsupported Java pipeline property: "+line.substr(at,120);
+                    return false;
+                }
+            }
+        }
+    }
+    modmenu::android::shaderworld::profiles::Definitions definitions;
+    modmenu::android::shaderworld::profiles::Settings settings;
+    std::set<std::string> applied;
+    if(!profile.empty()&&(!modmenu::android::shaderworld::profiles::read(properties,definitions,error)||
+        !modmenu::android::shaderworld::profiles::resolve(definitions,profile,settings,error)))return false;
+    auto applyProfile=[&](std::string& source){
+        return modmenu::android::shaderworld::profiles::apply(source,settings,applied,error);
+    };
+    std::vector<modmenu::android::shaderworld::custom::Rule> calculated;
+    if(!modmenu::android::shaderworld::custom::parse(properties,calculated,error))return false;
+    size_t total=0;
+    std::vector<std::pair<unsigned,std::string>> colorFormats;
+    auto append=[&](std::string const& name,bool finalPass)->bool {
+        std::string member,raw;
+        if(!resolve(name,member,raw)){
+            if(finalPass){error="Missing Overworld final.fsh";return false;}
+            return true;
+        }
+        std::string expanded;std::set<std::string> stack;size_t bytes=0;
+        if(!optExpandJavaMember(pack,member,expanded,stack,bytes,0)){
+            error=gOptJavaSourceError;return false;
+        }
+        if(!applyProfile(expanded)){error=member+": "+error;return false;}
+        if(!optReadColorFormats(expanded,colorFormats,error)){error=member+": "+error;return false;}
+        std::string expression,probe;
+        bool hasRule=false;
+        // Dimension-specific properties override root defaults.
+        for(auto const& rule:enabledRules)
+            if(rule.first=="program."+name+".enabled"){expression=rule.second;hasRule=true;}
+        for(auto const& rule:enabledRules)
+            if(rule.first=="program.world0/"+name+".enabled"){expression=rule.second;hasRule=true;}
+        if(hasRule&&finalPass){error="Conditional final pass is not supported";return false;}
+        if(hasRule&&expression.find_first_not_of(" \t\r")==std::string::npos){
+            error=member+": empty program.enabled expression";return false;
+        }
+        if(!optBuildEnabledProbe(expanded,expression,probe,error)){
+            error=member+": "+error;return false;
+        }
+        // Static fallback target for final/diagnostic passes. Composite
+        // targets are reflected after the driver evaluates conditional GLSL.
+        std::vector<unsigned> targets{0};
+        // Resolve the vertex companion from the SAME dimension/program as
+        // the fragment. Its include tree is independent, as in Java.
+        std::string vertexMember=member.substr(0,member.size()-4)+".vsh";
+        std::string vertexRaw,vertex;
+        if(optReadJavaMember(pack,vertexMember,vertexRaw)){
+            std::string vertexExpanded;
+            std::set<std::string> vertexStack;size_t vertexBytes=0;
+            if(!optExpandJavaMember(pack,vertexMember,vertexExpanded,vertexStack,vertexBytes,0)){
+                error=gOptJavaSourceError;return false;
+            }
+            if(!applyProfile(vertexExpanded)){error=vertexMember+": "+error;return false;}
+            if(!optReadColorFormats(vertexExpanded,colorFormats,error)){error=vertexMember+": "+error;return false;}
+            vertex=optTranslateFullscreenVertex(std::move(vertexExpanded));
+        }
+        std::string translated;
+        if(finalPass)translated=optTranslateComposite(std::move(expanded),1,!vertex.empty());
+        else if(!optTranslateRoutedComposite(std::move(expanded),!vertex.empty(),translated,error)){
+            error=member+": "+error;return false;
+        }
+        total+=translated.size()+vertex.size()+probe.size();
+        if(total>4*1024*1024 || passes.size()>=24){
+            error="Java composite graph exceeds source/pass budget";return false;
+        }
+        passes.push_back(Pass{member,std::move(translated),std::move(targets),finalPass,std::move(vertex),!finalPass});
+        passes.back().enabledProbe=std::move(probe);
+        passes.back().deferred=name.rfind("deferred",0)==0;
+        return true;
+    };
+    // Deferred passes run at an explicit opaque-stage marker. The remaining
+    // composite passes run after translucent rendering.
+    if(!append("deferred",false))return false;
+    for(unsigned i=1;i<=15;++i)
+        if(!append("deferred"+std::to_string(i),false))return false;
+    if(!append("composite",false))return false;
+    for(unsigned i=1;i<=22;++i)
+        if(!append("composite"+std::to_string(i),false))return false;
+    if(!append("final",true))return false;
+    // Geometry and shadow are separate linked programs, not fullscreen
+    // passes. Load actual original vertex/fragment pairs for the adapter.
+    // Their active attributes and uniform resources will be reflected on
+    // the render thread. The existing combined source budget also covers them.
+    for(auto const* name:{"gbuffers_basic","gbuffers_textured","gbuffers_terrain",
+        "gbuffers_water","gbuffers_entities","gbuffers_entities_translucent",
+        "gbuffers_block","gbuffers_hand","gbuffers_hand_water","gbuffers_skybasic",
+        "gbuffers_skytextured","gbuffers_clouds","gbuffers_weather",
+        "gbuffers_armor_glint","gbuffers_beaconbeam","gbuffers_damagedblock",
+        "gbuffers_entities_glowing","gbuffers_spidereyes","shadow","shadow_solid",
+        "shadow_cutout","shadow_water","shadow_entities"}){
+        std::string member,raw;
+        if(!resolve(name,member,raw))continue;
+        std::string fragmentSource,vertexSource;
+        std::set<std::string> stack;size_t bytes=0;
+        if(!optExpandJavaMember(pack,member,fragmentSource,stack,bytes,0)){
+            error=gOptJavaSourceError;return false;
+        }
+        auto vertexMember=member.substr(0,member.size()-4)+".vsh";
+        stack.clear();bytes=0;
+        if(!optExpandJavaMember(pack,vertexMember,vertexSource,stack,bytes,0)){
+            error=vertexMember+": "+gOptJavaSourceError;return false;
+        }
+        if(!applyProfile(vertexSource)||!applyProfile(fragmentSource)){error=member+": "+error;return false;}
+        modmenu::android::shaderworld::GeometryProgram program;
+        program.name=name;program.shadow=program.name.rfind("shadow",0)==0;
+        if(program.name=="shadow"){
+            modmenu::android::shaderbridge::camera::ShadowSettings config;
+            if(optReadShadowSettings(vertexSource,config))passes.front().shadowSettings=config;
+        }
+        std::string expression,alpha,condition;
+        bool hasRule=false,hasAlpha=false;
+        for(auto const& rule:enabledRules)if(rule.first=="program."+program.name+".enabled"){expression=rule.second;hasRule=true;}
+        for(auto const& rule:enabledRules)if(rule.first=="program.world0/"+program.name+".enabled"){expression=rule.second;hasRule=true;}
+        if(hasRule){
+            if(expression.find_first_not_of(" \t\r")==std::string::npos){
+                error=member+": empty program.enabled expression";return false;
+            }
+            if(!optBuildEnabledProbe(fragmentSource,expression,program.enabledProbe,error)){
+                error=member+": "+error;return false;
+            }
+        }
+        for(auto const& rule:alphaRules)if(rule.first==program.name){alpha=rule.second;hasAlpha=true;}
+        for(auto const& rule:alphaRules)if(rule.first=="world0/"+program.name){alpha=rule.second;hasAlpha=true;}
+        if(hasAlpha&&!optAlphaCondition(alpha,condition,error)){error=member+": "+error;return false;}
+        program.vertex=optTranslateGeometryVertex(std::move(vertexSource));
+        if(!optTranslateGeometryFragment(std::move(fragmentSource),program.fragment,error,condition)){
+            error=member+": "+error;return false;
+        }
+        total+=program.vertex.size()+program.fragment.size()+program.enabledProbe.size();
+        if(total>12*1024*1024){error="Java geometry source budget exceeded";return false;}
+        passes.front().geometryPrograms.push_back(std::move(program));
+    }
+    for(auto const& entry:settings)if(!applied.count(entry.first)){
+        error="Profile option not found in selected programs: "+entry.first;return false;
+    }
+    std::string blockProperties;
+    if(optReadJavaMember(pack,"shaders/block.properties",blockProperties)){
+        if(!modmenu::android::shaderworld::mesh::parseBlockRules(blockProperties,passes.front().blockRules,error)){
+            error="block.properties: "+error;return false;
+        }
+    }
+    passes.front().colorFormats=std::move(colorFormats);
+    passes.front().bufferScales=std::move(scales);
+    passes.front().nativeTerrainPhase=nativeTerrainPhase;
+    if(nativeTerrainPhase&&(!passes.front().geometryPrograms.empty()||std::any_of(passes.begin(),passes.end(),[](auto const& p){return p.deferred;}))){
+        error="Native terrain phase is only available to explicit fullscreen terrain effects";return false;
+    }
+    passes.front().customUniforms=std::move(calculated);
+    if(!optLoadCompositeTextures(pack,properties,passes.front().packTextures,error)){
+        passes.clear();return false;
+    }
+    return !passes.empty();
 }
 
 static GLuint optCompile(GLenum kind,std::string const& code,std::string& report) {

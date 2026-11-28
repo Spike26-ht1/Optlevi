@@ -131,5 +131,109 @@ with TemporaryDirectory() as d:
     r = subprocess.run([str(exe), str(tmp / "cycle.zip"), "zip"], capture_output=True, text=True)
     assert r.returncode == 3 and "depth/cycle" in r.stderr
 
+# Exercise the actual C++ translation helpers from the renderer include,
+# without requiring Android or copying copyrighted shader pack contents.
+with TemporaryDirectory() as d:
+    tmp = Path(d)
+    code = (ROOT / "src/ui/OptLeviShaderGlesTest.inc").read_text()
+    begin = code.index("static void optReplaceAll(")
+    end = code.index("static bool optLoadCompositeTextures(")
+    (tmp / "translate.inc").write_text(code[begin:end])
+    (tmp / "translate.cpp").write_text(r'''
+#include <algorithm>
+#include <cassert>
+#include <set>
+#include <sstream>
+#include <string>
+#include <vector>
+#include <iostream>
+#include "translate.inc"
+int main(){
+    std::string legacy=R"(#version 120
+#define FEATURE 1
+uniform float frameTime;
+float a = frameTime * 2.0;
+#if FEATURE
+float b = a + 1.0;
+#else
+float b = a + 2.0;
+#endif
+vec2 c = vec2(
+    a, b);
+void main(){
+  float local = 1.0;
+  /*DRAWBUFFERS:01*/
+  gl_FragData[0] = vec4(c,local,1.0);
+  gl_FragData[1] = vec4(1.0);
+}
+)";
+    std::string fragment,error;
+    assert(optTranslateRoutedComposite(legacy,false,fragment,error));
+    assert(fragment.find("#define MC_VERSION 12100")!=std::string::npos);
+    assert(fragment.find("float a;")!=std::string::npos);
+    assert(fragment.find("a= frameTime * 2.0;")!=std::string::npos);
+    assert(fragment.find("float local = 1.0;")!=std::string::npos);
+    assert(fragment.find("optGlobalInit0();")<fragment.find("optGlobalInit1();"));
+    assert(fragment.find("optRouteTarget1")!=std::string::npos);
+    auto vertex=optTranslateFullscreenVertex("#version 120\nvarying vec2 uv;\nvoid main(){uv=gl_MultiTexCoord0.xy;gl_Position=ftransform();}\n");
+    assert(vertex.find("optFullscreenPosition().xy")!=std::string::npos);
+    std::string probe;
+    assert(optBuildEnabledProbe("#define TAA\n/* #define RETRO_FILTER */\n// #define DOF\n", "TAA && !RETRO_FILTER",probe,error));
+    assert(probe.find("defined(TAA)")!=std::string::npos);
+    assert(probe.find("#define RETRO_FILTER")==std::string::npos);
+    assert(probe.find("#define DOF")==std::string::npos);
+    assert(!optBuildEnabledProbe("","TAA; bad",probe,error));
+    assert(optBuildEnabledProbe("#ifdef AUTO_EXPOSURE\nconst bool colortex0MipmapEnabled = true;\n#endif\n/* const bool colortex1MipmapEnabled = true; */\n","",probe,error));
+    assert(probe.find("#ifdef AUTO_EXPOSURE\n#undef OPTLEVI_MIP_INPUT_0\n#define OPTLEVI_MIP_INPUT_0 1\n#endif")!=std::string::npos);
+    assert(probe.find("#define OPTLEVI_MIP_INPUT_1 1")==std::string::npos);
+    assert(optBuildEnabledProbe("void main(){}","",probe,error)&&probe.empty());
+    assert(optBuildEnabledProbe("const bool colortex2Clear = false;\nconst bool gaux1Clear = false;\n","",probe,error));
+    assert(probe.find("#define OPTLEVI_HISTORY_2 1")!=std::string::npos);
+    assert(probe.find("#define OPTLEVI_HISTORY_4 1")!=std::string::npos);
+    assert(optBuildEnabledProbe("// const bool colortex3Clear = false;\n","",probe,error)&&probe.empty());
+    auto numeric=optTranslateBslNumeric(
+        "// BSL Shaders v10 Series\n"
+        "float light=eyeBrightnessSmooth.y / 240.0;\n"
+        "if(testCoord.y > 0 && testCoord.y < 1.0){}\n"
+        "float value=1.0 / samples;\n");
+    assert(numeric.find("float(eyeBrightnessSmooth.y) / 240.0")!=std::string::npos);
+    assert(numeric.find("testCoord.y > 0.0 && testCoord.y < 1.0")!=std::string::npos);
+    assert(numeric.find("1.0.0")==std::string::npos);
+    assert(numeric.find("1.0 / float(samples)")!=std::string::npos);
+    assert(optTranslateBslNumeric("1.0 / samples")=="1.0 / samples");
+    auto geometry=optTranslateGeometryVertex("#version 120\nattribute vec4 mc_Entity;\nvarying vec4 color;\nvoid main(){color=gl_Color;gl_Position=ftransform();}\n");
+    assert(geometry.find("in vec4 optPosition;")!=std::string::npos);
+    assert(geometry.find("in vec4 mc_Entity;")!=std::string::npos);
+    assert(geometry.find("gl_VertexID")==std::string::npos);
+    assert(geometry.find("optGeometryTransform()")!=std::string::npos);
+    assert(geometry.find("uniform vec3 optTerrainOffset;")!=std::string::npos);
+    auto directGeometry=optTranslateGeometryVertex("#version 120\nvoid main(){gl_Position=gl_ModelViewProjectionMatrix*gl_Vertex;}\n");
+    assert(directGeometry.find("optModelViewProjection*optGeometryPosition()")!=std::string::npos);
+    std::string geometryFragment;
+    assert(optTranslateGeometryFragment("#version 120\nuniform sampler2D texture;\nvoid main(){\n/* DRAWBUFFERS:13 */\ngl_FragData[0]=texture2D(texture,vec2(0.5));gl_FragData[1]=vec4(1.0);\n}\n",geometryFragment,error));
+    assert(geometryFragment.find("uniform sampler2D optGeometryAtlas;")!=std::string::npos);
+    assert(geometryFragment.find("texture(optGeometryAtlas,")!=std::string::npos);
+    assert(geometryFragment.find("optRouteTarget3")!=std::string::npos);
+    std::string alpha;
+    assert(optAlphaCondition("GREATER 0.005",alpha,error));
+    assert(alpha=="optFragColor.a > (0.005)");
+    assert(optTranslateGeometryFragment("#version 120\nvoid main(){gl_FragData[0]=vec4(1.0);}\n",geometryFragment,error,alpha));
+    assert(geometryFragment.find("if (!(optFragColor.a > (0.005))) discard;")!=std::string::npos);
+    assert(optAlphaCondition("off",alpha,error)&&alpha.empty());
+    assert(optAlphaCondition("NEVER 0",alpha,error)&&alpha=="false");
+    assert(!optAlphaCondition("GREATER 2",alpha,error));
+    std::vector<std::pair<unsigned,std::string>> formats;
+    assert(optReadColorFormats("/*\nconst int colortex0Format = R11F_G11F_B10F; // HDR\nconst int gaux3Format = RGBA16;\n*/\n// const int colortex1Format = R8;\n",formats,error));
+    assert(formats.size()==2&&formats[0].first==0&&formats[0].second=="R11F_G11F_B10F");
+    assert(formats[1].first==6&&formats[1].second=="RGBA16");
+    assert(!optReadColorFormats("const int colortex0Format = RGBA8;\n",formats,error));
+    std::cout << "Original vertex, global initializers and conditional route translation: OK\n";
+}
+''')
+    exe = tmp / "translate"
+    subprocess.run(["c++", "-std=c++17", "-O0", str(tmp / "translate.cpp"),
+                    "-o", str(exe)], check=True)
+    subprocess.run([str(exe)], check=True)
+
 print("Java pack C++ reader: ZIP / folder / nested includes / dimensions / safety checks OK")
 print("A real BSL final pass still needs a GLES driver/device test and multi-pass scene inputs.")

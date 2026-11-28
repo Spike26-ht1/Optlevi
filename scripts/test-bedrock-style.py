@@ -4,10 +4,10 @@ import json
 from pathlib import Path
 
 root=Path(__file__).resolve().parents[1]
-screen=(root/"ModMenuBE/src/ui/OptLeviFabricScreen.inc").read_text()
-native=(root/"ModMenuBE/src/ui/ModMenuScreen.cpp").read_text()
+screen=(root/"build/native-template/src/ui/OptLeviFabricScreen.inc").read_text()
+native=(root/"build/native-template/src/ui/ModMenuScreen.cpp").read_text()
 resource=json.loads((root/"resources/levi_api/manifest.json").read_text())
-assert resource["header"]["version"] == [0,12,0]
+assert resource["header"]["version"] == [0,13,0]
 assert native.count("drawOptLeviFabricScreen(display);") == 1
 for required in (
   "kBedrockButtonFace = 0xC6C6C6",
@@ -37,7 +37,7 @@ assert screen.count("ImGui::PushStyleColor(ImGuiCol_ScrollbarBg,")==1
 assert screen.count("ImGui::PopStyleColor(4);")==1
 assert "const" in screen
 assert 'ore::panel(' not in screen
-assert "ButtonBuilder" not in (root/"ModMenuBE/android/src/Entry.cpp").read_text()
+assert "ButtonBuilder" not in (root/"build/native-template/android/src/Entry.cpp").read_text()
 ui=json.loads((root/"resources/levi_api/ui/pause_screen.json").read_text())
 assert ui["optlevi_pause_mods_button@common_buttons.light_text_button"]["size"] == [22,24]
 assert ui["optlevi_shaders_button@pause.pause_button_template"]["$button_text"] == "optlevi.shaders.button"

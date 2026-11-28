@@ -18,6 +18,7 @@ on:
       - feature/java-final-world-test-v10
       - feature/bsl-final-preprocessor-v11
       - fix/shader-import-lifecycle-v12
+      - feature/java-composite-pipeline-v13
     paths:
       - "scripts/prepare-optlevi.py"
       - "scripts/prepare-levi-api.py"
@@ -33,6 +34,7 @@ on:
       - "scripts/prepare-iris-import.py"
       - "scripts/prepare-java-world-test.py"
       - "scripts/test-java-world-test.py"
+      - "tests/java-composite-gles.cpp"
       - "src/android/ShaderWorldRuntime.*"
       - "src/android/ShaderImportBridge.*"
       - "src/ui/OptLeviShaderGlesTest.inc"
@@ -50,8 +52,13 @@ on:
       - "scripts/test-optlevi-touch.py"
       - "scripts/test-optlevi-pause-ui.py"
       - "docs/ui-research-log.md"
+      - "shaderpacks/**"
+      - "scripts/build-lab-shaders.py"
+      - "scripts/test-lab-shaders.py"
+      - "tests/lab-shaders-gles.cpp"
       - ".github/workflows/optlevi-android.yml"
-      - "patches/modmenube/**"
+      - "native-template/**"
+      - ".gitmodules"
   pull_request:
     paths:
       - "scripts/prepare-optlevi.py"
@@ -65,8 +72,13 @@ on:
       - "resources/levi_api/**"
       - "assets/**"
       - "scripts/package-optlevi.py"
+      - "shaderpacks/**"
+      - "scripts/build-lab-shaders.py"
+      - "scripts/test-lab-shaders.py"
+      - "tests/lab-shaders-gles.cpp"
       - ".github/workflows/optlevi-android.yml"
-      - "patches/modmenube/**"
+      - "native-template/**"
+      - ".gitmodules"
   workflow_dispatch:
 
 permissions:
@@ -76,10 +88,15 @@ jobs:
   optlevi-arm64:
     runs-on: ubuntu-24.04
     steps:
-      - name: Checkout OptLevi and upstream submodules
+      - name: Checkout OptLevi and launcher SDK
         uses: actions/checkout@v4
         with:
           submodules: recursive
+
+      - name: Test bounded renderer diagnostic journal
+        run: |
+          c++ -std=c++17 -pthread -Isrc/android tests/shader-diagnostics.cpp -o /tmp/optlevi-diagnostics
+          /tmp/optlevi-diagnostics
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
@@ -89,12 +106,7 @@ jobs:
       - name: Install NDK
         run: sdkmanager --install "ndk;28.2.13676358"
 
-      - name: Apply verified LeviLauncher compatibility patch
-        run: |
-          git -C ModMenuBE apply --check "$GITHUB_WORKSPACE/patches/modmenube/0001-align-current-levilauncher.patch"
-          git -C ModMenuBE apply "$GITHUB_WORKSPACE/patches/modmenube/0001-align-current-levilauncher.patch"
-
-      - name: Apply OptLevi native mod branding
+      - name: Stage OptLevi native template
         run: python3 scripts/prepare-optlevi.py
 
       - name: Replace floating launcher button with Levi API resource UI
@@ -112,8 +124,8 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
           import json
-          screen = Path("ModMenuBE/src/ui/ModMenuScreen.cpp").read_text()
-          widgets = Path("ModMenuBE/src/ui/OreTheme.cpp").read_text()
+          screen = Path("build/native-template/src/ui/ModMenuScreen.cpp").read_text()
+          widgets = Path("build/native-template/src/ui/OreTheme.cpp").read_text()
           pause = Path("resources/levi_api/ui/pause_screen.json").read_text()
           assert 'titleText = "Mods";' in screen
           assert 'col::rgb(0x262A31, 245)' in screen
@@ -140,7 +152,7 @@ jobs:
         run: |
           python3 - <<'PY'
           import json, zipfile, pathlib
-          p = pathlib.Path("build/OptLevi-LeviAPI-0.12.0.mcpack")
+          p = pathlib.Path("build/OptLevi-LeviAPI-0.13.0.mcpack")
           assert p.is_file()
           with zipfile.ZipFile(p) as z:
               assert "ui/start_screen.json" in z.namelist()
@@ -152,7 +164,7 @@ jobs:
               assert button[key]["$pressed_button_name"] == "button.optlevi_open_menu"
               assert button["start_screen_content"]["modifications"][0]["control_name"] == "skin_panel"
               assert "pack_icon.png" in z.namelist()
-          entry = pathlib.Path("ModMenuBE/android/src/Entry.cpp").read_text()
+          entry = pathlib.Path("build/native-template/android/src/Entry.cpp").read_text()
           assert "ButtonBuilder" not in entry, "Old native floating button still present"
           assert "registerModule" in entry
           print("Static JSON UI contract and floating-button removal verified")
@@ -163,9 +175,9 @@ jobs:
           python3 scripts/prepare-optlevi-touch.py
           python3 - <<'PY'
           from pathlib import Path
-          entry = Path("ModMenuBE/android/src/Entry.cpp").read_text()
-          bridge = Path("ModMenuBE/android/src/GameUiTouchBridge.cpp").read_text()
-          cmake = Path("ModMenuBE/android/CMakeLists.txt").read_text()
+          entry = Path("build/native-template/android/src/Entry.cpp").read_text()
+          bridge = Path("build/native-template/android/src/GameUiTouchBridge.cpp").read_text()
+          cmake = Path("build/native-template/android/CMakeLists.txt").read_text()
           assert "gameui::install();" in entry
           assert "gameui::uninstall();" in entry
           assert "src/GameUiTouchBridge.cpp" in cmake
@@ -180,15 +192,15 @@ jobs:
           python3 scripts/prepare-iris-import.py
           python3 - <<'PY'
           from pathlib import Path
-          entry=Path("ModMenuBE/android/src/Entry.cpp").read_text()
-          cmake=Path("ModMenuBE/android/CMakeLists.txt").read_text()
-          screen=Path("ModMenuBE/src/ui/OptLeviShaderScreen.inc").read_text()
+          entry=Path("build/native-template/android/src/Entry.cpp").read_text()
+          cmake=Path("build/native-template/android/CMakeLists.txt").read_text()
+          screen=Path("build/native-template/src/ui/OptLeviShaderScreen.inc").read_text()
           assert "shaderimport::install();" in entry
           assert "shaderimport::uninstall();" in entry
           assert "src/ShaderImportBridge.cpp" in cmake
           assert "GLESv3 z" in cmake
-          assert "nativeOnDocumentResult" in Path("ModMenuBE/android/src/ShaderImportBridge.cpp").read_text()
-          staged = Path("ModMenuBE/android/src/ShaderImportBridge.cpp").read_text()
+          assert "nativeOnDocumentResult" in Path("build/native-template/android/src/ShaderImportBridge.cpp").read_text()
+          staged = Path("build/native-template/android/src/ShaderImportBridge.cpp").read_text()
           assert 'fs::rename(input,staging,ec)' in staged
           assert 'std::thread([staging,name]' in staged
           assert 'if(importWorker.joinable())importWorker.join()' in staged
@@ -202,15 +214,33 @@ jobs:
       - name: Test Java shaderpack ZIP includes and safety on host C++
         run: python3 scripts/test-java-bsl.py
 
+      - name: Execute real three-pass GLES3 composite and pixel readback on Linux
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y libegl1-mesa-dev libgles2-mesa-dev
+          g++ -std=c++17 -O2 -pthread -I src/android tests/java-composite-gles.cpp src/android/ShaderWorldRuntime.cpp -lEGL -lGLESv2 -o /tmp/optlevi-java-composite
+          EGL_PLATFORM=surfaceless LIBGL_ALWAYS_SOFTWARE=1 /tmp/optlevi-java-composite
+
+      - name: Execute original OptLevi Lab ZIPs through Java loader and GLES
+        run: python3 scripts/test-lab-shaders.py
+
+      - name: Upload OptLevi Lab shader packs
+        uses: actions/upload-artifact@v4
+        with:
+          name: OptLevi-Lab-shaders-0.1
+          path: build/lab-shaders/*.zip
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Install opt-in Java final-pass world GPU test
         run: |
           python3 scripts/prepare-java-world-test.py
           python3 scripts/test-java-world-test.py
           python3 - <<'PY'
           from pathlib import Path
-          native = Path("ModMenuBE/android/src")
+          native = Path("build/native-template/android/src")
           assert 'shaderworld::beforeSwap(worldW,worldH)' in (native/"EglOverlay.cpp").read_text()
-          assert 'ShaderWorldRuntime.cpp' in Path("ModMenuBE/android/CMakeLists.txt").read_text()
+          assert 'ShaderWorldRuntime.cpp' in Path("build/native-template/android/CMakeLists.txt").read_text()
           assert 'shaderworld::stop();' in (native/"Entry.cpp").read_text()
           print("Experimental world GLSL pass installed in existing game EGL hook")
           PY
@@ -244,7 +274,7 @@ jobs:
 
       - name: Configure ARM64
         run: |
-          cmake -S ModMenuBE/android -B build/optlevi-arm64-v8a -G Ninja \
+          cmake -S build/native-template/android -B build/optlevi-arm64-v8a -G Ninja \
             -DCMAKE_TOOLCHAIN_FILE="$ANDROID_HOME/ndk/28.2.13676358/build/cmake/android.toolchain.cmake" \
             -DANDROID_NDK="$ANDROID_HOME/ndk/28.2.13676358" \
             -DANDROID_ABI=arm64-v8a \
@@ -283,7 +313,7 @@ jobs:
           from hashlib import sha256
           import json, struct
 
-          package = Path("build/OptLevi-0.12.0-arm64-v8a.levipack")
+          package = Path("build/OptLevi-0.13.0-arm64-v8a.levipack")
           assert package.is_file(), package
           prefix = "OptLevi/resources/minecraft_resource_packs/LeviAPI/"
           original = Path("assets/optlevi-original-200.png").read_bytes()
@@ -312,16 +342,16 @@ jobs:
       - name: Upload complete OptLevi resource-integrated LeviPack
         uses: actions/upload-artifact@v4
         with:
-          name: OptLevi-0.12.0-arm64-v8a-complete
-          path: build/OptLevi-0.12.0-arm64-v8a.levipack
+          name: OptLevi-0.13.0-arm64-v8a-complete
+          path: build/OptLevi-0.13.0-arm64-v8a.levipack
           if-no-files-found: error
           retention-days: 14
 
       - name: Upload Levi API resource pack
         uses: actions/upload-artifact@v4
         with:
-          name: OptLevi-LeviAPI-0.12.0
-          path: build/OptLevi-LeviAPI-0.12.0.mcpack
+          name: OptLevi-LeviAPI-0.13.0
+          path: build/OptLevi-LeviAPI-0.13.0.mcpack
           if-no-files-found: error
           retention-days: 14
 

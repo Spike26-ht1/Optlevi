@@ -1,5 +1,5 @@
-// OptLevi 0.11: Android shaderpack import, GLES3 test preview, and opt-in
-// single-pass world postprocess. Full Java/Iris multi-pass rendering is not supported.
+// OptLevi Java shader pipeline: embedded first-party WorldFX and optional
+// experimental Java world materials. The current fallback is a screen pass.
 #include "OptLeviShaderCatalog.inc"
 #include "OptLeviShaderGlesTest.inc"
 
@@ -12,6 +12,9 @@ static std::string gOptShadersError;
 static std::string gOptShadersSelection;  // pending in UI, not Minecraft render state
 static std::string gOptSavedSelection;    // last accepted TEST choice, not world effects
 static std::string gOptImportStatus;
+static std::string gOptProfile,gOptSavedProfile;
+static std::string gOptProfilePack;
+static std::vector<std::string> gOptProfileNames;
 
 static std::filesystem::path ofShaderpacksPath() {
     return paths::selfDir()/"shaderpacks";
@@ -38,6 +41,7 @@ static void ofScanShaderpacks() {
        std::none_of(gOptShaderFiles.begin(),gOptShaderFiles.end(),
             [](auto const& p){return p.path.filename().string()==gOptShadersSelection;}))
        gOptShadersSelection.clear();
+    gOptProfilePack.clear();
     gOptShadersScanned=true;
 }
 
@@ -73,7 +77,7 @@ static void drawOptLeviShadersScreen(ImVec2 display) {
     float left=display.x*0.20f,right=display.x*0.80f;
     float w=right-left;
     float top=10*u,barY=74*u;
-    float bottom=display.y-130*u;
+    float bottom=display.y-205*u;
     float line=32*u;
     if(w<240*u||bottom<barY+100*u){
         ofText(dl,fonts::bold(),{20*u,20*u},"Shaders: enlarge the screen",
@@ -91,7 +95,7 @@ static void drawOptLeviShadersScreen(ImVec2 display) {
     float titleW=bold->CalcTextSizeA(bold->FontSize,FLT_MAX,0,title.c_str()).x;
     ofText(dl,bold,{display.x*0.5f-titleW*0.5f,top},
            title.c_str(),ofc(0xFFFFFF));
-    std::string sub="Java final pass / GLES3 test (experimental)";
+    std::string sub="Java composite pipeline / GLES3 (experimental)";
     fonts::note(sub);
     ImFont* font=fonts::body();
     float subW=font->CalcTextSizeA(font->FontSize,FLT_MAX,0,sub.c_str()).x;
@@ -107,7 +111,29 @@ static void drawOptLeviShadersScreen(ImVec2 display) {
                 {right-refreshW,barY},{refreshW,line},u))
         ofScanShaderpacks();
 
-    float listTop=barY+line+7*u;
+    // One-click first-party pack: the actual Java parser and world renderer
+    // are used, not the independent synthetic GLES thumbnail preview.
+    if(ofButton("##lab_world_fx","Play with Lab World FX (Balanced)",
+                {left,barY+line+4*u},{w,30*u},u)){
+        std::string file="OptLevi-Lab-WorldFX-0.2.zip";
+        auto target=ofShaderpacksPath()/file;
+        OptPackInfo pack;pack.path=target;pack.folder=false;
+        std::vector<modmenu::android::shaderworld::Pass> passes;
+        std::string error;
+        if(std::filesystem::is_regular_file(target)&&
+           optBuildJavaPipeline(pack,passes,error,"BALANCED")){
+            modmenu::android::shaderworld::requestPipeline(std::move(passes),file+" [BALANCED]");
+            gOptShadersSelection=file;gOptSavedSelection=file;
+            gOptProfile="BALANCED";gOptSavedProfile="BALANCED";
+            gOptProfilePack.clear();gOptPreviewEnabled=gOptSavedEnabled=true;
+            gOptImportStatus="Java World FX requested; enter a world to verify live rendering";
+        }else{
+            gOptImportStatus=error.empty()?
+                "Embedded Lab World FX missing from mod shaderpacks folder":error;
+            modmenu::android::shaderdiagnostics::record("Shader request rejected",gOptImportStatus);
+        }
+    }
+    float listTop=barY+2*line+11*u;
     dl->AddRectFilled({left,listTop},{right,bottom},ofc(0x161A1E,192));
     ofNineSprite(dl,OptSprite::PanelDark,{left,listTop},{right,bottom},u,
                  IM_COL32(115,123,133,220));
@@ -141,7 +167,7 @@ static void drawOptLeviShadersScreen(ImVec2 display) {
         rowDraw->PopClipRect();
         return clicked;
     };
-    if(row("vanilla","Off (vanilla / no shader test)",gOptShadersSelection.empty()))
+    if(row("vanilla","Off (vanilla rendering)",gOptShadersSelection.empty()))
         gOptShadersSelection.clear();
     for(size_t i=0;i<gOptShaderFiles.size();i++){
         auto name=gOptShaderFiles[i].path.filename().string();
@@ -152,7 +178,7 @@ static void drawOptLeviShadersScreen(ImVec2 display) {
     if(gOptShaderFiles.empty())ImGui::TextDisabled("No shader packs. Choose Import.");
     ImGui::EndChild();
 
-    float infoY=bottom+4*u;
+    float infoY=bottom+34*u;
     std::string label=gOptShadersSelection.empty()?
         "Vanilla (no Java shader selected)" : gOptShadersSelection;
     auto world=modmenu::android::shaderworld::status();
@@ -161,19 +187,51 @@ static void drawOptLeviShadersScreen(ImVec2 display) {
         [](OptPackInfo const& p){
             return p.path.filename().string()==gOptShadersSelection;
         });
+    if(gOptProfilePack!=gOptShadersSelection){
+        gOptProfilePack=gOptShadersSelection;gOptProfileNames.clear();gOptProfile.clear();
+        if(gOptShadersSelection==gOptSavedSelection)gOptProfile=gOptSavedProfile;
+        if(picked!=gOptShaderFiles.end()){
+            std::string error;
+            if(!optReadJavaProfiles(*picked,gOptProfileNames,error))gOptImportStatus=error;
+            if(std::find(gOptProfileNames.begin(),gOptProfileNames.end(),gOptProfile)==gOptProfileNames.end())gOptProfile.clear();
+        }
+    }
+    if(!gOptProfileNames.empty()){
+        std::string profileLabel="Profile: "+(gOptProfile.empty()?std::string("Pack default"):gOptProfile);
+        if(ofButton("##iris_profile",profileLabel.c_str(),{left,bottom+2*u},{w,29*u},u))
+            ImGui::OpenPopup("##iris_profile_choices");
+        if(ImGui::BeginPopup("##iris_profile_choices")){
+            if(ImGui::Selectable("Pack default",gOptProfile.empty()))gOptProfile.clear();
+            for(auto const& p:gOptProfileNames)
+                if(ImGui::Selectable(p.c_str(),gOptProfile==p))gOptProfile=p;
+            ImGui::EndPopup();
+        }
+    }
     if(picked!=gOptShaderFiles.end()){
         label += " | ";
         label += optPackLabel(picked->type);
     }
-    dl->PushClipRect({left,infoY},{right,infoY+55*u},true);
+    dl->PushClipRect({left,infoY},{right,display.y-77*u},true);
     ofText(dl,font,{left+5*u,infoY},label.c_str(),
            ofc(0xDDE6EC),font->FontSize*0.84f,w-10*u);
     // A driver failure must never be hidden behind stale import toast text.
     if(world.failed) status=world.message;
     else if(!gOptImportStatus.empty())status=gOptImportStatus;
     else if(!gOptShadersError.empty())status=gOptShadersError;
-    ofText(dl,font,{left+5*u,infoY+22*u},status.c_str(),
-           ofc(0xD7D7D7),font->FontSize*0.78f,w-10*u);
+    float textSize=font->FontSize*0.78f;
+    dl->AddText(font,textSize,{left+5*u,infoY+22*u},ofc(world.failed?0xFFD0A0:0xD7D7D7),
+                status.c_str(),nullptr,w-10*u);
+    auto perf=modmenu::android::shaderworld::metrics();
+    if(perf.presentedFrames||perf.failedFrames||perf.waitingFrames){
+        auto milli=std::to_string(perf.averageCpuMs);
+        if(milli.size()>5)milli.resize(5);
+        std::string line="Frames "+std::to_string(perf.presentedFrames)+
+            " | waiting "+std::to_string(perf.waitingFrames)+
+            " | errors "+std::to_string(perf.failedFrames)+
+            " | avg CPU "+milli+"ms (not GPU/FPS)";
+        dl->AddText(font,font->FontSize*0.65f,{left+5*u,infoY+44*u},
+                    ofc(0xACC5C8),line.c_str(),nullptr,w-10*u);
+    }
     dl->PopClipRect();
 
     const float gap=7*u,buttonH=30*u;
@@ -203,6 +261,7 @@ static void drawOptLeviShadersScreen(ImVec2 display) {
         gOptPreviewReport.clear();
         gOptShadersSelection=gOptSavedSelection;
         gOptPreviewEnabled=gOptSavedEnabled;
+        gOptProfile=gOptSavedProfile;gOptProfilePack.clear();
         gOptImportStatus="Selection reverted (world effect unchanged)";
     }
     if(ofButton("##iris_apply","Apply",{left+third+gap,by2},
@@ -212,24 +271,30 @@ static void drawOptLeviShadersScreen(ImVec2 display) {
         if(!gOptPreviewEnabled||gOptShadersSelection.empty()) {
             modmenu::android::shaderworld::requestDisable();
             gOptSavedSelection=gOptShadersSelection;
-            gOptSavedEnabled=gOptPreviewEnabled;
+            gOptSavedEnabled=gOptPreviewEnabled;gOptSavedProfile=gOptProfile;
             gOptImportStatus="Experimental world postprocess disabled";
         }else{
             auto selected=std::find_if(gOptShaderFiles.begin(),gOptShaderFiles.end(),
                 [](OptPackInfo const& p) {
                     return p.path.filename().string()==gOptShadersSelection;
                 });
-            std::string src,origin;
+            std::vector<modmenu::android::shaderworld::Pass> passes;
+            std::string error;
             if(selected!=gOptShaderFiles.end() &&
-               optReadJavaShader(*selected,src,origin)) {
-                modmenu::android::shaderworld::requestEnable(
-                    optTranslateFinal(src),selected->path.filename().string()+":"+origin);
+               optBuildJavaPipeline(*selected,passes,error,gOptProfile)) {
+                modmenu::android::shaderworld::requestPipeline(
+                    std::move(passes),selected->path.filename().string()+
+                    (gOptProfile.empty()?std::string{}:" ["+gOptProfile+"]"));
                 gOptSavedSelection=gOptShadersSelection;
-                gOptSavedEnabled=gOptPreviewEnabled;
-                gOptImportStatus="Compiling selected Java final pass (not full BSL rendering)...";
-            }else
-                gOptImportStatus=gOptJavaSourceError.empty()?
-                    "Unsupported Java final/composite pass":gOptJavaSourceError;
+                gOptSavedEnabled=gOptPreviewEnabled;gOptSavedProfile=gOptProfile;
+                gOptImportStatus.clear();
+            }else {
+                modmenu::android::shaderworld::requestDisable();
+                gOptImportStatus=error.empty()?
+                    "Select a supported Java composite pack":error;
+                gOptPreviewReport=gOptImportStatus;
+                modmenu::android::shaderdiagnostics::record("Shader request rejected",gOptShadersSelection+": "+gOptImportStatus);
+            }
         }
     }
     if(ofButton("##iris_done","Done",
@@ -252,18 +317,32 @@ static void drawOptLeviShadersScreen(ImVec2 display) {
         ofText(dl,font,{pt.x,pt.y+ph+4*u},"GLES3 test preview (not world)",
                ofc(0xFFFFFF),font->FontSize*0.72f,pw);
     }
-    if(!gOptPreviewReport.empty()||world.failed) {
-        // Compilation errors are not discarded. Use a scrollable popup to
-        // inspect the real driver log instead of pretending support.
-        if(ofButton("##iris_compilelog","Compiler log",
-                    {std::max(8*u,left-140*u),display.y-118*u},
-                    {125*u,29*u},u))
+    { // Diagnostics must remain accessible even with shaders disabled.
+        // Keep the verified native-layout diagnostic accessible even when
+        // the postprocess compiles successfully.
+        if(ofButton("##iris_compilelog","Log",
+                    {left+5*u,bottom-35*u},
+                    {190*u,29*u},u))
             ImGui::OpenPopup("##iris_compile_details");
         if(ImGui::BeginPopup("##iris_compile_details")){
             ImGui::TextWrapped("%s",gOptPreviewFile.c_str());
             ImGui::Separator();
             ImGui::TextWrapped("%s",gOptPreviewReport.c_str());
             ImGui::TextWrapped("World: %s",world.message.c_str());
+            ImGui::Separator();
+            auto nativeReport=modmenu::android::shaderbridge::report();
+            ImGui::TextWrapped("%s",nativeReport.c_str());
+            auto report=modmenu::android::shaderdiagnostics::snapshot()+
+                "\nCurrent shader: "+gOptSavedSelection+"\nProfile: "+gOptSavedProfile+
+                "\nWorld: "+world.message+"\n"+nativeReport+"\nCompiler: "+gOptPreviewReport;
+            if(report.size()>240*1024)report.resize(240*1024);
+            if(ImGui::Button("Save log to Downloads")){
+                modmenu::android::shaderdiagnostics::exportDownloads(report,gOptImportStatus);
+            }
+            ImGui::TextWrapped("%s",gOptImportStatus.c_str());
+            if(ImGui::Button("Copy renderer log")){
+                ImGui::SetClipboardText(report.c_str());
+            }
             ImGui::EndPopup();
         }
     }

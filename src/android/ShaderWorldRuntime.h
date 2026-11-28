@@ -1,17 +1,241 @@
 #pragma once
 #include <string>
+#include <cstdint>
+#include <vector>
+#include <utility>
+#include <array>
+#include "ShaderMeshMapping.h"
+#include "ShaderPackUniforms.h"
+#include "ShaderPackProfiles.h"
+#include "ShaderCameraMath.h"
 
 namespace modmenu::android::shaderworld {
-// Deliberately restricted GL ES3 POSTPROCESS pass, not a full Iris pipeline.
-// State is copied across threads; all GL calls happen on the EGL swap thread.
+// Native hook detours must forward, not observe, OptLevi-owned GPU work.
+// Nestable and thread-local: the game render thread is never globally muted.
+inline thread_local unsigned ownedGpuDepth=0;
+struct OwnedGpuScope {
+    OwnedGpuScope(){++ownedGpuDepth;}
+    ~OwnedGpuScope(){--ownedGpuDepth;}
+    OwnedGpuScope(OwnedGpuScope const&)=delete;
+    OwnedGpuScope& operator=(OwnedGpuScope const&)=delete;
+};
+inline bool ownedGpuWork(){return ownedGpuDepth!=0;}
+// Ordered fullscreen pass graph. Only buffers actually produced by a pass
+// can be read; the initial real frame provides colortex0, not a fake G-buffer.
+struct PackTexture {
+    std::string sampler;
+    int width=0,height=0;
+    bool nearest=false;
+    std::vector<std::uint8_t> rgba;
+};
+struct GeometryProgram {
+    std::string name,vertex,fragment;
+    bool shadow=false;
+    std::string enabledProbe;
+};
+struct BufferScale { unsigned index=0;float width=1,height=1; };
+struct Pass {
+    std::string name;
+    std::string fragment;
+    std::vector<unsigned> targets;
+    bool finalPass=false;
+    // Translated original fullscreen vertex stage; empty for diagnostic passes.
+    std::string vertex;
+    // Resolve the active conditional DRAWBUFFERS mapping from linked outputs.
+    bool routedOutputs=false;
+    // Shared pack-level composite textures are attached to the first pass only.
+    std::vector<PackTexture> packTextures;
+    // Optional GLSL preprocessor-only program.enabled probe. Disabled passes
+    // must not compile, allocate targets, or satisfy later dependencies.
+    std::string enabledProbe;
+    // Pack-wide attachment formats, present only on the first graph pass.
+    std::vector<std::pair<unsigned,std::string>> colorFormats;
+    // Iris size.buffer.colortexN, sampled with normalized UV coordinates.
+    std::vector<BufferScale> bufferScales;
+    // Deferred programs run at the opaque/translucent boundary, not at swap.
+    bool deferred=false;
+    // Selected pack geometry/shadow source pairs, shared on first pass.
+    std::vector<GeometryProgram> geometryPrograms;
+    std::vector<mesh::BlockRule> blockRules;
+    std::vector<custom::Rule> customUniforms;
+    std::optional<shaderbridge::camera::ShadowSettings> shadowSettings;
+    // Explicit first-party/native terrain framebuffer effect; not Iris G-buffer semantics.
+    bool nativeTerrainPhase=false;
+    // Clear=false history is reflected via enabledProbe; no history buffer
+    // is usable without an actual writer in the graph.
+};
 struct Status {
     bool active=false;
     bool failed=false;
     std::string message;
 };
-void requestEnable(std::string translatedFragment, std::string sourceLabel);
+struct RenderMetrics {
+    std::uint64_t presentedFrames=0,failedFrames=0,waitingFrames=0;
+    // CPU-side GLES submission time, not GPU elapsed time or total FPS.
+    float lastCpuMs=0,averageCpuMs=0;
+    int width=0,height=0;
+};
+RenderMetrics metrics();
+void requestPipeline(std::vector<Pass> passes,std::string label);
+void requestEnable(std::string translatedFragment,std::string sourceLabel);
 void requestDisable();
 Status status();
+// Remains true for a selected pack awaiting native resources, even if its
+// first compilation was rejected. False when Off or Disable is selected.
+bool captureRequested();
+bool nativeTerrainRequested();
+// Called before leaving a recognized native terrain framebuffer. Requires
+// the actual single-sample color/depth attachment, never a fabricated depth.
+bool renderNativeTerrainPhase(unsigned framebuffer,int width,int height,std::string& error);
+// Called on the game render thread by a phase-aware renderer adapter, with
+// a completed, single-sample depth attachment. Never infer phases at swap.
+enum class DepthPhase : unsigned { Complete=0, BeforeTranslucent=1, BeforeHand=2 };
+bool captureSceneDepth(DepthPhase phase,unsigned framebuffer,unsigned internalFormat,
+                       int width,int height,std::string& error);
+// Capture a native geometry color attachment with explicitly verified Java
+// semantics. The adapter must select the correct phase and attachment;
+// an arbitrary native color attachment is not automatically a G-buffer.
+bool captureSceneColor(unsigned colortex,unsigned framebuffer,unsigned attachment,
+                       std::string const& format,int width,int height,std::string& error);
+// Independent light-space resources; the adapter must render actual shadows.
+// Obtain the engine-computed camera and selected pack shadow resolution.
+// The renderer supplies actual Java sunAngle and cameraPosition first.
+bool getShadowCamera(shaderbridge::camera::ShadowCamera& camera,int& resolution,std::string& error);
+bool captureShadowDepth(unsigned index,unsigned framebuffer,unsigned internalFormat,
+                        int width,int height,std::string& error);
+bool captureShadowColor(unsigned index,unsigned framebuffer,unsigned attachment,
+                        std::string const& format,int width,int height,std::string& error);
+// Typed data from a verified world-rendering phase. Matrices are column
+// major and must already use the Java shader's coordinate convention.
+struct WorldUniform {
+    std::string name;
+    unsigned glType=0;
+    std::array<float,16> floats{};
+    std::array<int,4> ints{};
+};
+struct UniformMapping {
+    std::string nativeName;
+    std::string javaName;
+    unsigned glType=0;
+};
+// Either submit native world-state values, or read a verified linked native
+// GLES program's actual uniform values using explicit semantic mappings.
+// All values expire at the next swap; missing data is never defaulted.
+bool publishWorldUniforms(std::vector<WorldUniform> const& values,std::string& error);
+bool captureProgramUniforms(unsigned program,std::vector<UniformMapping> const& mappings,
+                            std::string& error);
+// Called after all opaque snapshots and uniforms have been captured, before
+// translucent draws. Outputs are borrowed until the next swap; the native
+// adapter must consume them using the pack's actual G-buffer semantics.
+bool renderDeferred(int width,int height,std::string& error);
+unsigned deferredTexture(unsigned colortex);
+// A geometry program is not a fullscreen pass. Its attribute ABI and
+// output locations are reflected for a native adapter with real meshes.
+struct GeometryHandle {
+    unsigned program=0;
+    std::vector<unsigned> targets; // colortex indices, or shadowcolor indices
+    std::vector<std::pair<std::string,unsigned>> attributes;
+    bool shadow=false;
+};
+// Pack textures remain available even while the composite graph waits for world data.
+bool acquireGeometryProgram(std::string const& name,GeometryHandle& result,std::string& error);
+// Explicit, mapped native mesh and dedicated G-buffer/light-space FBO.
+// Attachment slots must match the reflected GeometryHandle target list.
+struct GeometryDraw {
+    std::string program;
+    unsigned vao=0,framebuffer=0;
+    int width=0,height=0,first=0,count=0,instances=1;
+    unsigned indexType=0; // 0 for arrays; otherwise GL_UNSIGNED_SHORT/INT
+    std::uintptr_t indexOffset=0;
+    std::vector<WorldUniform> uniforms;
+    std::vector<std::pair<std::string,unsigned>> textures2D;
+    // Runtime-owned mapped terrain token; mutually exclusive with native VAO.
+    std::uint64_t terrainMesh=0;
+    // Verified local-to-camera-relative translation, in Java block units.
+    // Zero for meshes already in camera-relative space. Per-draw, not cached.
+    mesh::V3 terrainOffset{};
+};
+// Actual world viewport (not shadow-map dimensions). Call before shadow
+// draws if their programs need viewport built-ins.
+bool beginJavaFrame(int width,int height,std::string& error);
+bool drawGeometry(GeometryDraw const& draw,std::string& error);
+// Inputs are mapped Java camera-relative world meshes, not screen quads.
+// Owns light-space attachments and performs the opaque/translucent split.
+// Per-draw material uniforms and textures must describe the supplied mesh.
+bool renderShadowScene(std::vector<GeometryDraw> const& opaque,
+                       std::vector<GeometryDraw> const& translucent,std::string& error);
+// Actual block state must already be normalized to Java names/properties.
+bool translateTerrainQuad(std::string const& canonicalName,mesh::State const& states,
+    std::array<mesh::NativeVertex,4> const& vertices,mesh::V3 center,
+    std::array<mesh::JavaVertex,4>& output,std::string& error);
+struct TerrainQuad {
+    std::string canonicalName;
+    mesh::State states;
+    std::array<mesh::NativeVertex,4> vertices;
+    mesh::V3 center;
+};
+// Metadata must come from the native chunk builder, in the same order as
+// the index groups. Neither texture coordinates nor positions identify blocks.
+struct TerrainFaceMetadata {
+    std::string canonicalName;
+    mesh::State states;
+    mesh::V3 center;
+};
+// Vertices are decoded, verified native attributes in a single coordinate frame.
+// Local meshes use GeometryDraw::terrainOffset at draw time. Indices
+// are six per face in draw order; baseVertex follows GLES signed semantics.
+bool assembleIndexedTerrainQuads(std::vector<mesh::NativeVertex> const& vertices,
+    std::vector<std::uint32_t> const& indices,int baseVertex,
+    std::vector<TerrainFaceMetadata> const& metadata,
+    std::vector<TerrainQuad>& output,std::string& error);
+// A verified packed RenderChunk draw, not an arbitrary native VAO.
+// Attribute locations refer to the currently bound native VAO. The adapter
+// supplies the verified packed-light component and affine coordinate mapping.
+struct PackedTerrainSource {
+    unsigned position=0,color=0,uv=0,light=0;
+    unsigned lightComponent=0;
+    unsigned indexType=0;
+    std::uintptr_t indexOffset=0;
+    int baseVertex=0;
+    mesh::V3 scale{},translation{};
+};
+bool capturePackedTerrainQuads(PackedTerrainSource const& source,
+    std::vector<TerrainFaceMetadata> const& metadata,
+    std::vector<TerrainQuad>& output,std::string& error);
+// The native adapter supplies verified faces and per-draw inputs. Uses
+// the selected geometry/shadow program with a generated mapped VAO.
+bool drawTerrainQuads(GeometryDraw const& draw,std::vector<TerrainQuad> const& faces,std::string& error);
+// The adapter owns stable chunk/batch identity and revision. Revision MUST
+// change if any mapped input changes (including local positions, block state,
+// light, UV, topology). Per-draw terrainOffset does not invalidate local meshes.
+// Empty faces are permitted on a cache hit.
+// No GL names escape the cache; tokens expire on release/pack/context change.
+bool prepareTerrainMesh(std::uint64_t batchKey,std::uint64_t revision,
+    std::vector<TerrainQuad> const& faces,std::uint64_t& token,std::string& error);
+bool releaseTerrainMesh(std::uint64_t token);
+// All batches must use real, mapped Java-convention vertices and actual
+// per-draw uniforms/textures. The engine owns the world FBOs and phase order.
+// The provider supplies draw state (including whether a batch is translucent).
+struct WorldBatch {
+    GeometryDraw geometry;
+    bool blend=false,depthWrite=true,depthTest=true,cull=false;
+    // Optional verified CPU faces instead of a pre-mapped VAO.
+    std::vector<TerrainQuad> terrainFaces;
+};
+struct WorldScene {
+    int width=0,height=0;
+    std::array<float,4> fogClear{};
+    std::vector<WorldBatch> opaque,hand,translucent;
+    std::vector<GeometryDraw> shadowOpaque,shadowTranslucent;
+};
+// Prepares the current world frame, without presenting or replacing the HUD.
+// Composite/final are executed by beforeSwap after this succeeds.
+bool renderJavaWorldScene(WorldScene const& scene,std::string& error);
+// Complete the mapped world at a VERIFIED pre-HUD boundary. Destination is
+// the actual world color framebuffer selected by the native adapter (0 is
+// allowed only when the adapter has verified it is the pre-HUD backbuffer).
+// A successful call prevents beforeSwap from drawing over the native HUD.
+bool presentJavaWorldScene(unsigned framebuffer,int width,int height,std::string& error);
 void beforeSwap(int width,int height);
 void stop();
 } // namespace modmenu::android::shaderworld

@@ -1,0 +1,1 @@
+Original OptLevi native terrain contact shading. Requires a recognized real native terrain framebuffer and validated native projection. No material.bin replacement. It is a screen-space effect, not BSL geometry or sun-cast shadows. If the device does not expose the supported draw/attachment signature, it remains inactive and reports why.
