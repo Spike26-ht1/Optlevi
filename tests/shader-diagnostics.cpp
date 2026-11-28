@@ -1,6 +1,7 @@
 #include "ShaderDiagnostics.h"
 #include "ShaderHookTrace.h"
 #include "ShaderCameraMath.h"
+#include "ShaderNativeMeshSample.h"
 #include <cassert>
 #include <iostream>
 #include <thread>
@@ -60,6 +61,14 @@ int main(){
     auto identity=camera::multiply(projection.matrix,projection.inverse);
     for(unsigned i=0;i<16;++i)assert(std::abs(identity[i]-(i%5==0?1.0f:0.0f))<0.001f);
     nativeP[11]=1;assert(!camera::directProjection(nativeP,projection));
+    std::uint64_t start=0;
+    assert(meshsample::attributeRange(12,20,3,4,100,start)&&start==72);
+    assert(!meshsample::attributeRange(12,20,-1,4,100,start));
+    assert(!meshsample::attributeRange(12,20,5,4,100,start));
+    assert(!meshsample::attributeRange(12,20,4,9,100,start));
+    assert(meshsample::half(0x3c00)==1.0f&&meshsample::half(0xc000)==-2.0f);
+    assert(meshsample::half(0x0001)==std::ldexp(1.0f,-24));
+    assert(std::isinf(meshsample::half(0x7c00)));
     HookTrace trace;
     trace.add({TraceKind::Bind,1,2,3,0});
     trace.add({TraceKind::Draw,7,3,4,2});

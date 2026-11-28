@@ -3,6 +3,7 @@
 #include "ShaderCameraMath.h"
 #include "ShaderDiagnostics.h"
 #include "ShaderHookTrace.h"
+#include "ShaderNativeMeshSample.h"
 
 #include <EGL/egl.h>
 #include <GLES3/gl3.h>
@@ -45,6 +46,8 @@ struct Frame {
     HookTrace trace;
     // Saved across frames until EGL context/surface replacement.
     std::string firstTerrainLayout;
+    std::string firstMeshSample;
+    bool meshSampleAttempted=false;
     std::vector<DeferredSampler> deferredSamplers;
 };
 thread_local Frame frame;
@@ -190,6 +193,104 @@ void describeDraw(GLuint program,ObservedDraw const& call,bool terrainCandidate)
     }
     if(frame.drawEvidence.size()+out.size()<=9000)frame.drawEvidence+=out;
 }
+// Read a small, bounded buffer-object range through a temporary staging
+// buffer. Never map the game's live VBO/EBO, dereference client addresses,
+// or retain a buffer name for replay. Called once per accepted EGL context.
+bool sampleBuffer(GLuint source,std::uint64_t offset,std::size_t length,unsigned char* output){
+    if(!source||!length||length>64)return false;
+    GLint oldRead=0,oldWrite=0;
+    glGetIntegerv(GL_COPY_READ_BUFFER_BINDING,&oldRead);
+    glGetIntegerv(GL_COPY_WRITE_BUFFER_BINDING,&oldWrite);
+    GLuint staging=0;
+    auto restore=[&](){
+        glBindBuffer(GL_COPY_READ_BUFFER,GLuint(oldRead));
+        glBindBuffer(GL_COPY_WRITE_BUFFER,GLuint(oldWrite));
+        if(staging)glDeleteBuffers(1,&staging);
+    };
+    glBindBuffer(GL_COPY_READ_BUFFER,source);
+    GLint64 size=0;GLint mapped=0;
+    glGetBufferParameteri64v(GL_COPY_READ_BUFFER,GL_BUFFER_SIZE,&size);
+    glGetBufferParameteriv(GL_COPY_READ_BUFFER,GL_BUFFER_MAPPED,&mapped);
+    if(mapped||size<0||offset>std::uint64_t(size)||length>std::uint64_t(size)-offset){
+        restore();return false;
+    }
+    glGenBuffers(1,&staging);
+    if(!staging){restore();return false;}
+    glBindBuffer(GL_COPY_WRITE_BUFFER,staging);
+    glBufferData(GL_COPY_WRITE_BUFFER,GLsizeiptr(length),nullptr,GL_STREAM_READ);
+    glCopyBufferSubData(GL_COPY_READ_BUFFER,GL_COPY_WRITE_BUFFER,GLintptr(offset),0,GLsizeiptr(length));
+    auto ptr=static_cast<unsigned char const*>(glMapBufferRange(GL_COPY_WRITE_BUFFER,0,GLsizeiptr(length),GL_MAP_READ_BIT));
+    bool ok=false;
+    if(ptr){
+        std::copy_n(ptr,length,output);
+        ok=glUnmapBuffer(GL_COPY_WRITE_BUFFER)==GL_TRUE;
+    }
+    restore();
+    // Existing native errors cannot be reliably separated from diagnostic
+    // errors; no data is accepted if the staging operations failed.
+    return ok&&glGetError()==GL_NO_ERROR;
+}
+void sampleNativeTerrain(GLuint program,ObservedDraw const& call){
+    if(frame.meshSampleAttempted||!call.indexed||call.mode!=GL_TRIANGLES||
+       call.count<3||call.instances!=1)return;
+    GLint ebo=0;glGetIntegerv(GL_ELEMENT_ARRAY_BUFFER_BINDING,&ebo);
+    unsigned indexBytes=call.indexType==GL_UNSIGNED_BYTE?1:call.indexType==GL_UNSIGNED_SHORT?2:
+        call.indexType==GL_UNSIGNED_INT?4:0;
+    if(!ebo||!indexBytes)return;
+    struct Attr { char const* name; GLint location,buffer,size,type,stride,normalized,divisor,integer;std::uintptr_t offset; };
+    std::array<Attr,4> attrs{{{"a_position"},{"a_color0"},{"a_texcoord0"},{"a_texcoord1"}}};
+    for(auto& a:attrs){
+        a.location=glGetAttribLocation(program,a.name);if(a.location<0)return;
+        auto i=GLuint(a.location);GLint enabled=0;void* pointer=nullptr;
+        glGetVertexAttribiv(i,GL_VERTEX_ATTRIB_ARRAY_ENABLED,&enabled);
+        glGetVertexAttribiv(i,GL_VERTEX_ATTRIB_ARRAY_BUFFER_BINDING,&a.buffer);
+        glGetVertexAttribiv(i,GL_VERTEX_ATTRIB_ARRAY_SIZE,&a.size);
+        glGetVertexAttribiv(i,GL_VERTEX_ATTRIB_ARRAY_TYPE,&a.type);
+        glGetVertexAttribiv(i,GL_VERTEX_ATTRIB_ARRAY_STRIDE,&a.stride);
+        glGetVertexAttribiv(i,GL_VERTEX_ATTRIB_ARRAY_NORMALIZED,&a.normalized);
+        glGetVertexAttribiv(i,GL_VERTEX_ATTRIB_ARRAY_DIVISOR,&a.divisor);
+        glGetVertexAttribiv(i,GL_VERTEX_ATTRIB_ARRAY_INTEGER,&a.integer);
+        glGetVertexAttribPointerv(i,GL_VERTEX_ATTRIB_ARRAY_POINTER,&pointer);
+        a.offset=reinterpret_cast<std::uintptr_t>(pointer);
+        if(!enabled||!a.buffer||a.divisor||a.integer||a.stride<=0)return;
+    }
+    // Only the exact reflected storage types reported by the device.
+    // No fixed offsets, stride, VAO number or VBO identity.
+    if(attrs[0].type!=GL_HALF_FLOAT||attrs[0].size!=4||attrs[0].normalized||
+       attrs[1].type!=GL_UNSIGNED_BYTE||attrs[1].size!=4||!attrs[1].normalized)return;
+    for(unsigned i=2;i<4;++i)if(attrs[i].type!=GL_UNSIGNED_SHORT||attrs[i].size!=2||!attrs[i].normalized)return;
+    frame.meshSampleAttempted=true;
+    unsigned char indices[12]{};
+    if(!sampleBuffer(GLuint(ebo),call.indexOffset,3*indexBytes,indices)){
+        frame.firstMeshSample="Native mesh sample: index staging read failed";return;
+    }
+    std::string info="Native mesh sample: first indexed triangle (raw attribute semantics, not mapped Java geometry)";
+    for(unsigned i=0;i<3;++i){
+        auto p=indices+i*indexBytes;
+        std::uint32_t index=indexBytes==1?*p:indexBytes==2?meshsample::u16(p):meshsample::u32(p);
+        auto vertex=std::int64_t(index)+call.baseVertex;
+        info+="\n index="+std::to_string(index)+" effective="+std::to_string(vertex);
+        for(unsigned j=0;j<attrs.size();++j){
+            auto const& a=attrs[j];
+            std::uint64_t start=0,bytes=j==0?8:4;
+            unsigned char data[8]{};
+            if(!meshsample::attributeRange(a.offset,a.stride,vertex,bytes,
+                   std::uint64_t(std::numeric_limits<GLintptr>::max()),start)||
+               !sampleBuffer(GLuint(a.buffer),start,bytes,data)){
+                frame.firstMeshSample=info+"\n Attribute staging read failed: "+a.name;return;
+            }
+            info+=" "+std::string(a.name)+"=(";
+            for(unsigned k=0;k<unsigned(a.size);++k){
+                if(k)info+=",";
+                float v=j==0?meshsample::half(meshsample::u16(data+k*2)):
+                    j==1?float(data[k])/255.0f:float(meshsample::u16(data+k*2))/65535.0f;
+                info+=std::to_string(v);
+            }
+            info+=")";
+        }
+    }
+    frame.firstMeshSample=std::move(info);
+}
 void captureBeforeDraw(ObservedDraw const& call){
     if(frame.inPresent||frame.context==EGL_NO_CONTEXT||!captureRequested())return;
     if(eglGetCurrentContext()!=frame.context||eglGetCurrentSurface(EGL_DRAW)!=frame.surface)return;
@@ -261,6 +362,7 @@ void captureBeforeDraw(ObservedDraw const& call){
     const bool terrainCandidate=splitTerrain||(terrainAtlas&&viewProjection>=0&&viewPosition>=0&&lightmap>=0);
     describeDraw(GLuint(program),call,terrainCandidate);
     if(splitTerrain){
+        sampleNativeTerrain(GLuint(program),call);
         // Resolve sampler units from the linked program, never assume
         // texture unit numbers. Restore the native active texture.
         GLint active=GL_TEXTURE0,maxUnits=0;
@@ -697,6 +799,7 @@ PresentGuard::PresentGuard(){
             "\nTerrain candidate programs (unverified): "+std::to_string(frame.terrainPrograms.size());
         if(!frame.markerCount)current+="\nNo verified OptLevi phase-marker material was observed.";
         if(!frame.firstTerrainLayout.empty())current+="\n"+frame.firstTerrainLayout;
+        if(!frame.firstMeshSample.empty())current+="\n"+frame.firstMeshSample;
         if(!frame.terrainEffectReport.empty())current+="\n"+frame.terrainEffectReport;
         if(!frame.programSignatures.empty())
             current+="\nObserved native shader uniforms (unclassified):"+frame.programSignatures;
@@ -716,7 +819,9 @@ PresentGuard::PresentGuard(){
         }
         std::lock_guard lock(reportMu);lastReport=std::move(current);
     }
-    if(frame.context!=ctx||frame.surface!=surface)frame.firstTerrainLayout.clear();
+    if(frame.context!=ctx||frame.surface!=surface){
+        frame.firstTerrainLayout.clear();frame.firstMeshSample.clear();frame.meshSampleAttempted=false;
+    }
     frame.context=ctx;frame.surface=surface;
     frame.seenCount=frame.markerCount=frame.captureCount=frame.terrainCount=0;
     frame.details.clear();frame.deferredSamplers.clear();frame.terrainPrograms.clear();
