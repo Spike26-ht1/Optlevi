@@ -623,6 +623,7 @@ void describeTerrainCandidate(){
 }
 template<class Fn,class... Args>
 void draw(EntryCoverage& coverage,unsigned slot,ObservedDraw const& evidence,Fn original,Args... args){
+    if(ownedGpuWork()){original(args...);return;}
     struct Guard { Guard(){++drawNesting;} ~Guard(){--drawNesting;} } guard;
     if(drawNesting==1&&!frame.inPresent&&captureRequested()){
         outerDraws.fetch_add(1,std::memory_order_relaxed);
@@ -647,6 +648,7 @@ void draw(EntryCoverage& coverage,unsigned slot,ObservedDraw const& evidence,Fn 
 using BindFramebufferFn=void(*)(GLenum,GLuint);
 BindFramebufferFn BindFramebufferOriginal[2]{};
 void bindFramebuffer(unsigned slot,BindFramebufferFn original,GLenum target,GLuint id){
+    if(ownedGpuWork()){original(target,id);return;}
     if(!drawNesting&&!frame.inPresent&&captureRequested())coverageBindFramebuffer.calls[slot].fetch_add(1,std::memory_order_relaxed);
     if(!drawNesting&&!frame.inPresent&&frame.terrainCandidate&&
        frame.context==eglGetCurrentContext()&&frame.surface==eglGetCurrentSurface(EGL_DRAW)&&
@@ -678,6 +680,7 @@ struct PhaseGuard { PhaseGuard(){++phaseNesting;} ~PhaseGuard(){--phaseNesting;}
 using ClearFn=void(*)(GLbitfield);
 ClearFn ClearOriginal[2]{};
 void clear(unsigned slot,ClearFn original,GLbitfield mask){
+    if(ownedGpuWork()){original(mask);return;}
     PhaseGuard guard;
     if(phaseNesting==1&&!drawNesting&&!frame.inPresent&&captureRequested())coverageClear.calls[slot].fetch_add(1,std::memory_order_relaxed);
     if(phaseNesting==1&&traceAllowed()){
@@ -692,6 +695,7 @@ void ClearResolved(GLbitfield m){clear(1,ClearOriginal[1],m);}
 using BlitFn=void(*)(GLint,GLint,GLint,GLint,GLint,GLint,GLint,GLint,GLbitfield,GLenum);
 BlitFn BlitOriginal[2]{};
 void blit(unsigned slot,BlitFn original,GLint a,GLint b,GLint c,GLint d,GLint e,GLint f,GLint g,GLint h,GLbitfield mask,GLenum filter){
+    if(ownedGpuWork()){original(a,b,c,d,e,f,g,h,mask,filter);return;}
     PhaseGuard guard;
     if(phaseNesting==1&&!drawNesting&&!frame.inPresent&&captureRequested())coverageBlit.calls[slot].fetch_add(1,std::memory_order_relaxed);
     if(phaseNesting==1&&traceAllowed()){

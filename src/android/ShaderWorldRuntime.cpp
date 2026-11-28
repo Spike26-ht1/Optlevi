@@ -266,7 +266,7 @@ std::array<bool,kBuffers> needed{},mipNeeded{},historyNeeded{},sceneNeeded{};
 std::array<bool,kBuffers> deferredInputs{},deferredOutputs{};
 std::array<std::uint64_t,kBuffers> opaqueSerial{};
 std::uint64_t snapshotSerial=0;
-bool deferredReady=false,worldSceneRendered=false;
+bool deferredReady=false,worldSceneRendered=false,worldScenePresented=false;
 float frameTime=0,frameDelta=0;
 bool frameClockReady=false;
 int frameViewWidth=0,frameViewHeight=0;
@@ -1985,6 +1985,7 @@ bool beginJavaFrame(int width,int height,std::string& error){
     return true;
 }
 bool renderJavaWorldScene(WorldScene const& scene,std::string& error){
+    OwnedGpuScope owned;
     if(worldSceneRendered){error="Java world scene already executed this frame";return false;}
     if(scene.opaque.empty()||scene.opaque.size()+scene.hand.size()+scene.translucent.size()>65536){
         error="No supplied opaque world geometry or excessive batch count";return false;
@@ -2168,6 +2169,7 @@ bool renderJavaWorldScene(WorldScene const& scene,std::string& error){
 }
 
 bool renderDeferred(int width,int height,std::string& error){
+    OwnedGpuScope owned;
     if(eglGetCurrentContext()==EGL_NO_CONTEXT||eglGetCurrentContext()!=context||
         eglGetCurrentSurface(EGL_DRAW)!=pipelineSurface||!requestedActive.load()){
         error="Deferred graph is not prepared for this EGL surface";return false;
@@ -2180,19 +2182,68 @@ bool renderDeferred(int width,int height,std::string& error){
     saved.restore();
     return ok;
 }
+bool presentJavaWorldScene(unsigned framebuffer,int width,int height,std::string& error){
+    OwnedGpuScope owned;
+    if(!worldSceneRendered||worldScenePresented){
+        error="No unpresented mapped Java world this frame";return false;
+    }
+    if(!beginJavaFrame(width,height,error))return false;
+    {
+        std::lock_guard lock(mu);
+        if(pendingAction!=0){error="Java shader selection is changing";return false;}
+    }
+    SavedState saved;
+    auto finish=[&](bool ok){saved.restore();return ok;};
+    if(framebuffer&&!glIsFramebuffer(framebuffer)){
+        error="Invalid verified world destination";return finish(false);
+    }
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER,framebuffer);
+    GLint samples=0,draw=0;glGetIntegerv(GL_SAMPLES,&samples);glGetIntegerv(GL_DRAW_BUFFER0,&draw);
+    if(glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER)!=GL_FRAMEBUFFER_COMPLETE||
+       samples>1||draw!=(framebuffer?GL_COLOR_ATTACHMENT0:GL_BACK)||glGetError()!=GL_NO_ERROR){
+        error="Unsupported world destination framebuffer";return finish(false);
+    }
+    refreshCustomUniforms();
+    if(!preparePackResources(error))return finish(false);
+    if(pipeline.empty()||waitingForResources){
+        discardGpu();
+        if(!compilePipeline(selectedSource,error)){discardGpu();waitingForResources=true;return finish(false);}
+        waitingForResources=false;activeLabel=selectedLabel;requestedActive=true;
+    }
+    // Only the mapped scene is valid input here, never a HUD/backbuffer copy.
+    if(!sceneNeeded[0]||!depthFrame.colors[0].fresh){
+        error="Missing mapped Java scene color";return finish(false);
+    }
+    auto started=std::chrono::steady_clock::now();
+    if(!renderPipeline(width,height,error,framebuffer)){
+        statusMessage(false,error+"; native world preserved");
+        return finish(false);
+    }
+    worldScenePresented=true;renderedFrame=true;
+    float ms=std::chrono::duration<float,std::milli>(std::chrono::steady_clock::now()-started).count();
+    {
+        std::lock_guard lock(mu);
+        auto& m=renderMetrics;m.width=width;m.height=height;
+        ++m.presentedFrames;m.lastCpuMs=ms;
+        m.averageCpuMs=m.presentedFrames==1?ms:m.averageCpuMs*0.9f+ms*0.1f;
+    }
+    statusMessage(true,"Java mapped world presented before HUD: "+activeLabel);
+    return finish(true);
+}
 unsigned deferredTexture(unsigned colortex){
     if(colortex>=kBuffers||!deferredReady||!deferredOutputs[colortex]||
        eglGetCurrentContext()!=context||eglGetCurrentSurface(EGL_DRAW)!=pipelineSurface)return 0;
     return textures[colortex][front[colortex]];
 }
 void beforeSwap(int width,int height) {
+    OwnedGpuScope owned;
     EGLContext now=eglGetCurrentContext();
     if(now==EGL_NO_CONTEXT)return;
     auto surface=eglGetCurrentSurface(EGL_DRAW);
     syncDepthContext();
     ConsumeDepthFrame consumeDepth;
     struct EndDeferredFrame {
-        ~EndDeferredFrame(){deferredReady=false;worldSceneRendered=false;nativeTerrainRendered=false;frameClockReady=false;frameViewWidth=frameViewHeight=0;}
+        ~EndDeferredFrame(){deferredReady=false;worldSceneRendered=false;worldScenePresented=false;nativeTerrainRendered=false;frameClockReady=false;frameViewWidth=frameViewHeight=0;}
     } endDeferredFrame;
     if(context!=now||pipelineSurface!=surface){
         if(context!=now)abandonContext();else{discardGeometry();discardGpu();}
@@ -2226,6 +2277,10 @@ void beforeSwap(int width,int height) {
         depthFrame.smoothPrevious.clear();depthFrame.previousTime={};depthFrame.frameTime={};
         selectedSource=std::move(passes);selectedLabel=std::move(label);
         waitingForResources=true;attemptedResources=false;
+    }
+    if(worldScenePresented&&action==0){
+        consumeDepth.rendered=true;
+        return; // The game's HUD may already be present. Never overwrite it.
     }
     if(!selectedSource.empty()&&selectedSource.front().nativeTerrainPhase){
         consumeDepth.rendered=nativeTerrainRendered;

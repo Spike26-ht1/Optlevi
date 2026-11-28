@@ -10,6 +10,16 @@
 #include "ShaderCameraMath.h"
 
 namespace modmenu::android::shaderworld {
+// Native hook detours must forward, not observe, OptLevi-owned GPU work.
+// Nestable and thread-local: the game render thread is never globally muted.
+inline thread_local unsigned ownedGpuDepth=0;
+struct OwnedGpuScope {
+    OwnedGpuScope(){++ownedGpuDepth;}
+    ~OwnedGpuScope(){--ownedGpuDepth;}
+    OwnedGpuScope(OwnedGpuScope const&)=delete;
+    OwnedGpuScope& operator=(OwnedGpuScope const&)=delete;
+};
+inline bool ownedGpuWork(){return ownedGpuDepth!=0;}
 // Ordered fullscreen pass graph. Only buffers actually produced by a pass
 // can be read; the initial real frame provides colortex0, not a fake G-buffer.
 struct PackTexture {
@@ -178,6 +188,11 @@ struct WorldScene {
 // Prepares the current world frame, without presenting or replacing the HUD.
 // Composite/final are executed by beforeSwap after this succeeds.
 bool renderJavaWorldScene(WorldScene const& scene,std::string& error);
+// Complete the mapped world at a VERIFIED pre-HUD boundary. Destination is
+// the actual world color framebuffer selected by the native adapter (0 is
+// allowed only when the adapter has verified it is the pre-HUD backbuffer).
+// A successful call prevents beforeSwap from drawing over the native HUD.
+bool presentJavaWorldScene(unsigned framebuffer,int width,int height,std::string& error);
 void beforeSwap(int width,int height);
 void stop();
 } // namespace modmenu::android::shaderworld

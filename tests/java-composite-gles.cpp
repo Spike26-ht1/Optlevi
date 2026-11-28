@@ -857,9 +857,21 @@ void main(){optRouteTarget0=tint;}
     worldScene.opaque={worldOpaque};worldScene.hand={worldHand};worldScene.translucent={worldTranslucent};
     require(renderJavaWorldScene(worldScene,captureError),"World phase coordinator failed");
     require(!renderJavaWorldScene(worldScene,captureError),"Duplicate world scene accepted");
-    clearScene();beforeSwap(32,32);actual=pixel();
+    require(!ownedGpuWork(),"GPU scope leaked after geometry");
+    {OwnedGpuScope outer;require(ownedGpuWork(),"GPU scope missing");
+     {OwnedGpuScope inner;require(ownedGpuWork(),"Nested GPU scope missing");}
+     require(ownedGpuWork(),"Nested GPU scope ended outer scope");}
+    require(!ownedGpuWork(),"GPU scope leaked after nesting");
+    require(presentJavaWorldScene(0,32,32,captureError),"Pre-HUD mapped world presentation failed");
+    actual=pixel();
     require(status().active&&std::abs(int(actual[0])-204)<=2&&std::abs(int(actual[1])-64)<=2&&
         std::abs(int(actual[2])-128)<=2&&std::abs(int(actual[3])-191)<=2,"World geometry phase order incorrect");
+    require(!presentJavaWorldScene(0,32,32,captureError),"Duplicate pre-HUD presentation accepted");
+    // Simulate the native HUD drawn after world composition. Swap must not
+    // replace it with the already-presented Java scene.
+    clearScene();beforeSwap(32,32);actual=pixel();
+    require(std::abs(int(actual[0])-51)<=2&&std::abs(int(actual[1])-102)<=2&&
+        std::abs(int(actual[2])-153)<=2,"Swap overwrote native HUD after pre-HUD presentation");
     clearScene();beforeSwap(32,32);require(!status().active,"Stale world frame reused");
     glBindVertexArray(0);glBindBuffer(GL_ARRAY_BUFFER,0);
     glDeleteVertexArrays(1,&sceneVao);glDeleteBuffers(1,&sceneVbo);
