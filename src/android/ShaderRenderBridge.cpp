@@ -436,10 +436,12 @@ void draw(ObservedDraw const& evidence,Fn original,Args... args){
         outerDraws.fetch_add(1,std::memory_order_relaxed);
         if(frame.context!=EGL_NO_CONTEXT&&frame.context==eglGetCurrentContext()&&
            frame.surface==eglGetCurrentSurface(EGL_DRAW)){
-            GLint p=0,fbo=0;
-            glGetIntegerv(GL_CURRENT_PROGRAM,&p);
-            glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING,&fbo);
-            frame.trace.add({TraceKind::Draw,unsigned(p),unsigned(fbo),evidence.mode,evidence.variant});
+            if(!frame.trace.full()){
+                GLint p=0,fbo=0;
+                glGetIntegerv(GL_CURRENT_PROGRAM,&p);
+                glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING,&fbo);
+                frame.trace.add({TraceKind::Draw,unsigned(p),unsigned(fbo),evidence.mode,evidence.variant});
+            }else frame.trace.omit();
             captureBeforeDraw(evidence);
         }else foreignDraws.fetch_add(1,std::memory_order_relaxed);
     }
@@ -535,7 +537,12 @@ unsigned hookEntry(void* library,char const* name,Fn direct,Fn resolved,Fn (&ori
         std::string label=std::string(name)+(i?" [EGL resolved]":" [GLES export]");
         if(!targets[i]){shaderdiagnostics::record("Hook entry",label+": unavailable");continue;}
         if(std::find(installedTargets.begin(),installedTargets.end(),targets[i])!=installedTargets.end()){
-            shaderdiagnostics::record("Hook entry",label+": already covered alias");continue;
+            shaderdiagnostics::record("Hook entry",label+": address already hooked; skipped");continue;
+        }
+        // Each detour owns one immutable original slot. A different late
+        // EGL address must not overwrite a live trampoline.
+        if(original[i]){
+            shaderdiagnostics::record("Hook entry",label+": address changed; existing trampoline retained");continue;
         }
         void* trampoline=nullptr;
         int result=pl::memory::hook(targets[i],reinterpret_cast<void*>(detours[i]),&trampoline);
@@ -543,7 +550,10 @@ unsigned hookEntry(void* library,char const* name,Fn direct,Fn resolved,Fn (&ori
             original[i]=reinterpret_cast<Fn>(trampoline);++count;
             installedTargets.push_back(targets[i]);
             shaderdiagnostics::record("Hook entry",label+": installed");
-        }else shaderdiagnostics::record("Hook entry",label+": failed ("+std::to_string(result)+")");
+        }else{
+            if(result==0&&!trampoline)pl::memory::unhook(targets[i],reinterpret_cast<void*>(detours[i]));
+            shaderdiagnostics::record("Hook entry",label+": failed ("+std::to_string(result)+")");
+        }
     }
     return count;
 }
@@ -565,9 +575,16 @@ void installContextHooks(){
         ext|=std::string_view(p)=="GL_EXT_draw_elements_base_vertex";
     }
     unsigned count=0;
-    // Retry core entrypoints that might not have resolved before EGL
-    // initialization. The original arrays remain intact for covered aliases.
+    // Retry unresolved core entrypoints after EGL initialization without
+    // replacing already-installed trampolines.
+    count+=hookEntry(glesLibrary,"glDrawElements",DrawElementsDirect,DrawElementsResolved,DrawElementsOriginal);
+    count+=hookEntry(glesLibrary,"glDrawArrays",DrawArraysDirect,DrawArraysResolved,DrawArraysOriginal);
+    count+=hookEntry(glesLibrary,"glDrawElementsInstanced",DrawElementsInstancedDirect,DrawElementsInstancedResolved,DrawElementsInstancedOriginal);
+    count+=hookEntry(glesLibrary,"glDrawArraysInstanced",DrawArraysInstancedDirect,DrawArraysInstancedResolved,DrawArraysInstancedOriginal);
+    count+=hookEntry(glesLibrary,"glBindFramebuffer",BindFramebufferDirect,BindFramebufferResolved,BindFramebufferOriginal);
     count+=hookEntry(glesLibrary,"glDrawRangeElements",DrawRangeElementsDirect,DrawRangeElementsResolved,DrawRangeElementsOriginal);
+    count+=hookEntry(glesLibrary,"glClear",ClearDirect,ClearResolved,ClearOriginal);
+    count+=hookEntry(glesLibrary,"glBlitFramebuffer",BlitDirect,BlitResolved,BlitOriginal);
     if(major>3||(major==3&&minor>=2)){
         count+=hookEntry(glesLibrary,"glDrawElementsBaseVertex",DrawElementsBaseVertexDirect,DrawElementsBaseVertexResolved,DrawElementsBaseVertexOriginal);
         count+=hookEntry(glesLibrary,"glDrawElementsInstancedBaseVertex",DrawElementsInstancedBaseVertexDirect,DrawElementsInstancedBaseVertexResolved,DrawElementsInstancedBaseVertexOriginal);
@@ -635,9 +652,9 @@ PresentGuard::PresentGuard(){
         if(!frame.programSignatures.empty())
             current+="\nObserved native shader uniforms (unclassified):"+frame.programSignatures;
         if(!frame.details.empty())current+="\n"+frame.details;
+        if(!frame.drawEvidence.empty())current+="\nDraw layout evidence:"+frame.drawEvidence.substr(0,4500);
         auto order=frame.trace.report();
         if(!order.empty())current+="\nNative GL event order (not classified phases):"+order;
-        if(!frame.drawEvidence.empty())current+="\nDraw layout evidence:"+frame.drawEvidence;
         { // Include zero-draw reports; missing hook coverage is evidence too.
             auto vendor=reinterpret_cast<char const*>(glGetString(GL_VENDOR));
             auto renderer=reinterpret_cast<char const*>(glGetString(GL_RENDERER));

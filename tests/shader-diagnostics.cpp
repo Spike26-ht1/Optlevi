@@ -61,7 +61,8 @@ int main(){
     assert(order.find("variant=2 x2")!=std::string::npos);
     assert(order.find("draw program=7")<order.find("blit read=3"));
     for(unsigned i=0;i<100;++i)trace.add({TraceKind::Clear,i,256,0,0});
-    assert(trace.report().find("omitted events=")!=std::string::npos);
+    assert(trace.full()&&trace.report().find("omitted events=")!=std::string::npos);
+    trace.omit();
     trace.reset();assert(trace.report().empty());
     std::cout<<"Bounded concurrent diagnostic journal, log persistence and hook trace: OK\n";
 }

@@ -18,11 +18,15 @@ class HookTrace {
     std::array<Slot,48> slots_{};
     unsigned size_=0,omitted_=0;
 public:
+    bool full() const {return size_>=slots_.size();}
+    void omit(){if(omitted_<1000000)++omitted_;}
     void add(TraceEvent event){
+        // Keep an ordered prefix; never merge across omitted events.
+        if(omitted_){omit();return;}
         if(size_&&slots_[size_-1].event==event){
             if(slots_[size_-1].repeats<1000000)++slots_[size_-1].repeats;
         }else if(size_<slots_.size())slots_[size_++]={event,1};
-        else if(omitted_<1000000)++omitted_;
+        else omit();
     }
     void reset(){size_=omitted_=0;}
     std::string report() const {
